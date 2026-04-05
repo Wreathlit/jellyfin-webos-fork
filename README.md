@@ -30,7 +30,7 @@ There are three ways to create the required build environment:
 
 - Full WebOS SDK Installation
 - Docker
-- NPM ares-cli
+- NPM @webos-tools/cli
 
 ### Full WebOS SDK Installation
 
@@ -82,7 +82,7 @@ Once you have installed the devmode app on your target TV and logged in with you
 ./dev.sh ares-novacom --device tv --getkey
 
 # Run this command to verify that things are working.
-./dev.sh ares-device-info -d tv
+./dev.sh ares-device -i -d tv
 
 # This command installs the app. Remember to build it first.
 ./dev.sh ares-install -d tv org.jellyfin.webos_*.ipk

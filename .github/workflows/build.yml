@@ -8,30 +8,46 @@ on:
       - published
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+          - 16.x
+          - 18.x
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check packaging
+        run: npm run check
+
   build:
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Use Node.js 14.x
+      - name: Use Node.js 16.x
         uses: actions/setup-node@v6
         with:
-          node-version: 14.x
+          node-version: 16.x
 
-      - name: Prepare environment
-        run: |
-          rm -rf ./build/*
-          mkdir ./build
-
-      - name: Install ares-cli globally
-        run: npm install -g @webosose/ares-cli
-
-      - name: Check packaging
-        run: ares-package --check
+      - name: Install dependencies
+        run: npm ci
 
       - name: Build package
-        run: ares-package --no-minify --outdir build/ services frontend
+        run: npm run package
 
       - name: Create manifest for distribution
         run: node tools/gen-manifest.js build/org.jellyfin.webos.manifest.json
