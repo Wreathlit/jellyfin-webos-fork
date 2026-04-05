@@ -294,7 +294,7 @@ function handleSuccessServerInfo(data, baseurl, auto_connect) {
                 displayError("The server ID has changed since the last connection, please check if you are reaching your own server. To connect anyway, click connect again.");
                 delete connected_servers[server_id]
                 connected_servers[data.Id] = ({ 'baseurl': baseurl, 'auto_connect': false, 'id': false })
-                storage.set('connected_server', connected_servers)
+                storage.set('connected_servers', connected_servers)
                 return false
             }
         }
@@ -355,16 +355,19 @@ function handleSuccessManifest(data, baseurl) {
             return;
         }
     }
-    //no id, unshoft generates unique(?) index
-    connected_servers.unshift({
+    // Fallback path: keep behavior deterministic even if no prior server entry is found.
+    var address = baseurl.replace(/^https?:\/\//i, '').split('/')[0];
+    var fallbackId = data.shortname || baseurl;
+    connected_servers = lruStrategy(getConnectedServers(), 4, {
         'baseurl': baseurl,
         'hosturl': hosturl,
         'Name': data.shortname,
-        'Address': new URL(baseurl).hostname.slice(0,8),
-    })
-    storage.set('connected_server', servers)
+        'Address': address,
+        'id': fallbackId
+    });
+    storage.set('connected_servers', connected_servers)
     console.log("martin:handleSuccessManifest added server");
-    console.log(info);
+    console.log(connected_servers[fallbackId]);
 }
 
 function handleAbort() {
@@ -389,7 +392,6 @@ function handleFailure(data) {
     }
 
     hideConnecting();
-    storage.remove('connected_server');
     curr_req = false;
 }
 
@@ -587,7 +589,7 @@ function verifyThenAdd(server) {
     }
     servers_verifying[server.Id] = server;
 
-    curr_req = ajax.request(normalizeUrl(server.Address + "/System/Info/Public"), {
+    ajax.request(normalizeUrl(server.Address + "/System/Info/Public"), {
         method: "GET",
         success: function (data) {
             console.log("success");
@@ -621,6 +623,7 @@ function verifyThenAdd(server) {
 
 
 var discover = null;
+var discoveryToken = 'discovery-' + new Date().getTime();
 
 function startDiscovery() {
     if (discover) {
@@ -630,7 +633,7 @@ function startDiscovery() {
     discover = webOS.service.request("luna://org.jellyfin.webos.service", {
         method: "discover",
         parameters: {
-            uniqueToken: 'fooo'
+            uniqueToken: discoveryToken
         },
         subscribe: true,
         resubscribe: true,
