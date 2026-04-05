@@ -9,6 +9,7 @@
     'use strict';
 
     console.log('WebOS adapter');
+    var isPlaybackActive = false;
 
     function postMessage(type, data) {
         window.top.postMessage({
@@ -88,7 +89,13 @@
             },
 
             supports: function (command) {
-                var isSupported = command && SupportedFeatures.indexOf(command.toLowerCase()) != -1;
+                var normalizedCommand = command && command.toLowerCase();
+                var isSupported = normalizedCommand && SupportedFeatures.indexOf(normalizedCommand) != -1;
+
+                if (normalizedCommand === 'htmlvideoautoplay') {
+                    isSupported = isPlaybackActive;
+                }
+
                 postMessage('AppHost.supports', {
                     command: command,
                     isSupported: isSupported
@@ -105,6 +112,7 @@
         },
 
         selectServer: function () {
+            isPlaybackActive = false;
             postMessage('selectServer');
         },
 
@@ -113,10 +121,12 @@
         },
 
         enableFullscreen: function () {
+            isPlaybackActive = true;
             postMessage('enableFullscreen');
         },
 
         disableFullscreen: function () {
+            isPlaybackActive = false;
             postMessage('disableFullscreen');
         },
 
@@ -137,6 +147,7 @@
         },
 
         hideMediaSession: function () {
+            isPlaybackActive = false;
             postMessage('hideMediaSession');
         }
     };
