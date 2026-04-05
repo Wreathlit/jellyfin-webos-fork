@@ -5,7 +5,7 @@
   "scripts": {
     "check": "ares-package --check",
     "package": "ares-package --no-minify --outdir build/ services frontend",
-    "clean": "rm -rf build/",
+    "clean": "node -e \"require('fs').rmSync('build', { recursive: true, force: true })\"",
     "deploy": "ares-install build/org.jellyfin.webos_${npm_package_version}_all.ipk",
     "launch": "ares-launch org.jellyfin.webos",
     "manifest": "node tools/gen-manifest.js build/org.jellyfin.webos.manifest.json",

@@ -165,16 +165,19 @@ function Init() {
     navigationInit();
 
     if (storage.exists('connected_servers')) {
-        connected_servers = storage.get('connected_servers')
-        var first_server = connected_servers[Object.keys(connected_servers)[0]]
-        document.querySelector('#baseurl').value = first_server.baseurl;
-        document.querySelector('#auto_connect').checked = first_server.auto_connect;
-        if (window.performance && window.performance.navigation.type == window.performance.navigation.TYPE_BACK_FORWARD) {
-            console.log('Got here using the browser "Back" or "Forward" button, inhibiting auto connect.');
-        } else {
-            if (first_server.auto_connect) {
-                console.log("Auto connecting...");
-                handleServerSelect();
+        connected_servers = getConnectedServers();
+        var serverKeys = Object.keys(connected_servers);
+        if (serverKeys.length > 0) {
+            var first_server = connected_servers[serverKeys[0]];
+            document.querySelector('#baseurl').value = first_server.baseurl;
+            document.querySelector('#auto_connect').checked = first_server.auto_connect;
+            if (window.performance && window.performance.navigation.type == window.performance.navigation.TYPE_BACK_FORWARD) {
+                console.log('Got here using the browser "Back" or "Forward" button, inhibiting auto connect.');
+            } else {
+                if (first_server.auto_connect) {
+                    console.log("Auto connecting...");
+                    handleServerSelect();
+                }
             }
         }
         renderServerList(connected_servers);
@@ -182,7 +185,7 @@ function Init() {
 }
 // Just ensure that the string has no spaces, and begins with either http:// or https:// (case insensitively), and isn't empty after the ://
 function validURL(str) {
-    pattern = /^https?:\/\/\S+$/i;
+    var pattern = /^https?:\/\/\S+$/i;
     return !!pattern.test(str);
 }
 
@@ -276,7 +279,25 @@ function getConnectedServers() {
     connected_servers = storage.get('connected_servers');
     if (!connected_servers) {
         connected_servers = {};
+        return connected_servers;
     }
+
+    var sanitized_servers = {};
+    for (var server_id in connected_servers) {
+        if (!Object.prototype.hasOwnProperty.call(connected_servers, server_id)) {
+            continue;
+        }
+        var server = connected_servers[server_id];
+        if (server && typeof server === 'object' && typeof server.baseurl === 'string') {
+            sanitized_servers[server_id] = server;
+        }
+    }
+
+    if (Object.keys(sanitized_servers).length !== Object.keys(connected_servers).length) {
+        storage.set('connected_servers', sanitized_servers);
+    }
+
+    connected_servers = sanitized_servers;
     return connected_servers;
 }
 
@@ -287,6 +308,9 @@ function handleSuccessServerInfo(data, baseurl, auto_connect) {
     connected_servers = getConnectedServers();
     for (var server_id in connected_servers) {
         var server = connected_servers[server_id]
+        if (!server || typeof server !== 'object') {
+            continue;
+        }
         if (server.baseurl == baseurl) {
             if (server.id != data.Id && server.id !== false) {
                 //server has changed warn user.
@@ -317,9 +341,11 @@ function lruStrategy(old_items,max_items,new_item) {
     delete old_items[id] // LRU: re-insert entry (in front) each time it is used
     result[id] =  new_item
     var keys = Object.keys(old_items)
-    for (var i=0; i<max_items-1; i++){
+    for (var i=0; i<max_items-1 && i<keys.length; i++){
         var current_key=keys[i]
-        result[current_key] = old_items[current_key]
+        if (current_key !== undefined) {
+            result[current_key] = old_items[current_key]
+        }
     }
     return result
 }
@@ -335,6 +361,9 @@ function handleSuccessManifest(data, baseurl) {
 
     for (var server_id in connected_servers) {
         var info = connected_servers[server_id]
+        if (!info || typeof info !== 'object') {
+            continue;
+        }
         if (info['baseurl' ] == baseurl) {
             info['hosturl'] = hosturl
             info['Address'] = info['Address'] || baseurl
@@ -410,7 +439,11 @@ function loadUrl(url, success, failure) {
     xhr.open('GET', url);
 
     xhr.onload = function () {
-        success(xhr.responseText);
+        if ((xhr.status >= 200 && xhr.status < 300) || xhr.status === 0) {
+            success(xhr.responseText);
+        } else {
+            failure("Failed to load '" + url + "' (HTTP " + xhr.status + ")");
+        }
     };
 
     xhr.onerror = function () {
@@ -512,10 +545,16 @@ function handoff(url, bundle) {
     contentFrame.src = url;
 }
 
-window.addEventListener('message', function (msg) {
-    msg = msg.data;
-
+window.addEventListener('message', function (event) {
     var contentFrame = document.querySelector('#contentFrame');
+    if (!contentFrame || event.source !== contentFrame.contentWindow) {
+        return;
+    }
+
+    var msg = event.data;
+    if (!msg || typeof msg.type !== 'string') {
+        return;
+    }
 
     switch (msg.type) {
         case 'selectServer':
@@ -539,13 +578,16 @@ var connected_servers = {};
 function renderServerList(server_list) {
     for (var server_id in server_list) {
         var server = server_list[server_id];
+        if (!server || typeof server !== 'object') {
+            continue;
+        }
         renderSingleServer(server_id, server);
     }
 }
 
 function renderSingleServer(server_id, server) {
     var server_list = document.getElementById("serverlist");
-    var server_card = document.getElementById("server_" + server.Id);
+    var server_card = document.getElementById("server_" + server_id);
 
     if (!server_card) {
         server_card = document.createElement("li");
