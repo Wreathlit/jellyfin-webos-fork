@@ -8,3 +8,16 @@
 .layout-tv body::-webkit-scrollbar {
     display: none;
 }
+
+.layout-tv body.webos-force-header-pin .skinHeader,
+.layout-tv body.webos-force-header-pin .appHeader,
+.layout-tv body.webos-force-header-pin .headerTabs {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    transform: translateY(0) !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    z-index: 9999 !important;
+}
