@@ -29,11 +29,27 @@ const JELLYFIN_DISCOVERY_PORT = 7359;
 const JELLYFIN_DISCOVERY_MESSAGE = "who is JellyfinServer?";
 
 const SCAN_INTERVAL = 15 * 1000;
+const SCAN_RESULT_TTL = 5 * SCAN_INTERVAL;
 const SCAN_ON_START = true;
 
 var scanresult = {};
 
+function pruneScanResults() {
+	var now = Date.now();
+	for (var serverId in scanresult) {
+		if (!scanresult.hasOwnProperty(serverId)) {
+			continue;
+		}
+
+		var server = scanresult[serverId];
+		if (!server || typeof server.lastSeen !== 'number' || (now - server.lastSeen) > SCAN_RESULT_TTL) {
+			delete scanresult[serverId];
+		}
+	}
+}
+
 function sendScanResults(server_id) {
+	pruneScanResults();
 	console.log("Sending responses, subscription count=" + Object.keys(subscriptions).length);
 	for (var i in subscriptions) {
 		if (subscriptions.hasOwnProperty(i)) {
@@ -67,6 +83,7 @@ function handleDiscoveryResponse(message, remote) {
 				address: remote.address,
 				port: remote.port,
 			};
+			scanresult[msg.Id].lastSeen = Date.now();
 
 			sendScanResults(msg.Id);
 		}

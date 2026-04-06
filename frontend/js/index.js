@@ -266,12 +266,12 @@ function handleServerSelect() {
 function displayError(error) {
     var errorElem = document.querySelector('#error')
     errorElem.style.display = '';
-    errorElem.innerHTML = error;
+    errorElem.textContent = error;
 }
 function hideError() {
     var errorElem = document.querySelector('#error')
     errorElem.style.display = 'none';
-    errorElem.innerHTML = '&nbsp;';
+    errorElem.textContent = '\u00A0';
 }
 
 function displayConnecting() {
@@ -555,6 +555,9 @@ function handoff(url, bundle) {
 
         timer = setInterval(function () {
             var contentDocument = contentFrame.contentDocument;
+            if (!contentDocument) {
+                return;
+            }
 
             switch (contentDocument.readyState) {
                 case 'loading':
@@ -564,10 +567,11 @@ function handoff(url, bundle) {
 
                 // In the case of "loading" is not caught
                 case 'interactive':
+                case 'complete':
                     onLoad();
                     break;
             }
-        }, 0);
+        }, 50);
     }
 
     contentWindow.addEventListener('unload', onUnload);

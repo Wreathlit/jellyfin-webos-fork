@@ -26,49 +26,79 @@ var storage = new STORAGE();
 
 function STORAGE() {};
 
+function getLocalStorage() {
+	try {
+		if (typeof window !== 'undefined' && window.localStorage) {
+			return window.localStorage;
+		}
+	} catch (error) {
+		// ignore inaccessible storage
+	}
+
+	return null;
+}
+
 STORAGE.prototype.get = function(name, isJSON) {	
 	if (isJSON === undefined) {
 		isJSON = true;	
 	}
-	
-	if (localStorage) {
-		if (localStorage.getItem(name)) {
-			if (isJSON) {
-				return JSON.parse(localStorage.getItem(name));
-			} else {
-				return localStorage.getItem(name);
-			}
+
+	var localStorageRef = getLocalStorage();
+	if (!localStorageRef) {
+		return;
+	}
+
+	var rawValue = localStorageRef.getItem(name);
+	if (rawValue === null) {
+		return;
+	}
+
+	if (isJSON) {
+		try {
+			return JSON.parse(rawValue);
+		} catch (error) {
+			console.warn('Failed to parse localStorage value for key:', name);
+			return;
 		}
 	}
+
+	return rawValue;
 };
 
 STORAGE.prototype.set = function(name, data, isJSON) {
 	if (isJSON === undefined) {
 		isJSON = true;	
 	}
-	
-	if (localStorage) {
+
+	var localStorageRef = getLocalStorage();
+	if (!localStorageRef) {
+		return data;
+	}
+
+	try {
 		if (isJSON) {
-			localStorage.setItem(name, JSON.stringify(data));
+			localStorageRef.setItem(name, JSON.stringify(data));
 		} else {
-			localStorage.setItem(name, data);
+			localStorageRef.setItem(name, data);
 		}
+	} catch (error) {
+		console.warn('Failed to save localStorage value for key:', name);
 	}
 	
 	return data;
 };
 
 STORAGE.prototype.remove = function(name) {
-	if (localStorage) {
-		localStorage.removeItem(name);	
+	var localStorageRef = getLocalStorage();
+	if (localStorageRef) {
+		localStorageRef.removeItem(name);	
 	}	
 };
 
 STORAGE.prototype.exists = function(name) {
-	if (localStorage) {
-		if (localStorage.getItem(name)) {
-			return true;
-		} 
+	var localStorageRef = getLocalStorage();
+	if (localStorageRef && localStorageRef.getItem(name) !== null) {
+		return true;
 	}	
 	return false;
 };

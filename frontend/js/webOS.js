@@ -17,14 +17,19 @@
     var playbackState = PlaybackState.IDLE;
     var exitToIdleTimer = null;
     var EXIT_TO_IDLE_TIMEOUT = 2000;
-    var HEADER_PIN_INTERVAL = 750;
+    var HEADER_PIN_INTERVAL = 2500;
     var MIN_HEADER_HEIGHT = 72;
     var headerPinTimer = null;
     var headerPinningInitialized = false;
+    var headerPinScheduled = false;
     var qualityMenuObserver = null;
+    var qualityMenuObserverActive = false;
     var dtsSettingsObserver = null;
-    var dtsSettingsTimer = null;
-    var DTS_SETTINGS_SCAN_INTERVAL = 1000;
+    var dtsEnsureTimer = null;
+    var dtsEnsureScheduled = false;
+    var dtsEnsureAttemptsLeft = 0;
+    var DTS_SETTINGS_RETRY_DELAY = 250;
+    var DTS_SETTINGS_MAX_RETRIES = 20;
     var DTS_OVERRIDE_DECODE_KEY = 'webos_force_dts_decode';
     var DTS_OVERRIDE_PASSTHROUGH_KEY = 'webos_force_dts_passthrough';
     var forceDtsDecode = !!(featureOverrides && featureOverrides.forceDtsDecode);
@@ -58,13 +63,15 @@
                 header.classList.remove('hidden');
                 header.classList.remove('skinHeader-hidden');
             }
-            forceHeaderPinned();
+            scheduleForceHeaderPinned();
+            updateHeaderPinHeartbeat();
             return;
         }
 
         document.body.classList.remove('webos-force-header-pin');
         document.body.style.paddingTop = '';
         document.documentElement.style.removeProperty('--webos-header-offset');
+        updateHeaderPinHeartbeat();
 
         if (header) {
             header.style.position = '';
@@ -97,6 +104,41 @@
         }
 
         setHeaderPinningEnabled(nextState !== PlaybackState.PLAYING);
+        setQualityMenuObserverEnabled(nextState === PlaybackState.PLAYING);
+    }
+
+    function scheduleForceHeaderPinned() {
+        if (headerPinScheduled) {
+            return;
+        }
+
+        headerPinScheduled = true;
+        var callback = function () {
+            headerPinScheduled = false;
+            forceHeaderPinned();
+        };
+
+        if (window.requestAnimationFrame) {
+            window.requestAnimationFrame(callback);
+        } else {
+            setTimeout(callback, 16);
+        }
+    }
+
+    function updateHeaderPinHeartbeat() {
+        var shouldRun = playbackState !== PlaybackState.PLAYING && !!document.body;
+
+        if (!shouldRun) {
+            if (headerPinTimer) {
+                clearInterval(headerPinTimer);
+                headerPinTimer = null;
+            }
+            return;
+        }
+
+        if (!headerPinTimer) {
+            headerPinTimer = setInterval(scheduleForceHeaderPinned, HEADER_PIN_INTERVAL);
+        }
     }
 
     function applyForcedDtsPassthroughSetting() {
@@ -226,13 +268,42 @@
         }
     }
 
+    function runScheduledDtsEnsure() {
+        dtsEnsureTimer = null;
+        dtsEnsureScheduled = false;
+        ensureDtsOverrideControls();
+
+        if (document.querySelector('.chkWebOSForceDtsDecode') || document.querySelector('.chkWebOSForceDtsPassthrough')) {
+            dtsEnsureAttemptsLeft = 0;
+            return;
+        }
+
+        if (dtsEnsureAttemptsLeft > 0) {
+            dtsEnsureAttemptsLeft--;
+            scheduleDtsEnsureControls(false, DTS_SETTINGS_RETRY_DELAY);
+        }
+    }
+
+    function scheduleDtsEnsureControls(resetAttempts, delay) {
+        if (resetAttempts) {
+            dtsEnsureAttemptsLeft = DTS_SETTINGS_MAX_RETRIES;
+        }
+
+        if (dtsEnsureScheduled) {
+            return;
+        }
+
+        dtsEnsureScheduled = true;
+        dtsEnsureTimer = setTimeout(runScheduledDtsEnsure, typeof delay === 'number' ? delay : 0);
+    }
+
     function initDtsOverrideSettingsInjection() {
         if (dtsSettingsObserver || !window.MutationObserver) {
             return;
         }
 
         dtsSettingsObserver = new MutationObserver(function () {
-            ensureDtsOverrideControls();
+            scheduleDtsEnsureControls(false);
         });
 
         dtsSettingsObserver.observe(document.documentElement || document.body, {
@@ -241,11 +312,10 @@
         });
 
         window.addEventListener('hashchange', function () {
-            setTimeout(ensureDtsOverrideControls, 0);
+            scheduleDtsEnsureControls(true);
         });
 
-        dtsSettingsTimer = setInterval(ensureDtsOverrideControls, DTS_SETTINGS_SCAN_INTERVAL);
-        ensureDtsOverrideControls();
+        scheduleDtsEnsureControls(true);
     }
 
     function getHeaderElement() {
@@ -267,22 +337,43 @@
         header.classList.remove('hide');
         header.classList.remove('hidden');
         header.classList.remove('skinHeader-hidden');
-        header.style.position = 'fixed';
-        header.style.top = '0';
-        header.style.left = '0';
-        header.style.right = '0';
-        header.style.zIndex = '9999';
-        header.style.transform = 'translateY(0)';
-        header.style.opacity = '1';
-        header.style.visibility = 'visible';
+        if (header.style.position !== 'fixed') {
+            header.style.position = 'fixed';
+        }
+        if (header.style.top !== '0px') {
+            header.style.top = '0';
+        }
+        if (header.style.left !== '0px') {
+            header.style.left = '0';
+        }
+        if (header.style.right !== '0px') {
+            header.style.right = '0';
+        }
+        if (header.style.zIndex !== '9999') {
+            header.style.zIndex = '9999';
+        }
+        if (header.style.transform !== 'translateY(0)') {
+            header.style.transform = 'translateY(0)';
+        }
+        if (header.style.opacity !== '1') {
+            header.style.opacity = '1';
+        }
+        if (header.style.visibility !== 'visible') {
+            header.style.visibility = 'visible';
+        }
 
         var headerHeight = header.offsetHeight || MIN_HEADER_HEIGHT;
         if (headerHeight < MIN_HEADER_HEIGHT) {
             headerHeight = MIN_HEADER_HEIGHT;
         }
 
-        document.documentElement.style.setProperty('--webos-header-offset', headerHeight + 'px');
-        document.body.style.paddingTop = 'var(--webos-header-offset)';
+        var headerOffset = headerHeight + 'px';
+        if (document.documentElement.style.getPropertyValue('--webos-header-offset') !== headerOffset) {
+            document.documentElement.style.setProperty('--webos-header-offset', headerOffset);
+        }
+        if (document.body.style.paddingTop !== 'var(--webos-header-offset)') {
+            document.body.style.paddingTop = 'var(--webos-header-offset)';
+        }
     }
 
     function initHeaderPinning() {
@@ -291,12 +382,11 @@
         }
         headerPinningInitialized = true;
 
-        window.addEventListener('scroll', forceHeaderPinned, true);
-        window.addEventListener('resize', forceHeaderPinned);
+        window.addEventListener('scroll', scheduleForceHeaderPinned, true);
+        window.addEventListener('resize', scheduleForceHeaderPinned);
         window.addEventListener('hashchange', function () {
-            setTimeout(forceHeaderPinned, 0);
+            scheduleForceHeaderPinned();
         });
-        headerPinTimer = setInterval(forceHeaderPinned, HEADER_PIN_INTERVAL);
         setHeaderPinningEnabled(true);
     }
 
@@ -431,11 +521,44 @@
                 }
             }
         });
+    }
 
-        qualityMenuObserver.observe(document.documentElement || document.body, {
-            childList: true,
-            subtree: true
-        });
+    function setQualityMenuObserverEnabled(enabled) {
+        if (!window.MutationObserver) {
+            return;
+        }
+
+        if (!qualityMenuObserver) {
+            initQualityMenuPatching();
+        }
+
+        if (!qualityMenuObserver) {
+            return;
+        }
+
+        if (enabled) {
+            if (!qualityMenuObserverActive) {
+                var targetNode = document.body || document.documentElement;
+                if (targetNode) {
+                    qualityMenuObserver.observe(targetNode, {
+                        childList: true,
+                        subtree: true
+                    });
+                    qualityMenuObserverActive = true;
+                }
+            }
+
+            var existingDialogs = document.querySelectorAll('.actionSheet');
+            for (var i = 0; i < existingDialogs.length; i++) {
+                patchQualityActionSheet(existingDialogs[i]);
+            }
+            return;
+        }
+
+        if (qualityMenuObserverActive) {
+            qualityMenuObserver.disconnect();
+            qualityMenuObserverActive = false;
+        }
     }
 
     // List of supported features
@@ -581,4 +704,5 @@
     emitFeatureOverridesChanged();
     initDtsOverrideSettingsInjection();
     initQualityMenuPatching();
+    setQualityMenuObserverEnabled(false);
 })(window.AppInfo, window.DeviceInfo, window.WebOSFeatureOverrides);
