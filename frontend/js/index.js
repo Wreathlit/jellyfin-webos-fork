@@ -15,6 +15,7 @@ var appInfo = {
     appName: 'Jellyfin for WebOS',
     appVersion: '0.0.0'
 };
+var featureOverrideStorageKey = 'feature_overrides';
 
 var deviceInfo;
 webOS.deviceInfo(function (info) {
@@ -151,6 +152,35 @@ function navigationInit() {
     }
 }
 
+function getFeatureOverridesFromForm() {
+    return {
+        forceDtsDecode: !!document.querySelector('#force_dts_decode').checked,
+        forceDtsPassthrough: !!document.querySelector('#force_dts_passthrough').checked
+    };
+}
+
+function setFeatureOverridesToForm(overrides) {
+    overrides = overrides || {};
+    document.querySelector('#force_dts_decode').checked = !!overrides.forceDtsDecode;
+    document.querySelector('#force_dts_passthrough').checked = !!overrides.forceDtsPassthrough;
+}
+
+function saveFeatureOverrides() {
+    storage.set(featureOverrideStorageKey, getFeatureOverridesFromForm());
+}
+
+function loadFeatureOverrides() {
+    var overrides = storage.get(featureOverrideStorageKey);
+    setFeatureOverridesToForm(overrides);
+}
+
+function getEffectiveFeatureOverrides() {
+    if (storage.exists(featureOverrideStorageKey)) {
+        return storage.get(featureOverrideStorageKey) || {};
+    }
+    return getFeatureOverridesFromForm();
+}
+
 function Init() {
     appInfo.deviceId = getDeviceId();
 
@@ -162,6 +192,7 @@ function Init() {
         }
     });
 
+    loadFeatureOverrides();
     navigationInit();
 
     if (storage.exists('connected_servers')) {
@@ -210,6 +241,8 @@ function normalizeUrl(url) {
 }
 
 function handleServerSelect() {
+    saveFeatureOverrides();
+
     var baseurl = normalizeUrl(document.querySelector('#baseurl').value);
     var auto_connect = document.querySelector('#auto_connect').checked;
 
@@ -506,6 +539,7 @@ function handoff(url, bundle) {
 
         injectScriptText(contentFrame.contentDocument, 'window.AppInfo = ' + JSON.stringify(appInfo) + ';');
         injectScriptText(contentFrame.contentDocument, 'window.DeviceInfo = ' + JSON.stringify(deviceInfo) + ';');
+        injectScriptText(contentFrame.contentDocument, 'window.WebOSFeatureOverrides = ' + JSON.stringify(getEffectiveFeatureOverrides()) + ';');
 
         if (bundle.js) {
             injectScriptText(contentFrame.contentDocument, bundle.js);
@@ -557,6 +591,10 @@ window.addEventListener('message', function (event) {
     }
 
     switch (msg.type) {
+        case 'WebOS.featureOverrides':
+            storage.set(featureOverrideStorageKey, msg.data || {});
+            setFeatureOverridesToForm(msg.data || {});
+            break;
         case 'selectServer':
             startDiscovery();
             document.querySelector('.container').style.display = '';
