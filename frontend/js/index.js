@@ -16,6 +16,29 @@ var appInfo = {
     appVersion: '0.0.0'
 };
 var featureOverrideStorageKey = 'feature_overrides';
+var DEBUG_LOG = false;
+
+function debugLog() {
+    if (!DEBUG_LOG || !window.console || !console.log) {
+        return;
+    }
+    console.log.apply(console, arguments);
+}
+
+function debugJsonLog(prefix, data) {
+    if (!DEBUG_LOG) {
+        return;
+    }
+
+    var serialized = '';
+    try {
+        serialized = JSON.stringify(data);
+    } catch (error) {
+        serialized = '[unserializable]';
+    }
+
+    debugLog(prefix, serialized);
+}
 
 var deviceInfo;
 webOS.deviceInfo(function (info) {
@@ -50,7 +73,7 @@ function findIndex(array, currentNode) {
 }
 
 function navigate(amount) {
-    console.log("Navigating " + amount.toString() + "...")
+    debugLog("Navigating " + amount.toString() + "...")
     var element = document.activeElement;
     if (element === null) {
         navigationInit();
@@ -114,7 +137,7 @@ document.onkeydown = function (evt) {
 };
 
 function handleCheckbox(elem, evt) {
-    console.log(elem);
+    debugLog(elem);
     if (evt === true) {
         return true; // webos should be capable of toggling the checkbox by itself
     } else {
@@ -152,33 +175,8 @@ function navigationInit() {
     }
 }
 
-function getFeatureOverridesFromForm() {
-    return {
-        forceDtsDecode: !!document.querySelector('#force_dts_decode').checked,
-        forceDtsPassthrough: !!document.querySelector('#force_dts_passthrough').checked
-    };
-}
-
-function setFeatureOverridesToForm(overrides) {
-    overrides = overrides || {};
-    document.querySelector('#force_dts_decode').checked = !!overrides.forceDtsDecode;
-    document.querySelector('#force_dts_passthrough').checked = !!overrides.forceDtsPassthrough;
-}
-
-function saveFeatureOverrides() {
-    storage.set(featureOverrideStorageKey, getFeatureOverridesFromForm());
-}
-
-function loadFeatureOverrides() {
-    var overrides = storage.get(featureOverrideStorageKey);
-    setFeatureOverridesToForm(overrides);
-}
-
 function getEffectiveFeatureOverrides() {
-    if (storage.exists(featureOverrideStorageKey)) {
-        return storage.get(featureOverrideStorageKey) || {};
-    }
-    return getFeatureOverridesFromForm();
+    return storage.get(featureOverrideStorageKey) || {};
 }
 
 function Init() {
@@ -192,7 +190,6 @@ function Init() {
         }
     });
 
-    loadFeatureOverrides();
     navigationInit();
 
     if (storage.exists('connected_servers')) {
@@ -203,10 +200,10 @@ function Init() {
             document.querySelector('#baseurl').value = first_server.baseurl;
             document.querySelector('#auto_connect').checked = first_server.auto_connect;
             if (window.performance && window.performance.navigation.type == window.performance.navigation.TYPE_BACK_FORWARD) {
-                console.log('Got here using the browser "Back" or "Forward" button, inhibiting auto connect.');
+                debugLog('Got here using the browser "Back" or "Forward" button, inhibiting auto connect.');
             } else {
                 if (first_server.auto_connect) {
-                    console.log("Auto connecting...");
+                    debugLog("Auto connecting...");
                     handleServerSelect();
                 }
             }
@@ -241,24 +238,22 @@ function normalizeUrl(url) {
 }
 
 function handleServerSelect() {
-    saveFeatureOverrides();
-
     var baseurl = normalizeUrl(document.querySelector('#baseurl').value);
     var auto_connect = document.querySelector('#auto_connect').checked;
 
     if (validURL(baseurl)) {
 
         displayConnecting();
-        console.log(baseurl, auto_connect);
+        debugLog(baseurl, auto_connect);
 
         if (curr_req) {
-            console.log("There is an active request.");
+            debugLog("There is an active request.");
             abort();
         }
         hideError();
         getServerInfo(baseurl, auto_connect);
     } else {
-        console.log(baseurl);
+        debugLog(baseurl);
         displayError("Please enter a valid URL, it needs a scheme (http:// or https://), a hostname or IP (ex. jellyfin.local or 192.168.0.2) and a port (ex. :8096 or :8920).");
     }
 }
@@ -384,10 +379,11 @@ function lruStrategy(old_items,max_items,new_item) {
 }
 
 function handleSuccessManifest(data, baseurl) {
-    if(data.start_url.includes("/web")){
-        var hosturl = normalizeUrl(baseurl + "/" + data.start_url);
+    var startUrl = (data && typeof data.start_url === 'string' && data.start_url.length > 0) ? data.start_url : 'index.html';
+    if (startUrl.indexOf("/web") !== -1) {
+        var hosturl = normalizeUrl(baseurl + "/" + startUrl);
     } else {
-        var hosturl = normalizeUrl(baseurl + "/web/" + data.start_url);
+        var hosturl = normalizeUrl(baseurl + "/web/" + startUrl);
     }
 
     curr_req = false;
@@ -402,8 +398,8 @@ function handleSuccessManifest(data, baseurl) {
             info['Address'] = info['Address'] || baseurl
 
             storage.set('connected_servers', connected_servers)
-            console.log("martin:handleSuccessManifest modified server");
-            console.log(info);
+            debugLog("martin:handleSuccessManifest modified server");
+            debugLog(info);
 
         // avoid Promise as it's buggy in some WebOS
             getTextToInject(function (bundle) {
@@ -419,28 +415,39 @@ function handleSuccessManifest(data, baseurl) {
     }
     // Fallback path: keep behavior deterministic even if no prior server entry is found.
     var address = baseurl.replace(/^https?:\/\//i, '').split('/')[0];
-    var fallbackId = data.shortname || baseurl;
+    var fallbackName = (data && typeof data.shortname === 'string' && data.shortname.length > 0) ? data.shortname : address;
+    var fallbackId = fallbackName || baseurl;
     connected_servers = lruStrategy(getConnectedServers(), 4, {
         'baseurl': baseurl,
         'hosturl': hosturl,
-        'Name': data.shortname,
+        'Name': fallbackName,
         'Address': address,
+        'auto_connect': false,
         'id': fallbackId
     });
     storage.set('connected_servers', connected_servers)
-    console.log("martin:handleSuccessManifest added server");
-    console.log(connected_servers[fallbackId]);
+    debugLog("martin:handleSuccessManifest added server");
+    debugLog(connected_servers[fallbackId]);
+
+    getTextToInject(function (bundle) {
+        handoff(hosturl, bundle);
+    }, function (error) {
+        console.error(error);
+        displayError(error);
+        hideConnecting();
+        curr_req = false;
+    });
 }
 
 function handleAbort() {
-    console.log("Aborted.")
+    debugLog("Aborted.")
     hideConnecting();
     curr_req = false;
 }
 
 function handleFailure(data) {
-    console.log("Failure:", data)
-    console.log("Could not connect to server...")
+    debugLog("Failure:", data)
+    debugLog("Could not connect to server...")
     if (data.error == 'timeout') {
         displayError("The request timed out.")
     } else if (data.error == 'abort') {
@@ -463,7 +470,7 @@ function abort() {
     } else {
         hideConnecting();
     }
-    console.log("Aborting...");
+    debugLog("Aborting...");
 }
 
 function loadUrl(url, success, failure) {
@@ -521,7 +528,7 @@ function injectStyleText(document, text) {
 }
 
 function handoff(url, bundle) {
-    console.log("Handoff called with: ", url)
+    debugLog("Handoff called with: ", url)
     //hideConnecting();
 
     stopDiscovery();
@@ -597,7 +604,6 @@ window.addEventListener('message', function (event) {
     switch (msg.type) {
         case 'WebOS.featureOverrides':
             storage.set(featureOverrideStorageKey, msg.data || {});
-            setFeatureOverridesToForm(msg.data || {});
             break;
         case 'selectServer':
             startDiscovery();
@@ -676,9 +682,9 @@ function verifyThenAdd(server) {
     ajax.request(normalizeUrl(server.Address + "/System/Info/Public"), {
         method: "GET",
         success: function (data) {
-            console.log("success");
-            console.log(server);
-            console.log(data);
+            debugLog("success");
+            debugLog(server);
+            debugLog(data);
 
             // TODO: Do we want to autodiscover only Jellyfin servers, or anything that responds to "who is JellyfinServer?"
             if (data.ProductName == "Jellyfin Server") {
@@ -691,14 +697,14 @@ function verifyThenAdd(server) {
             servers_verifying[server.Id] = true;
         },
         error: function (data) {
-            console.log("error");
-            console.log(server);
-            console.log(data);
+            debugLog("error");
+            debugLog(server);
+            debugLog(data);
             servers_verifying[server.Id] = false;
         },
         abort: function () {
-            console.log("abort");
-            console.log(server);
+            debugLog("abort");
+            debugLog(server);
             servers_verifying[server.Id] = false;
         },
         timeout: 5000
@@ -713,7 +719,7 @@ function startDiscovery() {
     if (discover) {
         return;
     }
-    console.log("Starting server autodiscovery...");
+    debugLog("Starting server autodiscovery...");
     discover = webOS.service.request("luna://org.jellyfin.webos.service", {
         method: "discover",
         parameters: {
@@ -722,7 +728,7 @@ function startDiscovery() {
         subscribe: true,
         resubscribe: true,
         onSuccess: function (args) {
-            console.log('OK:', JSON.stringify(args));
+            debugJsonLog('OK:', args);
 
             if (args.results) {
                 for (var server_id in args.results) {
@@ -731,7 +737,7 @@ function startDiscovery() {
             }
         },
         onFailure: function (args) {
-            console.log('ERR:', JSON.stringify(args));
+            debugJsonLog('ERR:', args);
         }
     });
 }

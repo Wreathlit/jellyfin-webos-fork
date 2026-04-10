@@ -8,7 +8,15 @@
 (function(AppInfo, deviceInfo, featureOverrides) {
     'use strict';
 
-    console.log('WebOS adapter');
+    var DEBUG_LOG = false;
+    function debugLog() {
+        if (!DEBUG_LOG || !window.console || !console.log) {
+            return;
+        }
+        console.log.apply(console, arguments);
+    }
+
+    debugLog('WebOS adapter');
     var PlaybackState = {
         IDLE: 'idle',
         PLAYING: 'playing',
@@ -22,9 +30,13 @@
     var headerPinTimer = null;
     var headerPinningInitialized = false;
     var headerPinScheduled = false;
+    var cachedHeaderElement = null;
+    var lastHeaderMeasureTs = 0;
+    var HEADER_MEASURE_INTERVAL = 1500;
     var qualityMenuObserver = null;
     var qualityMenuObserverActive = false;
     var dtsSettingsObserver = null;
+    var dtsSettingsObserverActive = false;
     var dtsEnsureTimer = null;
     var dtsEnsureScheduled = false;
     var dtsEnsureAttemptsLeft = 0;
@@ -92,7 +104,7 @@
 
         var previousState = playbackState;
         playbackState = nextState;
-        console.log('Playback state: ' + previousState + ' -> ' + nextState + ' (' + reason + ')');
+        debugLog('Playback state: ' + previousState + ' -> ' + nextState + ' (' + reason + ')');
 
         clearExitToIdleTimer();
         if (nextState === PlaybackState.EXITING) {
@@ -142,13 +154,9 @@
     }
 
     function applyForcedDtsPassthroughSetting() {
-        if (!forceDtsPassthrough) {
-            return;
-        }
-
         try {
             if (window.localStorage) {
-                localStorage.setItem('enableDts', 'true');
+                localStorage.setItem('enableDts', forceDtsPassthrough ? 'true' : 'false');
             }
         } catch (error) {
             console.warn('Failed to persist DTS passthrough override:', error);
@@ -211,7 +219,7 @@
         forceDtsPassthrough = nextPassthrough;
         savePersistedDtsOverrides();
         applyForcedDtsPassthroughSetting();
-        console.log('DTS override changed (' + reason + '): decode=' + forceDtsDecode + ', passthrough=' + forceDtsPassthrough);
+        debugLog('DTS override changed (' + reason + '): decode=' + forceDtsDecode + ', passthrough=' + forceDtsPassthrough);
         emitFeatureOverridesChanged();
     }
 
@@ -284,6 +292,15 @@
         }
     }
 
+    function clearScheduledDtsEnsure() {
+        if (dtsEnsureTimer) {
+            clearTimeout(dtsEnsureTimer);
+            dtsEnsureTimer = null;
+        }
+        dtsEnsureScheduled = false;
+        dtsEnsureAttemptsLeft = 0;
+    }
+
     function scheduleDtsEnsureControls(resetAttempts, delay) {
         if (resetAttempts) {
             dtsEnsureAttemptsLeft = DTS_SETTINGS_MAX_RETRIES;
@@ -297,6 +314,47 @@
         dtsEnsureTimer = setTimeout(runScheduledDtsEnsure, typeof delay === 'number' ? delay : 0);
     }
 
+    function isLikelyPlaybackSettingsRoute() {
+        var hash = (window.location && window.location.hash ? window.location.hash.toLowerCase() : '');
+        return hash.indexOf('settings') !== -1 || hash.indexOf('playback') !== -1;
+    }
+
+    function setDtsSettingsObserverEnabled(enabled) {
+        if (!dtsSettingsObserver) {
+            return;
+        }
+
+        if (enabled) {
+            if (!dtsSettingsObserverActive) {
+                var targetNode = document.body || document.documentElement;
+                if (targetNode) {
+                    dtsSettingsObserver.observe(targetNode, {
+                        childList: true,
+                        subtree: true
+                    });
+                    dtsSettingsObserverActive = true;
+                }
+            }
+            scheduleDtsEnsureControls(true);
+            return;
+        }
+
+        if (dtsSettingsObserverActive) {
+            dtsSettingsObserver.disconnect();
+            dtsSettingsObserverActive = false;
+        }
+        clearScheduledDtsEnsure();
+    }
+
+    function refreshDtsSettingsObserverState() {
+        var shouldEnable = isLikelyPlaybackSettingsRoute()
+            || !!document.querySelector('.fldEnableDts')
+            || !!document.querySelector('.chkWebOSForceDtsDecode')
+            || !!document.querySelector('.chkWebOSForceDtsPassthrough');
+
+        setDtsSettingsObserverEnabled(shouldEnable);
+    }
+
     function initDtsOverrideSettingsInjection() {
         if (dtsSettingsObserver || !window.MutationObserver) {
             return;
@@ -306,22 +364,22 @@
             scheduleDtsEnsureControls(false);
         });
 
-        dtsSettingsObserver.observe(document.documentElement || document.body, {
-            childList: true,
-            subtree: true
-        });
-
         window.addEventListener('hashchange', function () {
-            scheduleDtsEnsureControls(true);
+            refreshDtsSettingsObserverState();
         });
 
-        scheduleDtsEnsureControls(true);
+        refreshDtsSettingsObserverState();
     }
 
     function getHeaderElement() {
-        return document.querySelector('.skinHeader')
+        if (cachedHeaderElement && cachedHeaderElement.isConnected) {
+            return cachedHeaderElement;
+        }
+
+        cachedHeaderElement = document.querySelector('.skinHeader')
             || document.querySelector('.appHeader')
             || document.querySelector('.headerTabs');
+        return cachedHeaderElement;
     }
 
     function forceHeaderPinned() {
@@ -331,6 +389,7 @@
 
         var header = getHeaderElement();
         if (!header) {
+            cachedHeaderElement = null;
             return;
         }
 
@@ -362,12 +421,24 @@
             header.style.visibility = 'visible';
         }
 
-        var headerHeight = header.offsetHeight || MIN_HEADER_HEIGHT;
-        if (headerHeight < MIN_HEADER_HEIGHT) {
-            headerHeight = MIN_HEADER_HEIGHT;
+        var now = Date.now();
+        var currentOffset = document.documentElement.style.getPropertyValue('--webos-header-offset');
+        var shouldMeasure = !currentOffset || (now - lastHeaderMeasureTs) >= HEADER_MEASURE_INTERVAL;
+        var headerOffset = currentOffset;
+
+        if (shouldMeasure) {
+            var headerHeight = header.offsetHeight || MIN_HEADER_HEIGHT;
+            if (headerHeight < MIN_HEADER_HEIGHT) {
+                headerHeight = MIN_HEADER_HEIGHT;
+            }
+            headerOffset = headerHeight + 'px';
+            lastHeaderMeasureTs = now;
         }
 
-        var headerOffset = headerHeight + 'px';
+        if (!headerOffset) {
+            headerOffset = MIN_HEADER_HEIGHT + 'px';
+        }
+
         if (document.documentElement.style.getPropertyValue('--webos-header-offset') !== headerOffset) {
             document.documentElement.style.setProperty('--webos-header-offset', headerOffset);
         }
@@ -383,8 +454,13 @@
         headerPinningInitialized = true;
 
         window.addEventListener('scroll', scheduleForceHeaderPinned, true);
-        window.addEventListener('resize', scheduleForceHeaderPinned);
+        window.addEventListener('resize', function () {
+            lastHeaderMeasureTs = 0;
+            scheduleForceHeaderPinned();
+        });
         window.addEventListener('hashchange', function () {
+            cachedHeaderElement = null;
+            lastHeaderMeasureTs = 0;
             scheduleForceHeaderPinned();
         });
         setHeaderPinningEnabled(true);
@@ -424,12 +500,12 @@
 
     function patchQualityActionSheet(dialog) {
         if (!dialog || dialog.getAttribute('data-webos-bitrate-patched') === 'true') {
-            return;
+            return false;
         }
 
         var menuItems = dialog.querySelectorAll('.actionSheetMenuItem[data-id]');
         if (!menuItems || !menuItems.length) {
-            return;
+            return false;
         }
 
         var hasBitrateStyleText = false;
@@ -462,12 +538,12 @@
         }
 
         if (!templateButton || !hasBitrateStyleText || !hasLegacyCap) {
-            return;
+            return false;
         }
 
         var scroller = dialog.querySelector('.actionSheetScroller');
         if (!scroller) {
-            return;
+            return false;
         }
 
         var extraBitrates = [120000000, 100000000, 80000000];
@@ -486,10 +562,11 @@
         }
 
         if (added > 0) {
-            console.log('Added extra bitrate options for local network playback:', added);
+            debugLog('Added extra bitrate options for local network playback:', added);
         }
 
         dialog.setAttribute('data-webos-bitrate-patched', 'true');
+        return true;
     }
 
     function initQualityMenuPatching() {
@@ -520,6 +597,7 @@
                     }
                 }
             }
+
         });
     }
 

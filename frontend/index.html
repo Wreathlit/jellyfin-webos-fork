@@ -32,20 +32,6 @@
 						tabindex="1" value="1" />
 					<label for="auto_connect">Automatically connect on app launch.</label>
 				</div>
-				<div class="checkbox-wrapper">
-					<input type="checkbox" id="force_dts_decode" name="force_dts_decode"
-						onclick="return handleCheckbox(this, true);"
-						onkeydown="return handleCheckbox(this, event);"
-						tabindex="1" value="1" />
-					<label for="force_dts_decode">Force report DTS decode support (experimental).</label>
-				</div>
-				<div class="checkbox-wrapper">
-					<input type="checkbox" id="force_dts_passthrough" name="force_dts_passthrough"
-						onclick="return handleCheckbox(this, true);"
-						onkeydown="return handleCheckbox(this, event);"
-						tabindex="1" value="1" />
-					<label for="force_dts_passthrough">Force report DTS passthrough support (experimental).</label>
-				</div>
 				<button id="connect" type="button" onclick="return handleServerSelect();" tabindex="2">Connect</button>
 				<ul id="serverlist"></ul>
 			</form>
