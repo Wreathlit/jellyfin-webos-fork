@@ -35,6 +35,13 @@
     var HEADER_MEASURE_INTERVAL = 1500;
     var qualityMenuObserver = null;
     var qualityMenuObserverActive = false;
+    var QUALITY_MENU_EXTRA_BITRATES = [120000000, 100000000, 80000000];
+    var QUALITY_MENU_LEGACY_CAP_BITRATE = 60000000;
+    var PLAYBACK_INFO_MAX_BITRATE_PARAM = 'MaxStreamingBitrate';
+    var PLAYBACK_START_MAX_BITRATE_FORCE_WINDOW_MS = 15000;
+    var PLAYBACK_START_MAX_BITRATE_FORCE_REQUEST_LIMIT = 8;
+    var forcePlaybackStartMaxBitrateUntil = 0;
+    var forcePlaybackStartMaxBitrateRequestsLeft = 0;
     var dtsSettingsObserver = null;
     var dtsSettingsObserverActive = false;
     var dtsEnsureTimer = null;
@@ -75,6 +82,54 @@
         if (exitToIdleTimer) {
             clearTimeout(exitToIdleTimer);
             exitToIdleTimer = null;
+        }
+    }
+
+    function startPlaybackStartMaxBitrateForce(reason) {
+        forcePlaybackStartMaxBitrateUntil = Date.now() + PLAYBACK_START_MAX_BITRATE_FORCE_WINDOW_MS;
+        forcePlaybackStartMaxBitrateRequestsLeft = PLAYBACK_START_MAX_BITRATE_FORCE_REQUEST_LIMIT;
+        debugLog('Armed playback start max bitrate forcing (' + reason + '): window='
+            + PLAYBACK_START_MAX_BITRATE_FORCE_WINDOW_MS + 'ms, requests='
+            + PLAYBACK_START_MAX_BITRATE_FORCE_REQUEST_LIMIT);
+    }
+
+    function clearPlaybackStartMaxBitrateForce(reason) {
+        if (!forcePlaybackStartMaxBitrateUntil && !forcePlaybackStartMaxBitrateRequestsLeft) {
+            return;
+        }
+
+        forcePlaybackStartMaxBitrateUntil = 0;
+        forcePlaybackStartMaxBitrateRequestsLeft = 0;
+        debugLog('Cleared playback start max bitrate forcing (' + reason + ')');
+    }
+
+    function shouldForcePlaybackStartMaxBitrate() {
+        if (playbackState !== PlaybackState.PLAYING) {
+            return false;
+        }
+
+        if (!forcePlaybackStartMaxBitrateUntil || forcePlaybackStartMaxBitrateRequestsLeft <= 0) {
+            return false;
+        }
+
+        if (Date.now() > forcePlaybackStartMaxBitrateUntil) {
+            clearPlaybackStartMaxBitrateForce('expired');
+            return false;
+        }
+
+        return true;
+    }
+
+    function markPlaybackStartMaxBitrateForced(source, bitrate) {
+        if (forcePlaybackStartMaxBitrateRequestsLeft > 0) {
+            forcePlaybackStartMaxBitrateRequestsLeft--;
+        }
+
+        debugLog('Forced playback start max bitrate (' + source + '): ' + bitrate
+            + ', remaining=' + forcePlaybackStartMaxBitrateRequestsLeft);
+
+        if (forcePlaybackStartMaxBitrateRequestsLeft <= 0) {
+            clearPlaybackStartMaxBitrateForce('request-limit');
         }
     }
 
@@ -135,6 +190,12 @@
         setHeaderPinningEnabled(nextState !== PlaybackState.PLAYING);
         setQualityMenuObserverEnabled(nextState === PlaybackState.PLAYING);
         setHdrUiInfoObserverEnabled(nextState === PlaybackState.PLAYING);
+        if (nextState === PlaybackState.PLAYING && previousState !== PlaybackState.PLAYING) {
+            startPlaybackStartMaxBitrateForce('playback-start');
+        }
+        if (nextState !== PlaybackState.PLAYING) {
+            clearPlaybackStartMaxBitrateForce('playback-state-change');
+        }
 
         if (nextState === PlaybackState.IDLE) {
             setCurrentPlaybackItemId(null);
@@ -760,7 +821,7 @@
                 if (!templateButton) {
                     templateButton = item;
                 }
-                if (bitrate === 60000000) {
+                if (bitrate === QUALITY_MENU_LEGACY_CAP_BITRATE) {
                     hasLegacyCap = true;
                 }
             } else if (idText === '0') {
@@ -783,12 +844,11 @@
             return false;
         }
 
-        var extraBitrates = [120000000, 100000000, 80000000];
         var insertRef = autoButton ? autoButton.nextSibling : templateButton;
         var added = 0;
 
-        for (var j = 0; j < extraBitrates.length; j++) {
-            var extraBitrate = extraBitrates[j];
+        for (var j = 0; j < QUALITY_MENU_EXTRA_BITRATES.length; j++) {
+            var extraBitrate = QUALITY_MENU_EXTRA_BITRATES[j];
             if (bitrateIds[extraBitrate]) {
                 continue;
             }
@@ -1207,6 +1267,151 @@
         return normalizedUrl.indexOf('/items/') !== -1 && normalizedUrl.indexOf('/playbackinfo') !== -1;
     }
 
+    function parsePositiveInteger(value) {
+        var parsed = parseInt(value, 10);
+        if (isNaN(parsed) || parsed <= 0) {
+            return 0;
+        }
+        return parsed;
+    }
+
+    function getHighestKnownBitrateOption() {
+        var maxBitrate = QUALITY_MENU_LEGACY_CAP_BITRATE;
+        for (var i = 0; i < QUALITY_MENU_EXTRA_BITRATES.length; i++) {
+            var candidate = parsePositiveInteger(QUALITY_MENU_EXTRA_BITRATES[i]);
+            if (candidate > maxBitrate) {
+                maxBitrate = candidate;
+            }
+        }
+        return maxBitrate;
+    }
+
+    function escapeRegExp(value) {
+        return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    function getQueryParameterValue(url, name) {
+        if (!url || typeof url !== 'string' || !name) {
+            return null;
+        }
+
+        var pattern = new RegExp('[?&]' + escapeRegExp(name) + '=([^&#]*)', 'i');
+        var match = pattern.exec(url);
+        if (!match || match.length < 2) {
+            return null;
+        }
+
+        try {
+            return decodeURIComponent(match[1].replace(/\+/g, '%20'));
+        } catch (error) {
+            return match[1];
+        }
+    }
+
+    function setQueryParameterValue(url, name, value) {
+        if (!url || typeof url !== 'string' || !name) {
+            return url;
+        }
+
+        var hash = '';
+        var hashIndex = url.indexOf('#');
+        if (hashIndex !== -1) {
+            hash = url.substring(hashIndex);
+            url = url.substring(0, hashIndex);
+        }
+
+        var encodedValue = encodeURIComponent(value.toString());
+        var encodedName = encodeURIComponent(name);
+        var pattern = new RegExp('([?&])' + escapeRegExp(encodedName) + '=.*?(?=&|$)', 'i');
+
+        if (pattern.test(url)) {
+            url = url.replace(pattern, '$1' + name + '=' + encodedValue);
+        } else {
+            url += (url.indexOf('?') === -1 ? '?' : '&') + name + '=' + encodedValue;
+        }
+
+        return url + hash;
+    }
+
+    function cloneShallowObject(value) {
+        if (!value || typeof value !== 'object') {
+            return {};
+        }
+
+        var clone = {};
+        for (var key in value) {
+            if (Object.prototype.hasOwnProperty.call(value, key)) {
+                clone[key] = value[key];
+            }
+        }
+        return clone;
+    }
+
+    function enforcePlaybackInfoMaxBitrateUrl(url, source) {
+        if (!isPlaybackInfoUrl(url) || !shouldForcePlaybackStartMaxBitrate()) {
+            return {
+                url: url,
+                targetBitrate: 0
+            };
+        }
+
+        var existingBitrate = parsePositiveInteger(getQueryParameterValue(url, PLAYBACK_INFO_MAX_BITRATE_PARAM));
+        var targetBitrate = getHighestKnownBitrateOption();
+        if (existingBitrate > targetBitrate) {
+            targetBitrate = existingBitrate;
+        }
+
+        var updatedUrl = setQueryParameterValue(url, PLAYBACK_INFO_MAX_BITRATE_PARAM, targetBitrate);
+        markPlaybackStartMaxBitrateForced(source, targetBitrate);
+
+        return {
+            url: updatedUrl,
+            targetBitrate: targetBitrate
+        };
+    }
+
+    function enforcePlaybackInfoMaxBitrateBody(body, targetBitrate, source) {
+        var normalizedTarget = parsePositiveInteger(targetBitrate);
+        if (!normalizedTarget || body === null || body === undefined) {
+            return body;
+        }
+
+        if (typeof body === 'string') {
+            var trimmed = body.replace(/^\s+|\s+$/g, '');
+            if (!trimmed || trimmed.charAt(0) !== '{') {
+                return body;
+            }
+
+            try {
+                var parsed = JSON.parse(trimmed);
+                if (!parsed || typeof parsed !== 'object') {
+                    return body;
+                }
+
+                var currentBitrate = parsePositiveInteger(parsed.MaxStreamingBitrate);
+                if (currentBitrate >= normalizedTarget) {
+                    return body;
+                }
+
+                parsed.MaxStreamingBitrate = normalizedTarget;
+                debugLog('Patched PlaybackInfo body bitrate (' + source + '): ' + currentBitrate + ' -> ' + normalizedTarget);
+                return JSON.stringify(parsed);
+            } catch (error) {
+                return body;
+            }
+        }
+
+        if (typeof body === 'object') {
+            var objectBitrate = parsePositiveInteger(body.MaxStreamingBitrate);
+            if (objectBitrate < normalizedTarget) {
+                body.MaxStreamingBitrate = normalizedTarget;
+                debugLog('Patched PlaybackInfo body bitrate (' + source + '): ' + objectBitrate + ' -> ' + normalizedTarget);
+            }
+        }
+
+        return body;
+    }
+
     function extractItemIdFromPlaybackInfoUrl(url) {
         if (!url || typeof url !== 'string') {
             return null;
@@ -1281,15 +1486,48 @@
         if (window.fetch) {
             var originalFetch = window.fetch;
             window.fetch = function () {
+                var input = arguments.length ? arguments[0] : null;
+                var init = arguments.length > 1 ? arguments[1] : null;
                 var url = '';
                 try {
-                    var input = arguments.length ? arguments[0] : null;
                     url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
                 } catch (error) {
                     url = '';
                 }
 
-                var fetchResult = originalFetch.apply(this, arguments);
+                var requestArgs = arguments;
+                if (isPlaybackInfoUrl(url) && shouldForcePlaybackStartMaxBitrate()) {
+                    var enforcedFetchBitrate = enforcePlaybackInfoMaxBitrateUrl(url, 'fetch');
+                    var nextInput = input;
+                    var nextInit = init;
+
+                    if (enforcedFetchBitrate.url !== url) {
+                        if (typeof input === 'string') {
+                            nextInput = enforcedFetchBitrate.url;
+                        } else if (typeof window.Request !== 'undefined' && input instanceof window.Request) {
+                            try {
+                                nextInput = new window.Request(enforcedFetchBitrate.url, input);
+                            } catch (requestError) {
+                                nextInput = enforcedFetchBitrate.url;
+                            }
+                        } else {
+                            nextInput = enforcedFetchBitrate.url;
+                        }
+                        url = enforcedFetchBitrate.url;
+                    }
+
+                    if (enforcedFetchBitrate.targetBitrate && nextInit && typeof nextInit === 'object') {
+                        nextInit = cloneShallowObject(nextInit);
+                        nextInit.body = enforcePlaybackInfoMaxBitrateBody(nextInit.body, enforcedFetchBitrate.targetBitrate, 'fetch');
+                    }
+
+                    requestArgs = [nextInput];
+                    if (arguments.length > 1 || nextInit) {
+                        requestArgs.push(nextInit);
+                    }
+                }
+
+                var fetchResult = originalFetch.apply(this, requestArgs);
                 if (!isPlaybackInfoUrl(url) || !fetchResult || typeof fetchResult.then !== 'function') {
                     return fetchResult;
                 }
@@ -1319,15 +1557,46 @@
                 var originalXhrSend = xhrProto.send;
 
                 xhrProto.open = function () {
+                    var requestUrl = '';
                     try {
-                        this.__webOsPlaybackInfoUrl = arguments.length > 1 ? (arguments[1] || '').toString() : '';
+                        requestUrl = arguments.length > 1 ? (arguments[1] || '').toString() : '';
                     } catch (error) {
-                        this.__webOsPlaybackInfoUrl = '';
+                        requestUrl = '';
                     }
-                    return originalXhrOpen.apply(this, arguments);
+
+                    var openArgs = arguments;
+                    if (isPlaybackInfoUrl(requestUrl) && shouldForcePlaybackStartMaxBitrate()) {
+                        var enforcedXhrBitrate = enforcePlaybackInfoMaxBitrateUrl(requestUrl, 'xhr');
+                        requestUrl = enforcedXhrBitrate.url;
+                        this.__webOsPlaybackInfoMaxBitrate = enforcedXhrBitrate.targetBitrate;
+
+                        var argsCopy = [];
+                        for (var i = 0; i < arguments.length; i++) {
+                            argsCopy[i] = arguments[i];
+                        }
+                        if (argsCopy.length > 1) {
+                            argsCopy[1] = requestUrl;
+                        }
+                        openArgs = argsCopy;
+                    } else {
+                        this.__webOsPlaybackInfoMaxBitrate = 0;
+                    }
+
+                    this.__webOsPlaybackInfoUrl = requestUrl;
+                    return originalXhrOpen.apply(this, openArgs);
                 };
 
                 xhrProto.send = function () {
+                    var sendArgs = arguments;
+                    if (isPlaybackInfoUrl(this.__webOsPlaybackInfoUrl) && this.__webOsPlaybackInfoMaxBitrate && arguments.length) {
+                        var sendArgsCopy = [];
+                        for (var i = 0; i < arguments.length; i++) {
+                            sendArgsCopy[i] = arguments[i];
+                        }
+                        sendArgsCopy[0] = enforcePlaybackInfoMaxBitrateBody(sendArgsCopy[0], this.__webOsPlaybackInfoMaxBitrate, 'xhr');
+                        sendArgs = sendArgsCopy;
+                    }
+
                     if (isPlaybackInfoUrl(this.__webOsPlaybackInfoUrl) && this.addEventListener) {
                         this.addEventListener('loadend', function () {
                             try {
@@ -1346,7 +1615,7 @@
                         });
                     }
 
-                    return originalXhrSend.apply(this, arguments);
+                    return originalXhrSend.apply(this, sendArgs);
                 };
             }
         }
