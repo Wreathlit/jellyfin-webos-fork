@@ -21,3 +21,76 @@
     visibility: visible !important;
     z-index: 9999 !important;
 }
+
+/* Reduce UI luminance during HDR/Dolby Vision playback without touching video pixels. */
+.layout-tv body.webos-hdr-ui-dim .videoOsdBottom,
+.layout-tv body.webos-hdr-ui-dim .skinHeader.osdHeader,
+.layout-tv body.webos-hdr-ui-dim .upNextContainer,
+.layout-tv body.webos-hdr-ui-dim .actionSheet,
+.layout-tv body.webos-hdr-ui-dim .dialog {
+    filter: brightness(var(--webos-hdr-ui-brightness, 0.3)) saturate(0.92) !important;
+}
+
+.layout-tv body.webos-hdr-ui-dim .dialogBackdrop {
+    background-color: rgba(0, 0, 0, 0.78) !important;
+}
+
+/* Dim subtitle luminance in HDR/Dolby Vision mode. */
+.layout-tv body.webos-hdr-ui-dim .htmlvideoplayer::cue,
+.layout-tv body.webos-hdr-ui-dim video::cue {
+    color: rgba(205, 205, 205, 0.58) !important;
+    text-shadow: 0.08em 0.08em 0.1em rgba(0, 0, 0, 1), 0 0 0.22em rgba(0, 0, 0, 0.95) !important;
+}
+
+.layout-tv body.webos-hdr-ui-dim .htmlvideoplayer::-webkit-media-text-track-display {
+    filter: brightness(var(--webos-hdr-subtitle-brightness, 0.52)) !important;
+}
+
+.layout-tv body.webos-hdr-ui-dim .videoSubtitles {
+    color: rgba(205, 205, 205, 0.58) !important;
+}
+
+.layout-tv body.webos-hdr-ui-dim .videoSubtitlesInner,
+.layout-tv body.webos-hdr-ui-dim .videoSecondarySubtitlesInner {
+    opacity: 0.62 !important;
+}
+
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer .libassjs-canvas-parent {
+    filter: brightness(var(--webos-hdr-subtitle-brightness, 0.52)) !important;
+}
+
+/* PGS/image subtitle renderers commonly draw into canvas/img overlays. */
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer canvas[class*="pgs"],
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="pgs"] canvas,
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="libpgs"],
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="subtitle"] canvas,
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="subtitle"] img {
+    filter: brightness(var(--webos-hdr-pgs-brightness, 0.5)) !important;
+    opacity: 0.62 !important;
+}
+
+/* Last-resort: many PGS renderers emit plain canvas/img nodes without class names. */
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer canvas,
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer img {
+    filter: brightness(var(--webos-hdr-pgs-brightness, 0.5)) !important;
+}
+
+.layout-tv .webos-hdr-ui-dim-control .webos-hdr-ui-dim-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+}
+
+.layout-tv .webos-hdr-ui-dim-control .webos-hdr-ui-dim-value {
+    opacity: 0.78;
+    font-variant-numeric: tabular-nums;
+}
+
+.layout-tv .webos-hdr-ui-dim-control .webos-hdr-ui-dim-slider-wrap {
+    margin-top: 0.35em;
+}
+
+.layout-tv .webos-hdr-ui-dim-control .webosHdrUiDimSlider {
+    width: 100%;
+}

@@ -44,8 +44,25 @@
     var DTS_SETTINGS_MAX_RETRIES = 20;
     var DTS_OVERRIDE_DECODE_KEY = 'webos_force_dts_decode';
     var DTS_OVERRIDE_PASSTHROUGH_KEY = 'webos_force_dts_passthrough';
+    var HDR_UI_DIM_BRIGHTNESS_KEY = 'webos_hdr_ui_dim_brightness';
+    var HDR_UI_DIM_DEFAULT_BRIGHTNESS = 0.3;
+    var HDR_UI_DIM_MIN_BRIGHTNESS = 0.05;
+    var HDR_UI_DIM_MAX_BRIGHTNESS = 1;
+    var HDR_UI_DIM_MIN_PERCENT = Math.round(HDR_UI_DIM_MIN_BRIGHTNESS * 100);
+    var HDR_UI_DIM_MAX_PERCENT = Math.round(HDR_UI_DIM_MAX_BRIGHTNESS * 100);
+    var HDR_UI_DIM_DEFAULT_PERCENT = Math.round(HDR_UI_DIM_DEFAULT_BRIGHTNESS * 100);
     var forceDtsDecode = !!(featureOverrides && featureOverrides.forceDtsDecode);
     var forceDtsPassthrough = !!(featureOverrides && featureOverrides.forceDtsPassthrough);
+    var hdrUiDimBrightness = HDR_UI_DIM_DEFAULT_BRIGHTNESS;
+    var HDR_UI_DIM_CLASS = 'webos-hdr-ui-dim';
+    var playbackDynamicRange = 'unknown';
+    var hdrUiInfoObserver = null;
+    var hdrUiInfoObserverActive = false;
+    var hdrUiInfoScanTimer = null;
+    var currentMediaSessionItemId = null;
+    var mediaItemDynamicRangeCache = {};
+    var mediaItemDynamicRangeInFlight = {};
+    var playbackInfoInterceptionInitialized = false;
 
     function postMessage(type, data) {
         window.top.postMessage({
@@ -117,6 +134,14 @@
 
         setHeaderPinningEnabled(nextState !== PlaybackState.PLAYING);
         setQualityMenuObserverEnabled(nextState === PlaybackState.PLAYING);
+        setHdrUiInfoObserverEnabled(nextState === PlaybackState.PLAYING);
+
+        if (nextState === PlaybackState.IDLE) {
+            setCurrentPlaybackItemId(null);
+            setPlaybackDynamicRange('unknown', 'playback-idle');
+        } else {
+            refreshHdrUiDimming('playback-state');
+        }
     }
 
     function scheduleForceHeaderPinned() {
@@ -174,6 +199,115 @@
             return false;
         }
         return fallback;
+    }
+
+    function parseStoredNumber(value, fallback, min, max) {
+        if (value === null || value === undefined || value === '') {
+            return fallback;
+        }
+
+        var parsed = parseFloat(value);
+        if (isNaN(parsed)) {
+            return fallback;
+        }
+
+        if (typeof min === 'number' && parsed < min) {
+            parsed = min;
+        }
+        if (typeof max === 'number' && parsed > max) {
+            parsed = max;
+        }
+        return parsed;
+    }
+
+    function clampHdrUiDimBrightness(value) {
+        return parseStoredNumber(value, HDR_UI_DIM_DEFAULT_BRIGHTNESS, HDR_UI_DIM_MIN_BRIGHTNESS, HDR_UI_DIM_MAX_BRIGHTNESS);
+    }
+
+    function brightnessToPercent(value) {
+        return Math.round(clampHdrUiDimBrightness(value) * 100);
+    }
+
+    function percentToBrightness(value) {
+        var parsedPercent = parseStoredNumber(value, HDR_UI_DIM_DEFAULT_PERCENT, HDR_UI_DIM_MIN_PERCENT, HDR_UI_DIM_MAX_PERCENT);
+        return clampHdrUiDimBrightness(parsedPercent / 100);
+    }
+
+    function getHdrSubtitleBrightness() {
+        var brightness = hdrUiDimBrightness + 0.22;
+        if (brightness > 1) {
+            brightness = 1;
+        }
+        if (brightness < 0.08) {
+            brightness = 0.08;
+        }
+        return brightness;
+    }
+
+    function getHdrPgsOverlayBrightness() {
+        var brightness = hdrUiDimBrightness + 0.2;
+        if (brightness > 1) {
+            brightness = 1;
+        }
+        if (brightness < 0.08) {
+            brightness = 0.08;
+        }
+        return brightness;
+    }
+
+    function formatHdrUiDimBrightness(value) {
+        return clampHdrUiDimBrightness(value).toFixed(2);
+    }
+
+    function formatHdrUiDimPercentage(value) {
+        return brightnessToPercent(value).toString() + '%';
+    }
+
+    function applyHdrUiDimSettings() {
+        if (!document || !document.documentElement || !document.documentElement.style) {
+            return;
+        }
+
+        document.documentElement.style.setProperty('--webos-hdr-ui-brightness', formatHdrUiDimBrightness(hdrUiDimBrightness));
+        document.documentElement.style.setProperty('--webos-hdr-subtitle-brightness', formatHdrUiDimBrightness(getHdrSubtitleBrightness()));
+        document.documentElement.style.setProperty('--webos-hdr-pgs-brightness', formatHdrUiDimBrightness(getHdrPgsOverlayBrightness()));
+    }
+
+    function loadPersistedHdrUiDimBrightness() {
+        try {
+            if (!window.localStorage) {
+                hdrUiDimBrightness = clampHdrUiDimBrightness(hdrUiDimBrightness);
+                return;
+            }
+            hdrUiDimBrightness = clampHdrUiDimBrightness(localStorage.getItem(HDR_UI_DIM_BRIGHTNESS_KEY));
+        } catch (error) {
+            hdrUiDimBrightness = clampHdrUiDimBrightness(hdrUiDimBrightness);
+            console.warn('Failed to load persisted HDR UI dim brightness:', error);
+        }
+    }
+
+    function savePersistedHdrUiDimBrightness() {
+        try {
+            if (!window.localStorage) {
+                return;
+            }
+            localStorage.setItem(HDR_UI_DIM_BRIGHTNESS_KEY, formatHdrUiDimBrightness(hdrUiDimBrightness));
+        } catch (error) {
+            console.warn('Failed to save persisted HDR UI dim brightness:', error);
+        }
+    }
+
+    function setHdrUiDimBrightness(value, reason) {
+        var nextValue = clampHdrUiDimBrightness(value);
+        if (Math.abs(nextValue - hdrUiDimBrightness) < 0.0001) {
+            return;
+        }
+
+        hdrUiDimBrightness = nextValue;
+        savePersistedHdrUiDimBrightness();
+        applyHdrUiDimSettings();
+        refreshHdrUiDimming('brightness-change');
+        debugLog('HDR UI dim brightness changed (' + reason + '): ' + formatHdrUiDimBrightness(hdrUiDimBrightness));
     }
 
     function loadPersistedDtsOverrides() {
@@ -234,46 +368,146 @@
         return container;
     }
 
+    function createHdrUiDimControlContainer() {
+        var container = document.createElement('div');
+        container.className = 'checkboxContainer checkboxContainer-withDescription webos-hdr-ui-dim-control';
+        container.innerHTML = '<label class="webos-hdr-ui-dim-header">' +
+            '<span>webOS: HDR/DV UI brightness</span>' +
+            '<span class="webos-hdr-ui-dim-value"></span>' +
+            '</label>' +
+            '<div class="webos-hdr-ui-dim-slider-wrap">' +
+            '<input type="range" class="webosHdrUiDimSlider" min="' + HDR_UI_DIM_MIN_PERCENT.toString() + '" max="' + HDR_UI_DIM_MAX_PERCENT.toString() + '" step="1" />' +
+            '</div>' +
+            '<div class="fieldDescription checkboxFieldDescription">Adjust overlay UI/subtitle brightness during HDR/Dolby Vision playback. Lower percentage = darker.</div>';
+        return container;
+    }
+
+    function findParentByClass(element, className) {
+        var current = element;
+        while (current) {
+            if (current.classList && current.classList.contains(className)) {
+                return current;
+            }
+            current = current.parentNode;
+        }
+        return null;
+    }
+
+    function getControlContainerBySelector(selector) {
+        var element = document.querySelector(selector);
+        if (!element) {
+            return null;
+        }
+        return findParentByClass(element, 'checkboxContainer');
+    }
+
+    function insertControlAfter(referenceNode, controlNode) {
+        if (!referenceNode || !referenceNode.parentNode || !controlNode) {
+            return;
+        }
+        referenceNode.parentNode.insertBefore(controlNode, referenceNode.nextSibling);
+    }
+
+    function updateHdrUiDimControlDisplay(container) {
+        if (!container) {
+            return;
+        }
+
+        var slider = container.querySelector('.webosHdrUiDimSlider');
+        var valueLabel = container.querySelector('.webos-hdr-ui-dim-value');
+        var sliderValue = brightnessToPercent(hdrUiDimBrightness).toString();
+        var displayValue = formatHdrUiDimPercentage(hdrUiDimBrightness);
+
+        if (slider) {
+            slider.value = sliderValue;
+        }
+        if (valueLabel) {
+            valueLabel.textContent = displayValue;
+        }
+    }
+
+    function initializeHdrUiDimControl(container) {
+        if (!container) {
+            return;
+        }
+
+        var slider = container.querySelector('.webosHdrUiDimSlider');
+        if (!slider) {
+            return;
+        }
+
+        if (slider.getAttribute('data-webos-init') !== 'true') {
+            slider.addEventListener('input', function () {
+                setHdrUiDimBrightness(percentToBrightness(slider.value), 'settings-slider-input');
+                updateHdrUiDimControlDisplay(container);
+            });
+            slider.addEventListener('change', function () {
+                setHdrUiDimBrightness(percentToBrightness(slider.value), 'settings-slider-change');
+                updateHdrUiDimControlDisplay(container);
+            });
+            slider.setAttribute('data-webos-init', 'true');
+        }
+
+        updateHdrUiDimControlDisplay(container);
+    }
+
     function ensureDtsOverrideControls() {
         var dtsContainer = document.querySelector('.fldEnableDts');
         if (!dtsContainer || !dtsContainer.parentNode) {
             return;
         }
 
-        if (document.querySelector('.chkWebOSForceDtsDecode') || document.querySelector('.chkWebOSForceDtsPassthrough')) {
-            return;
+        var decodeContainer = getControlContainerBySelector('.chkWebOSForceDtsDecode');
+        var passthroughContainer = getControlContainerBySelector('.chkWebOSForceDtsPassthrough');
+        var hdrDimContainer = getControlContainerBySelector('.webosHdrUiDimSlider');
+
+        if (!decodeContainer) {
+            decodeContainer = createDtsOverrideContainer(
+                'chkWebOSForceDtsDecode',
+                'webOS: Force DTS decode support (experimental)',
+                'Forces client profile to report DTS decode capability. Can cause no-audio on unsupported TVs.'
+            );
+            insertControlAfter(dtsContainer, decodeContainer);
         }
 
-        var decodeContainer = createDtsOverrideContainer(
-            'chkWebOSForceDtsDecode',
-            'webOS: Force DTS decode support (experimental)',
-            'Forces client profile to report DTS decode capability. Can cause no-audio on unsupported TVs.'
-        );
-        var passthroughContainer = createDtsOverrideContainer(
-            'chkWebOSForceDtsPassthrough',
-            'webOS: Force DTS passthrough support (experimental)',
-            'Forces DTS passthrough flag and persists DTS preference. Requires downstream device support.'
-        );
+        if (!passthroughContainer) {
+            passthroughContainer = createDtsOverrideContainer(
+                'chkWebOSForceDtsPassthrough',
+                'webOS: Force DTS passthrough support (experimental)',
+                'Forces DTS passthrough flag and persists DTS preference. Requires downstream device support.'
+            );
+            insertControlAfter(decodeContainer || dtsContainer, passthroughContainer);
+        }
 
-        dtsContainer.parentNode.insertBefore(decodeContainer, dtsContainer.nextSibling);
-        dtsContainer.parentNode.insertBefore(passthroughContainer, decodeContainer.nextSibling);
+        if (!hdrDimContainer) {
+            hdrDimContainer = createHdrUiDimControlContainer();
+            insertControlAfter(passthroughContainer || decodeContainer || dtsContainer, hdrDimContainer);
+        }
 
-        var decodeCheckbox = decodeContainer.querySelector('.chkWebOSForceDtsDecode');
-        var passthroughCheckbox = passthroughContainer.querySelector('.chkWebOSForceDtsPassthrough');
+        var decodeCheckbox = document.querySelector('.chkWebOSForceDtsDecode');
+        var passthroughCheckbox = document.querySelector('.chkWebOSForceDtsPassthrough');
 
         if (decodeCheckbox) {
             decodeCheckbox.checked = !!forceDtsDecode;
-            decodeCheckbox.addEventListener('change', function () {
-                setDtsOverrides(decodeCheckbox.checked, passthroughCheckbox ? passthroughCheckbox.checked : forceDtsPassthrough, 'settings-page');
-            });
+            if (decodeCheckbox.getAttribute('data-webos-init') !== 'true') {
+                decodeCheckbox.addEventListener('change', function () {
+                    setDtsOverrides(decodeCheckbox.checked, passthroughCheckbox ? passthroughCheckbox.checked : forceDtsPassthrough, 'settings-page');
+                });
+                decodeCheckbox.setAttribute('data-webos-init', 'true');
+            }
         }
 
         if (passthroughCheckbox) {
             passthroughCheckbox.checked = !!forceDtsPassthrough;
-            passthroughCheckbox.addEventListener('change', function () {
-                setDtsOverrides(decodeCheckbox ? decodeCheckbox.checked : forceDtsDecode, passthroughCheckbox.checked, 'settings-page');
-            });
+            if (passthroughCheckbox.getAttribute('data-webos-init') !== 'true') {
+                passthroughCheckbox.addEventListener('change', function () {
+                    setDtsOverrides(decodeCheckbox ? decodeCheckbox.checked : forceDtsDecode, passthroughCheckbox.checked, 'settings-page');
+                });
+                passthroughCheckbox.setAttribute('data-webos-init', 'true');
+            }
         }
+
+        initializeHdrUiDimControl(hdrDimContainer);
     }
 
     function runScheduledDtsEnsure() {
@@ -281,7 +515,9 @@
         dtsEnsureScheduled = false;
         ensureDtsOverrideControls();
 
-        if (document.querySelector('.chkWebOSForceDtsDecode') || document.querySelector('.chkWebOSForceDtsPassthrough')) {
+        if (document.querySelector('.chkWebOSForceDtsDecode')
+            && document.querySelector('.chkWebOSForceDtsPassthrough')
+            && document.querySelector('.webosHdrUiDimSlider')) {
             dtsEnsureAttemptsLeft = 0;
             return;
         }
@@ -350,7 +586,8 @@
         var shouldEnable = isLikelyPlaybackSettingsRoute()
             || !!document.querySelector('.fldEnableDts')
             || !!document.querySelector('.chkWebOSForceDtsDecode')
-            || !!document.querySelector('.chkWebOSForceDtsPassthrough');
+            || !!document.querySelector('.chkWebOSForceDtsPassthrough')
+            || !!document.querySelector('.webosHdrUiDimSlider');
 
         setDtsSettingsObserverEnabled(shouldEnable);
     }
@@ -639,6 +876,753 @@
         }
     }
 
+    function clearHdrUiInfoScanTimer() {
+        if (hdrUiInfoScanTimer) {
+            clearTimeout(hdrUiInfoScanTimer);
+            hdrUiInfoScanTimer = null;
+        }
+    }
+
+    function scheduleHdrUiInfoScan(delay) {
+        if (hdrUiInfoScanTimer || playbackState !== PlaybackState.PLAYING) {
+            return;
+        }
+
+        hdrUiInfoScanTimer = setTimeout(function () {
+            hdrUiInfoScanTimer = null;
+            if (playbackState !== PlaybackState.PLAYING) {
+                return;
+            }
+
+            var hint = getDynamicRangeHintFromPlaybackUi();
+            if (hint !== 'unknown') {
+                setPlaybackDynamicRange(hint, 'playback-ui');
+            } else {
+                refreshHdrUiDimming('playback-ui-scan');
+            }
+        }, typeof delay === 'number' ? delay : 0);
+    }
+
+    function normalizeDynamicRangeText(value) {
+        if (!value || typeof value !== 'string') {
+            return '';
+        }
+        return value.toLowerCase();
+    }
+
+    function isHdrDynamicRangeText(value) {
+        var normalized = normalizeDynamicRangeText(value);
+        if (!normalized) {
+            return false;
+        }
+
+        return normalized.indexOf('hdr10+') !== -1
+            || normalized.indexOf('hdr10') !== -1
+            || normalized.indexOf('dolby vision') !== -1
+            || normalized.indexOf('dolbyvision') !== -1
+            || normalized.indexOf('dovi') !== -1
+            || normalized.indexOf('hlg') !== -1
+            || normalized === 'hdr';
+    }
+
+    function isSdrDynamicRangeText(value) {
+        var normalized = normalizeDynamicRangeText(value);
+        if (!normalized) {
+            return false;
+        }
+
+        return normalized.indexOf('standard dynamic range') !== -1
+            || /(^|[^a-z0-9])sdr([^a-z0-9]|$)/i.test(normalized);
+    }
+
+    function getDynamicRangeHintFromMediaInfo(mediaInfo) {
+        if (!mediaInfo || typeof mediaInfo !== 'object') {
+            return 'unknown';
+        }
+
+        var keysToInspect = [
+            'videoRangeType',
+            'VideoRangeType',
+            'dynamicRange',
+            'DynamicRange',
+            'videoDoViTitle',
+            'VideoDoViTitle',
+            'videoDoViProfile',
+            'VideoDoViProfile',
+            'colorTransfer',
+            'ColorTransfer'
+        ];
+        var sawSdr = false;
+
+        for (var i = 0; i < keysToInspect.length; i++) {
+            var key = keysToInspect[i];
+            if (!Object.prototype.hasOwnProperty.call(mediaInfo, key)) {
+                continue;
+            }
+
+            var value = mediaInfo[key];
+            if (isHdrDynamicRangeText(value)) {
+                return 'hdr';
+            }
+            if (isSdrDynamicRangeText(value)) {
+                sawSdr = true;
+            }
+        }
+
+        return sawSdr ? 'sdr' : 'unknown';
+    }
+
+    function getDynamicRangeHintFromPlaybackUi() {
+        if (!document || !document.querySelectorAll) {
+            return 'unknown';
+        }
+
+        var selectors = [
+            '.osdSecondaryMediaInfo',
+            '.osdMediaInfo',
+            '.osdMediaStatus',
+            '.upNextDialog-mediainfo',
+            '.upNextDialog-title',
+            '.videoOsdBottom .osdTextContainer'
+        ];
+        var sawSdr = false;
+
+        for (var i = 0; i < selectors.length; i++) {
+            var elements = document.querySelectorAll(selectors[i]);
+            for (var j = 0; j < elements.length; j++) {
+                var text = elements[j] && elements[j].textContent ? elements[j].textContent : '';
+                if (!text) {
+                    continue;
+                }
+
+                if (isHdrDynamicRangeText(text)) {
+                    return 'hdr';
+                }
+                if (isSdrDynamicRangeText(text)) {
+                    sawSdr = true;
+                }
+            }
+        }
+
+        return sawSdr ? 'sdr' : 'unknown';
+    }
+
+    function toArray(value) {
+        return Object.prototype.toString.call(value) === '[object Array]' ? value : [];
+    }
+
+    function getDynamicRangeHintFromVideoStream(videoStream) {
+        if (!videoStream || typeof videoStream !== 'object') {
+            return 'unknown';
+        }
+
+        var fields = [
+            videoStream.VideoRangeType,
+            videoStream.VideoDoViTitle,
+            videoStream.VideoDoViProfile,
+            videoStream.VideoDoViLevel,
+            videoStream.ColorTransfer,
+            videoStream.ColorPrimaries,
+            videoStream.Title
+        ];
+
+        var sawSdr = false;
+        for (var i = 0; i < fields.length; i++) {
+            var fieldValue = fields[i];
+            if (isHdrDynamicRangeText(fieldValue)) {
+                return 'hdr';
+            }
+            if (isSdrDynamicRangeText(fieldValue)) {
+                sawSdr = true;
+            }
+        }
+
+        return sawSdr ? 'sdr' : 'unknown';
+    }
+
+    function getDynamicRangeHintFromItem(item) {
+        if (!item || typeof item !== 'object') {
+            return 'unknown';
+        }
+
+        var fields = [
+            item.VideoRangeType,
+            item.VideoDoViTitle,
+            item.VideoDoViProfile,
+            item.VideoDoViLevel,
+            item.VideoType
+        ];
+
+        var sawSdr = false;
+        for (var i = 0; i < fields.length; i++) {
+            var value = fields[i];
+            if (isHdrDynamicRangeText(value)) {
+                return 'hdr';
+            }
+            if (isSdrDynamicRangeText(value)) {
+                sawSdr = true;
+            }
+        }
+
+        var mediaStreams = toArray(item.MediaStreams);
+        for (var j = 0; j < mediaStreams.length; j++) {
+            var stream = mediaStreams[j];
+            if (!stream || (stream.Type && stream.Type.toString().toLowerCase() !== 'video')) {
+                continue;
+            }
+
+            var streamHint = getDynamicRangeHintFromVideoStream(stream);
+            if (streamHint === 'hdr') {
+                return 'hdr';
+            }
+            if (streamHint === 'sdr') {
+                sawSdr = true;
+            }
+        }
+
+        var mediaSources = toArray(item.MediaSources);
+        for (var k = 0; k < mediaSources.length; k++) {
+            var mediaSource = mediaSources[k];
+            if (!mediaSource || typeof mediaSource !== 'object') {
+                continue;
+            }
+
+            if (isHdrDynamicRangeText(mediaSource.VideoType)) {
+                return 'hdr';
+            }
+            if (isSdrDynamicRangeText(mediaSource.VideoType)) {
+                sawSdr = true;
+            }
+
+            var sourceStreams = toArray(mediaSource.MediaStreams);
+            for (var m = 0; m < sourceStreams.length; m++) {
+                var sourceStream = sourceStreams[m];
+                if (!sourceStream || (sourceStream.Type && sourceStream.Type.toString().toLowerCase() !== 'video')) {
+                    continue;
+                }
+
+                var sourceHint = getDynamicRangeHintFromVideoStream(sourceStream);
+                if (sourceHint === 'hdr') {
+                    return 'hdr';
+                }
+                if (sourceHint === 'sdr') {
+                    sawSdr = true;
+                }
+            }
+        }
+
+        return sawSdr ? 'sdr' : 'unknown';
+    }
+
+    function getCurrentApiClient() {
+        var apiClient = window.ApiClient;
+        if (apiClient && typeof apiClient.getItem === 'function') {
+            return apiClient;
+        }
+        return null;
+    }
+
+    function fetchDynamicRangeHintForItemId(itemId) {
+        if (!itemId) {
+            return Promise.resolve('unknown');
+        }
+
+        itemId = itemId.toString();
+        if (Object.prototype.hasOwnProperty.call(mediaItemDynamicRangeCache, itemId)) {
+            return Promise.resolve(mediaItemDynamicRangeCache[itemId]);
+        }
+
+        if (mediaItemDynamicRangeInFlight[itemId]) {
+            return mediaItemDynamicRangeInFlight[itemId];
+        }
+
+        var apiClient = getCurrentApiClient();
+        if (!apiClient) {
+            return Promise.resolve('unknown');
+        }
+
+        var userId = null;
+        try {
+            if (typeof apiClient.getCurrentUserId === 'function') {
+                userId = apiClient.getCurrentUserId();
+            }
+        } catch (error) {
+            debugLog('ApiClient.getCurrentUserId failed:', error);
+        }
+
+        if (!userId) {
+            return Promise.resolve('unknown');
+        }
+
+        var request = null;
+        try {
+            request = apiClient.getItem(userId, itemId);
+        } catch (error) {
+            try {
+                request = apiClient.getItem(itemId);
+            } catch (fallbackError) {
+                debugLog('ApiClient.getItem failed:', fallbackError);
+                request = null;
+            }
+        }
+
+        if (!request || typeof request.then !== 'function') {
+            return Promise.resolve('unknown');
+        }
+
+        mediaItemDynamicRangeInFlight[itemId] = request.then(function (item) {
+            var hint = getDynamicRangeHintFromItem(item);
+            mediaItemDynamicRangeCache[itemId] = hint;
+            return hint;
+        }, function (error) {
+            debugLog('Unable to fetch item metadata for dynamic range detection:', error);
+            return 'unknown';
+        }).then(function (hint) {
+            delete mediaItemDynamicRangeInFlight[itemId];
+            return hint;
+        });
+
+        return mediaItemDynamicRangeInFlight[itemId];
+    }
+
+    function setCurrentPlaybackItemId(itemId, reason) {
+        var normalizedItemId = itemId ? itemId.toString() : null;
+
+        if (currentMediaSessionItemId === normalizedItemId) {
+            return;
+        }
+
+        currentMediaSessionItemId = normalizedItemId;
+        if (normalizedItemId) {
+            setPlaybackDynamicRange('unknown', reason || 'item-changed');
+        }
+    }
+
+    function isPlaybackInfoUrl(url) {
+        if (!url || typeof url !== 'string') {
+            return false;
+        }
+
+        var normalizedUrl = url.toLowerCase();
+        return normalizedUrl.indexOf('/items/') !== -1 && normalizedUrl.indexOf('/playbackinfo') !== -1;
+    }
+
+    function extractItemIdFromPlaybackInfoUrl(url) {
+        if (!url || typeof url !== 'string') {
+            return null;
+        }
+
+        var match = /\/Items\/([^\/\?]+)\/PlaybackInfo/i.exec(url);
+        if (!match || !match[1]) {
+            return null;
+        }
+
+        var itemId = match[1];
+        try {
+            itemId = decodeURIComponent(itemId);
+        } catch (error) {
+            // Ignore malformed URI fragments and use raw value.
+        }
+        return itemId;
+    }
+
+    function getDynamicRangeHintFromPlaybackInfoPayload(payload) {
+        if (!payload || typeof payload !== 'object') {
+            return 'unknown';
+        }
+
+        var hint = getDynamicRangeHintFromItem(payload.NowPlayingItem);
+        if (hint !== 'unknown') {
+            return hint;
+        }
+
+        hint = getDynamicRangeHintFromItem(payload.Item);
+        if (hint !== 'unknown') {
+            return hint;
+        }
+
+        hint = getDynamicRangeHintFromItem({
+            MediaSources: payload.MediaSources,
+            MediaStreams: payload.MediaStreams,
+            VideoRangeType: payload.VideoRangeType,
+            VideoDoViTitle: payload.VideoDoViTitle,
+            VideoDoViProfile: payload.VideoDoViProfile,
+            VideoType: payload.VideoType
+        });
+        if (hint !== 'unknown') {
+            return hint;
+        }
+
+        return getDynamicRangeHintFromItem(payload);
+    }
+
+    function applyDynamicRangeFromPlaybackInfo(payload, sourceUrl, reason) {
+        if (!isPlaybackInfoUrl(sourceUrl)) {
+            return;
+        }
+
+        var itemId = extractItemIdFromPlaybackInfoUrl(sourceUrl);
+        if (itemId) {
+            setCurrentPlaybackItemId(itemId, 'item-changed-playbackinfo');
+        }
+
+        var hint = getDynamicRangeHintFromPlaybackInfoPayload(payload);
+        if (hint !== 'unknown') {
+            setPlaybackDynamicRange(hint, reason || 'playbackinfo');
+        }
+    }
+
+    function initPlaybackInfoInterception() {
+        if (playbackInfoInterceptionInitialized) {
+            return;
+        }
+        playbackInfoInterceptionInitialized = true;
+
+        if (window.fetch) {
+            var originalFetch = window.fetch;
+            window.fetch = function () {
+                var url = '';
+                try {
+                    var input = arguments.length ? arguments[0] : null;
+                    url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+                } catch (error) {
+                    url = '';
+                }
+
+                var fetchResult = originalFetch.apply(this, arguments);
+                if (!isPlaybackInfoUrl(url) || !fetchResult || typeof fetchResult.then !== 'function') {
+                    return fetchResult;
+                }
+
+                return fetchResult.then(function (response) {
+                    try {
+                        if (response && typeof response.clone === 'function') {
+                            response.clone().json().then(function (payload) {
+                                applyDynamicRangeFromPlaybackInfo(payload, url, 'playbackinfo-fetch');
+                            }, function () {
+                                // Ignore payload parse errors.
+                            });
+                        }
+                    } catch (error) {
+                        debugLog('Failed to inspect fetch PlaybackInfo response:', error);
+                    }
+                    return response;
+                });
+            };
+        }
+
+        if (window.XMLHttpRequest && window.XMLHttpRequest.prototype) {
+            var xhrProto = window.XMLHttpRequest.prototype;
+            if (!xhrProto.__webOsPlaybackInfoHooked) {
+                xhrProto.__webOsPlaybackInfoHooked = true;
+                var originalXhrOpen = xhrProto.open;
+                var originalXhrSend = xhrProto.send;
+
+                xhrProto.open = function () {
+                    try {
+                        this.__webOsPlaybackInfoUrl = arguments.length > 1 ? (arguments[1] || '').toString() : '';
+                    } catch (error) {
+                        this.__webOsPlaybackInfoUrl = '';
+                    }
+                    return originalXhrOpen.apply(this, arguments);
+                };
+
+                xhrProto.send = function () {
+                    if (isPlaybackInfoUrl(this.__webOsPlaybackInfoUrl) && this.addEventListener) {
+                        this.addEventListener('loadend', function () {
+                            try {
+                                if (this.status && (this.status < 200 || this.status >= 300)) {
+                                    return;
+                                }
+                                if (!this.responseText) {
+                                    return;
+                                }
+
+                                var payload = JSON.parse(this.responseText);
+                                applyDynamicRangeFromPlaybackInfo(payload, this.__webOsPlaybackInfoUrl, 'playbackinfo-xhr');
+                            } catch (error) {
+                                // Ignore JSON parse errors.
+                            }
+                        });
+                    }
+
+                    return originalXhrSend.apply(this, arguments);
+                };
+            }
+        }
+    }
+
+    function refreshHdrUiDimming(reason) {
+        if (!document.body) {
+            return;
+        }
+
+        var shouldDim = playbackState === PlaybackState.PLAYING && playbackDynamicRange === 'hdr';
+        var hasClass = document.body.classList.contains(HDR_UI_DIM_CLASS);
+        if (shouldDim === hasClass) {
+            return;
+        }
+
+        if (shouldDim) {
+            document.body.classList.add(HDR_UI_DIM_CLASS);
+        } else {
+            document.body.classList.remove(HDR_UI_DIM_CLASS);
+        }
+
+        debugLog('HDR UI dimming ' + (shouldDim ? 'enabled' : 'disabled') + ' (' + reason + ')');
+    }
+
+    function setPlaybackDynamicRange(nextRange, reason) {
+        if (nextRange !== 'hdr' && nextRange !== 'sdr') {
+            nextRange = 'unknown';
+        }
+
+        if (playbackDynamicRange === nextRange) {
+            return;
+        }
+
+        var previousRange = playbackDynamicRange;
+        playbackDynamicRange = nextRange;
+        debugLog('Playback dynamic range: ' + previousRange + ' -> ' + nextRange + ' (' + reason + ')');
+        refreshHdrUiDimming('dynamic-range');
+    }
+
+    function initHdrUiInfoObserver() {
+        if (hdrUiInfoObserver || !window.MutationObserver) {
+            return;
+        }
+
+        hdrUiInfoObserver = new MutationObserver(function () {
+            scheduleHdrUiInfoScan(120);
+        });
+    }
+
+    function setHdrUiInfoObserverEnabled(enabled) {
+        if (!window.MutationObserver) {
+            return;
+        }
+
+        if (!hdrUiInfoObserver) {
+            initHdrUiInfoObserver();
+        }
+
+        if (!hdrUiInfoObserver) {
+            return;
+        }
+
+        if (enabled) {
+            if (!hdrUiInfoObserverActive) {
+                var targetNode = document.body || document.documentElement;
+                if (targetNode) {
+                    hdrUiInfoObserver.observe(targetNode, {
+                        childList: true,
+                        subtree: true,
+                        characterData: true
+                    });
+                    hdrUiInfoObserverActive = true;
+                }
+            }
+
+            scheduleHdrUiInfoScan(0);
+            setTimeout(function () {
+                scheduleHdrUiInfoScan(0);
+            }, 400);
+            return;
+        }
+
+        if (hdrUiInfoObserverActive) {
+            hdrUiInfoObserver.disconnect();
+            hdrUiInfoObserverActive = false;
+        }
+
+        clearHdrUiInfoScanTimer();
+    }
+
+    function parseCommaSeparatedList(value) {
+        if (!value || typeof value !== 'string') {
+            return [];
+        }
+
+        var parts = value.split(',');
+        var result = [];
+        for (var i = 0; i < parts.length; i++) {
+            var token = parts[i];
+            if (!token) {
+                continue;
+            }
+
+            token = token.replace(/^\s+|\s+$/g, '');
+            if (token) {
+                result.push(token);
+            }
+        }
+
+        return result;
+    }
+
+    function removeValuesFromList(listValue, disallowedValuesMap) {
+        var parsed = parseCommaSeparatedList(listValue);
+        if (!parsed.length) {
+            return {
+                value: listValue,
+                changed: false
+            };
+        }
+
+        var filtered = [];
+        var changed = false;
+        for (var i = 0; i < parsed.length; i++) {
+            var token = parsed[i];
+            if (disallowedValuesMap[token.toLowerCase()]) {
+                changed = true;
+                continue;
+            }
+            filtered.push(token);
+        }
+
+        return {
+            value: filtered.join(','),
+            changed: changed
+        };
+    }
+
+    function hasH264Codec(codecValue) {
+        var codecs = parseCommaSeparatedList(codecValue);
+        for (var i = 0; i < codecs.length; i++) {
+            var codec = codecs[i].toLowerCase();
+            if (codec === 'h264' || codec === 'avc') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function hasIsInterlacedCondition(conditions) {
+        if (!conditions || !conditions.length) {
+            return false;
+        }
+
+        for (var i = 0; i < conditions.length; i++) {
+            var condition = conditions[i];
+            if (!condition || !condition.Property) {
+                continue;
+            }
+
+            if (condition.Property.toString().toLowerCase() === 'isinterlaced') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function patchDirectPlayProfilesForProblematicFormats(profile) {
+        if (!profile || !profile.DirectPlayProfiles || !profile.DirectPlayProfiles.length) {
+            return;
+        }
+
+        var disallowedContainers = {
+            dvd: true,
+            vob: true,
+            vro: true,
+            mpg: true,
+            mpeg: true
+        };
+        var disallowedVideoCodecs = {
+            mpeg1video: true,
+            mpeg2video: true
+        };
+
+        var removedProfiles = 0;
+        var patchedProfiles = 0;
+        for (var i = profile.DirectPlayProfiles.length - 1; i >= 0; i--) {
+            var directPlayProfile = profile.DirectPlayProfiles[i];
+            if (!directPlayProfile || !directPlayProfile.Type || directPlayProfile.Type.toString().toLowerCase() !== 'video') {
+                continue;
+            }
+
+            var hadContainerList = typeof directPlayProfile.Container === 'string' && parseCommaSeparatedList(directPlayProfile.Container).length > 0;
+            var hadVideoCodecList = typeof directPlayProfile.VideoCodec === 'string' && parseCommaSeparatedList(directPlayProfile.VideoCodec).length > 0;
+            var changed = false;
+
+            var containerResult = removeValuesFromList(directPlayProfile.Container, disallowedContainers);
+            if (containerResult.changed) {
+                directPlayProfile.Container = containerResult.value;
+                changed = true;
+            }
+
+            var codecResult = removeValuesFromList(directPlayProfile.VideoCodec, disallowedVideoCodecs);
+            if (codecResult.changed) {
+                directPlayProfile.VideoCodec = codecResult.value;
+                changed = true;
+            }
+
+            var hasContainerList = typeof directPlayProfile.Container === 'string' && parseCommaSeparatedList(directPlayProfile.Container).length > 0;
+            var hasVideoCodecList = typeof directPlayProfile.VideoCodec === 'string' && parseCommaSeparatedList(directPlayProfile.VideoCodec).length > 0;
+            if ((hadContainerList && !hasContainerList) || (hadVideoCodecList && !hasVideoCodecList)) {
+                profile.DirectPlayProfiles.splice(i, 1);
+                removedProfiles++;
+                continue;
+            }
+
+            if (changed) {
+                patchedProfiles++;
+            }
+        }
+
+        if (patchedProfiles || removedProfiles) {
+            debugLog('Patched direct play profile(s) for DVD/MPEG compatibility. patched=' + patchedProfiles + ', removed=' + removedProfiles);
+        }
+    }
+
+    function patchH264InterlaceSupport(profile) {
+        if (!profile || !profile.CodecProfiles) {
+            return;
+        }
+
+        var patchedCodecProfiles = 0;
+        for (var i = 0; i < profile.CodecProfiles.length; i++) {
+            var codecProfile = profile.CodecProfiles[i];
+            if (!codecProfile || (codecProfile.Type && codecProfile.Type.toString().toLowerCase() !== 'video')) {
+                continue;
+            }
+
+            if (!hasH264Codec(codecProfile.Codec)) {
+                continue;
+            }
+
+            if (!codecProfile.Conditions) {
+                codecProfile.Conditions = [];
+            }
+
+            if (hasIsInterlacedCondition(codecProfile.Conditions)) {
+                continue;
+            }
+
+            codecProfile.Conditions.push({
+                Condition: 'NotEquals',
+                Property: 'IsInterlaced',
+                Value: 'true',
+                IsRequired: false
+            });
+            patchedCodecProfiles++;
+        }
+
+        if (patchedCodecProfiles) {
+            debugLog('Added non-interlaced H264 condition to codec profile(s):', patchedCodecProfiles);
+        }
+    }
+
+    function applyPlaybackCompatibilityProfilePatches(profile) {
+        if (!profile || typeof profile !== 'object') {
+            return profile;
+        }
+
+        patchDirectPlayProfilesForProblematicFormats(profile);
+        patchH264InterlaceSupport(profile);
+        return profile;
+    }
+
     // List of supported features
     var SupportedFeatures = [
         'exit',
@@ -704,7 +1688,7 @@
                     supportsHdr10: deviceInfo ? deviceInfo.hdr10 : null
                 });
 
-                return profile;
+                return applyPlaybackCompatibilityProfilePatches(profile);
             },
 
             getSyncProfile: function (profileBuilder) {
@@ -767,6 +1751,29 @@
         },
 
         updateMediaSession: function (mediaInfo) {
+            var itemId = mediaInfo && mediaInfo.itemId ? mediaInfo.itemId.toString() : null;
+            setCurrentPlaybackItemId(itemId, 'item-changed');
+
+            var dynamicRangeHint = getDynamicRangeHintFromMediaInfo(mediaInfo);
+            if (dynamicRangeHint !== 'unknown') {
+                setPlaybackDynamicRange(dynamicRangeHint, 'media-session');
+            }
+
+            if (itemId) {
+                fetchDynamicRangeHintForItemId(itemId).then(function (itemHint) {
+                    if (currentMediaSessionItemId !== itemId) {
+                        return;
+                    }
+
+                    if (itemHint !== 'unknown') {
+                        setPlaybackDynamicRange(itemHint, 'item-metadata');
+                    }
+                });
+            } else if (dynamicRangeHint === 'unknown') {
+                setPlaybackDynamicRange('unknown', 'media-session-no-item');
+            }
+
+            scheduleHdrUiInfoScan(60);
             postMessage('updateMediaSession', { mediaInfo: mediaInfo });
         },
 
@@ -778,9 +1785,15 @@
 
     initHeaderPinning();
     loadPersistedDtsOverrides();
+    loadPersistedHdrUiDimBrightness();
     applyForcedDtsPassthroughSetting();
+    applyHdrUiDimSettings();
     emitFeatureOverridesChanged();
     initDtsOverrideSettingsInjection();
     initQualityMenuPatching();
     setQualityMenuObserverEnabled(false);
+    initPlaybackInfoInterception();
+    initHdrUiInfoObserver();
+    setHdrUiInfoObserverEnabled(false);
+    refreshHdrUiDimming('init');
 })(window.AppInfo, window.DeviceInfo, window.WebOSFeatureOverrides);
