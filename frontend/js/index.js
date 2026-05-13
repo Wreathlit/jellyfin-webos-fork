@@ -41,8 +41,31 @@ function debugJsonLog(prefix, data) {
 }
 
 var deviceInfo;
+var deviceInfoReady = false;
+var deviceInfoCallbacks = [];
+
+function flushDeviceInfoCallbacks() {
+    var callbacks = deviceInfoCallbacks;
+    deviceInfoCallbacks = [];
+
+    for (var i = 0; i < callbacks.length; i++) {
+        callbacks[i](deviceInfo);
+    }
+}
+
+function waitForDeviceInfo(callback) {
+    if (deviceInfoReady) {
+        callback(deviceInfo);
+        return;
+    }
+
+    deviceInfoCallbacks.push(callback);
+}
+
 webOS.deviceInfo(function (info) {
     deviceInfo = info;
+    deviceInfoReady = true;
+    flushDeviceInfoCallbacks();
 });
 
 //Adds .includes to string to do substring matching
@@ -586,8 +609,11 @@ function handoff(url, bundle) {
     // In the case of "loading" and "interactive" are not caught
     contentFrame.addEventListener('load', onLoad);
 
-    contentFrame.style.display = '';
-    contentFrame.src = url;
+    waitForDeviceInfo(function () {
+        contentFrame.style.display = '';
+        contentFrame.src = url;
+        contentFrame.focus();
+    });
 }
 
 window.addEventListener('message', function (event) {

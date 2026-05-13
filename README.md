@@ -6,6 +6,7 @@ problems that are hard to solve from the server alone.
 
 The main local patch surface is:
 
+- `frontend/js/index.js`
 - `frontend/js/webOS.js`
 - `frontend/css/webOS.css`
 
@@ -16,6 +17,8 @@ TVs, several playback behaviors still need webOS-side intervention:
 
 - playback startup can ignore high bitrate intent before the player reaches the
   normal `PLAYING` state;
+- iframe handoff can race async webOS device information and can lose TV remote
+  focus;
 - Jellyfin Web quality action sheets changed enough that old menu injection can
   attach to the wrong DOM or not attach at all;
 - complex ASS subtitles can stutter or visually jump when webOS reports small
@@ -53,6 +56,25 @@ Approach:
 Status: active workaround. Do not narrow this back to `PLAYING` state only; that
 reintroduces the startup race where a newly opened video can keep the upstream
 `60 Mbps` cap until the user manually changes quality.
+
+### Startup handoff and iframe focus
+
+Problem: Dolby Vision / HDR capability detection can be inconsistent at app
+startup, and TV remote navigation can start with focus outside the hosted
+Jellyfin Web iframe after it is loaded.
+
+Cause: `webOS.deviceInfo()` is asynchronous, but Jellyfin Web receives
+`window.DeviceInfo` during iframe script injection. If the iframe is loaded
+before the Luna callback finishes, HDR/DV flags can be injected as `null`.
+
+Approach:
+
+- wait for `webOS.deviceInfo()` before assigning the Jellyfin Web iframe URL;
+- focus the content iframe after handoff so normal TV navigation starts inside
+  Jellyfin Web.
+
+Status: active workaround. The device-info wait is based on upstream PR #331,
+and iframe focus follows upstream PR #332.
 
 ### Settings injection
 
