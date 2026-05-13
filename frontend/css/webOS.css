@@ -52,27 +52,32 @@
 
 .layout-tv body.webos-hdr-ui-dim .videoSubtitlesInner,
 .layout-tv body.webos-hdr-ui-dim .videoSecondarySubtitlesInner {
-    opacity: 0.62 !important;
-}
-
-.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer .libassjs-canvas-parent {
-    filter: brightness(var(--webos-hdr-subtitle-brightness, 0.52)) !important;
+    opacity: var(--webos-hdr-subtitle-opacity, 0.62) !important;
 }
 
 /* PGS/image subtitle renderers commonly draw into canvas/img overlays. */
 .layout-tv body.webos-hdr-ui-dim .videoPlayerContainer canvas[class*="pgs"],
 .layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="pgs"] canvas,
-.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="libpgs"],
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer canvas[class*="libpgs"],
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="libpgs"] canvas,
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="libpgs"] img,
 .layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="subtitle"] canvas,
 .layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="subtitle"] img {
     filter: brightness(var(--webos-hdr-pgs-brightness, 0.5)) !important;
-    opacity: 0.62 !important;
+    opacity: var(--webos-hdr-subtitle-opacity, 0.62) !important;
 }
 
 /* Last-resort: many PGS renderers emit plain canvas/img nodes without class names. */
 .layout-tv body.webos-hdr-ui-dim .videoPlayerContainer canvas,
 .layout-tv body.webos-hdr-ui-dim .videoPlayerContainer img {
     filter: brightness(var(--webos-hdr-pgs-brightness, 0.5)) !important;
+}
+
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer .libassjs-canvas-parent canvas,
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="libass"] canvas,
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="libass"] img {
+    filter: brightness(var(--webos-hdr-subtitle-brightness, 0.52)) !important;
+    opacity: var(--webos-hdr-subtitle-opacity, 0.62) !important;
 }
 
 .layout-tv .webos-hdr-ui-dim-control .webos-hdr-ui-dim-header {
