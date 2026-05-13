@@ -80,6 +80,26 @@
     var HDR_SUBTITLE_MIN_OPACITY_PERCENT = Math.round(HDR_SUBTITLE_MIN_OPACITY * 100);
     var HDR_SUBTITLE_MAX_OPACITY_PERCENT = Math.round(HDR_SUBTITLE_MAX_OPACITY * 100);
     var HDR_SUBTITLE_DEFAULT_OPACITY_PERCENT = Math.round(HDR_SUBTITLE_DEFAULT_OPACITY * 100);
+    var POINTER_FIRST_CLICK_FOCUS_RESTORE_DELAYS = [0, 40, 120];
+    var POINTER_FIRST_CLICK_SUPPRESS_NATIVE_CLICK_MS = 700;
+    var POINTER_FIRST_CLICK_FOCUS_TARGET_SELECTOR = [
+        'a[href]',
+        'button',
+        'input:not([type="hidden"])',
+        'select',
+        'textarea',
+        '[role="button"]',
+        '[role="link"]',
+        '[role="menuitem"]',
+        '[role="option"]',
+        '[data-action]',
+        '[tabindex]:not([tabindex="-1"])',
+        '.card',
+        '.cardBox',
+        '.listItem',
+        '.itemAction',
+        '.emby-button'
+    ].join(',');
     var playbackDiagnosticsEnabled = !!(featureOverrides && featureOverrides.playbackDiagnosticsEnabled);
     var disableAssRenderAhead = featureOverrides && typeof featureOverrides.disableAssRenderAhead === 'boolean' ? featureOverrides.disableAssRenderAhead : true;
     var assTimeSyncFixEnabled = featureOverrides && typeof featureOverrides.assTimeSyncFixEnabled === 'boolean' ? featureOverrides.assTimeSyncFixEnabled : true;
@@ -167,6 +187,11 @@
     var pgsMainThreadDrawCount = 0;
     var pgsMainThreadDropCount = 0;
     var pgsMainThreadLastInfo = 'none';
+    var pointerFirstClickFocusInitialized = false;
+    var pointerFirstClickSuppressTarget = null;
+    var pointerFirstClickSuppressUntil = 0;
+    var pointerFirstClickLastDirectTarget = null;
+    var pointerFirstClickLastDirectTs = 0;
 
     function postMessage(type, data) {
         window.top.postMessage({
@@ -702,6 +727,282 @@
             parsed = max;
         }
         return parsed;
+    }
+
+    function getPointerFirstClickViewportWidth() {
+        return window.innerWidth || (document.documentElement && document.documentElement.clientWidth) || (document.body && document.body.clientWidth) || 0;
+    }
+
+    function getPointerFirstClickViewportHeight() {
+        return window.innerHeight || (document.documentElement && document.documentElement.clientHeight) || (document.body && document.body.clientHeight) || 0;
+    }
+
+    function isPointerFirstClickEditableElement(element) {
+        var current = element && element.nodeType === 1 ? element : element && element.parentNode;
+        while (current && current.nodeType === 1) {
+            var tagName = current.tagName ? current.tagName.toLowerCase() : '';
+            var role = current.getAttribute ? (current.getAttribute('role') || '').toLowerCase() : '';
+            var type = current.getAttribute ? (current.getAttribute('type') || '').toLowerCase() : '';
+
+            if (tagName === 'textarea' || current.isContentEditable) {
+                return true;
+            }
+
+            if (tagName === 'input' && type !== 'button' && type !== 'submit' && type !== 'reset' && type !== 'checkbox' && type !== 'radio') {
+                return true;
+            }
+
+            if (role === 'textbox' || role === 'spinbutton' || role === 'slider') {
+                return true;
+            }
+
+            current = current.parentNode;
+        }
+
+        return false;
+    }
+
+    function isPointerFirstClickVisible(element) {
+        if (!element || !element.getBoundingClientRect || !element.getClientRects || !element.getClientRects().length) {
+            return false;
+        }
+
+        var rect = element.getBoundingClientRect();
+        return rect.right > 0
+            && rect.bottom > 0
+            && rect.left < getPointerFirstClickViewportWidth()
+            && rect.top < getPointerFirstClickViewportHeight();
+    }
+
+    function closestPointerFirstClickTarget(node) {
+        var current = node && node.nodeType === 1 ? node : node && node.parentNode;
+        while (current && current.nodeType === 1 && current !== document.body && current !== document.documentElement) {
+            if (elementMatchesSelector(current, POINTER_FIRST_CLICK_FOCUS_TARGET_SELECTOR)) {
+                return current;
+            }
+            current = current.parentNode;
+        }
+
+        return null;
+    }
+
+    function isPointerFirstClickDisabled(element) {
+        if (!element) {
+            return true;
+        }
+
+        if (element.disabled) {
+            return true;
+        }
+
+        if (element.getAttribute && element.getAttribute('aria-disabled') === 'true') {
+            return true;
+        }
+
+        return !!(element.classList && (element.classList.contains('disabled') || element.classList.contains('is-disabled')));
+    }
+
+    function canPointerFirstClickDirectlyActivate(element) {
+        if (!element || !element.click || isPointerFirstClickDisabled(element) || isPointerFirstClickEditableElement(element)) {
+            return false;
+        }
+
+        var tagName = element.tagName ? element.tagName.toLowerCase() : '';
+        var role = element.getAttribute ? (element.getAttribute('role') || '').toLowerCase() : '';
+
+        return tagName === 'a'
+            || tagName === 'button'
+            || tagName === 'input'
+            || role === 'button'
+            || role === 'link'
+            || role === 'menuitem'
+            || role === 'option'
+            || !!(element.getAttribute && element.getAttribute('data-action'))
+            || !!(element.classList && (
+                element.classList.contains('card')
+                || element.classList.contains('cardBox')
+                || element.classList.contains('listItem')
+                || element.classList.contains('itemAction')
+                || element.classList.contains('emby-button')
+            ));
+    }
+
+    function collectPointerFirstClickScrollState(element) {
+        var states = [];
+        var seen = [];
+
+        function addNode(node) {
+            if (!node || seen.indexOf(node) !== -1) {
+                return;
+            }
+            seen.push(node);
+            states.push({
+                node: node,
+                left: node.scrollLeft || 0,
+                top: node.scrollTop || 0
+            });
+        }
+
+        addNode(document.scrollingElement || document.documentElement || document.body);
+
+        var current = element && element.parentNode;
+        while (current && current.nodeType === 1) {
+            if (current.scrollHeight > current.clientHeight || current.scrollWidth > current.clientWidth) {
+                addNode(current);
+            }
+            current = current.parentNode;
+        }
+
+        return states;
+    }
+
+    function restorePointerFirstClickScrollState(states) {
+        if (!states) {
+            return;
+        }
+
+        for (var i = 0; i < states.length; i++) {
+            if (!states[i].node) {
+                continue;
+            }
+            states[i].node.scrollLeft = states[i].left;
+            states[i].node.scrollTop = states[i].top;
+        }
+    }
+
+    function schedulePointerFirstClickScrollRestore(target, states) {
+        for (var i = 0; i < POINTER_FIRST_CLICK_FOCUS_RESTORE_DELAYS.length; i++) {
+            setTimeout(function () {
+                if (target && target.isConnected) {
+                    restorePointerFirstClickScrollState(states);
+                }
+            }, POINTER_FIRST_CLICK_FOCUS_RESTORE_DELAYS[i]);
+        }
+    }
+
+    function focusPointerFirstClickTargetWithoutScroll(target) {
+        if (!target || !target.focus) {
+            return;
+        }
+
+        var states = collectPointerFirstClickScrollState(target);
+        try {
+            target.focus({ preventScroll: true });
+        } catch (error) {
+            try {
+                target.focus();
+            } catch (focusError) {
+                return;
+            }
+        }
+
+        restorePointerFirstClickScrollState(states);
+        schedulePointerFirstClickScrollRestore(target, states);
+    }
+
+    function suppressPointerFirstClickNativeClick(target) {
+        pointerFirstClickSuppressTarget = target;
+        pointerFirstClickSuppressUntil = Date.now() + POINTER_FIRST_CLICK_SUPPRESS_NATIVE_CLICK_MS;
+    }
+
+    function isPointerFirstClickDuplicateDirectActivation(target) {
+        return pointerFirstClickLastDirectTarget === target && (Date.now() - pointerFirstClickLastDirectTs) < 350;
+    }
+
+    function markPointerFirstClickDirectActivation(target) {
+        pointerFirstClickLastDirectTarget = target;
+        pointerFirstClickLastDirectTs = Date.now();
+    }
+
+    function stopPointerFirstClickOriginalEvent(event) {
+        if (event.preventDefault) {
+            event.preventDefault();
+        }
+        if (event.stopImmediatePropagation) {
+            event.stopImmediatePropagation();
+        } else if (event.stopPropagation) {
+            event.stopPropagation();
+        }
+    }
+
+    function directlyActivatePointerFirstClickTarget(target, event) {
+        if (isPointerFirstClickDuplicateDirectActivation(target)) {
+            stopPointerFirstClickOriginalEvent(event);
+            return;
+        }
+
+        var states = collectPointerFirstClickScrollState(target);
+        markPointerFirstClickDirectActivation(target);
+        stopPointerFirstClickOriginalEvent(event);
+        restorePointerFirstClickScrollState(states);
+        target.click();
+        suppressPointerFirstClickNativeClick(target);
+        restorePointerFirstClickScrollState(states);
+        schedulePointerFirstClickScrollRestore(target, states);
+    }
+
+    function shouldHandlePointerFirstClickEvent(event) {
+        if (!event || event.defaultPrevented) {
+            return false;
+        }
+
+        if (event.type === 'mousedown' && typeof event.button === 'number' && event.button !== 0) {
+            return false;
+        }
+
+        if (event.type === 'pointerdown') {
+            if (event.isPrimary === false) {
+                return false;
+            }
+            if (event.pointerType && event.pointerType !== 'mouse' && event.pointerType !== 'pen') {
+                return false;
+            }
+        }
+
+        if (isInsideWebOSSettingsRoot(event.target)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    function handlePointerFirstClickDown(event) {
+        if (!shouldHandlePointerFirstClickEvent(event)) {
+            return;
+        }
+
+        var target = closestPointerFirstClickTarget(event.target);
+        if (!target || !isPointerFirstClickVisible(target) || isPointerFirstClickDisabled(target)) {
+            return;
+        }
+
+        if (canPointerFirstClickDirectlyActivate(target)) {
+            directlyActivatePointerFirstClickTarget(target, event);
+            return;
+        }
+
+        focusPointerFirstClickTargetWithoutScroll(target);
+    }
+
+    function handlePointerFirstClickNativeClick(event) {
+        if (!pointerFirstClickSuppressTarget || Date.now() > pointerFirstClickSuppressUntil) {
+            pointerFirstClickSuppressTarget = null;
+            return;
+        }
+
+        stopPointerFirstClickOriginalEvent(event);
+        pointerFirstClickSuppressTarget = null;
+    }
+
+    function initPointerFirstClickFocusFix() {
+        if (pointerFirstClickFocusInitialized) {
+            return;
+        }
+        pointerFirstClickFocusInitialized = true;
+
+        window.addEventListener('pointerdown', handlePointerFirstClickDown, true);
+        window.addEventListener('mousedown', handlePointerFirstClickDown, true);
+        window.addEventListener('click', handlePointerFirstClickNativeClick, true);
     }
 
     function clampHdrUiDimBrightness(value) {
@@ -4242,6 +4543,7 @@
     syncPgsMainThreadStatsHelper();
     syncPgsRenderGuard();
     syncPgsRendererOptionsHelper();
+    initPointerFirstClickFocusFix();
     initAssScriptInterception();
     initAssRendererInterception();
     applyHdrUiDimSettings();

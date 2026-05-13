@@ -21,6 +21,8 @@ TVs, several playback behaviors still need webOS-side intervention:
   focus;
 - Jellyfin Web quality action sheets changed enough that old menu injection can
   attach to the wrong DOM or not attach at all;
+- pointer-mode clicks can be consumed by TV focus handling before the intended
+  card/button action runs;
 - complex ASS subtitles can stutter or visually jump when webOS reports small
   backward media-time samples to the subtitle renderer;
 - complex PGS subtitles can flash stale text when libpgs reuses object ids in
@@ -75,6 +77,32 @@ Approach:
 
 Status: active workaround. The device-info wait is based on upstream PR #331,
 and iframe focus follows upstream PR #332.
+
+### Pointer click activation
+
+Problem: in pointer mode, clicking a focusable card/button can first move focus
+and scroll the list toward centering that item instead of immediately running
+the clicked action. This is especially visible when Jellyfin Web currently has
+no useful focus, but the expected mouse behavior is the same even when another
+item is focused.
+
+Cause: the TV layout focus manager can treat the first pointer interaction as a
+focus request. That focus path can call scroll positioning before the normal
+click action is allowed to run.
+
+Approach:
+
+- capture primary pointer/mouse down events before Jellyfin Web focus handling;
+- resolve the nearest actionable container, such as a card, list item, button,
+  link, role button/link/menu item, or `data-action` element;
+- if that container can directly respond to click, call its `click()` handler at
+  the container level and suppress the following native click to avoid double
+  activation;
+- if the target cannot directly respond to click, focus it with
+  `preventScroll` and restore the surrounding scroll containers.
+
+Status: active workaround. Injected settings controls are skipped so sliders and
+checkboxes keep their native behavior.
 
 ### Settings injection
 
