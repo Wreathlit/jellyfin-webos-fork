@@ -49,17 +49,23 @@
     var settingsEnsureTimer = null;
     var settingsEnsureScheduled = false;
     var settingsEnsureAttemptsLeft = 0;
+    var settingsEnsureLastRunTs = 0;
     var SETTINGS_INJECTION_RETRY_DELAY = 250;
     var SETTINGS_INJECTION_MAX_RETRIES = 20;
+    var SETTINGS_INJECTION_MUTATION_DELAY = 200;
     var PLAYBACK_DIAGNOSTICS_KEY = 'webos_playback_diagnostics_overlay';
     var DISABLE_ASS_RENDER_AHEAD_KEY = 'webos_disable_ass_render_ahead';
-    var DROP_ASS_ANIMATIONS_KEY = 'webos_drop_ass_animations';
+    var ASS_TIME_SYNC_FIX_KEY = 'webos_ass_time_sync_fix';
     var ASS_RENDER_AHEAD_LIMIT_MIB = 0;
     var ASS_TIME_SYNC_INTERVAL_MS = 33;
     var ASS_TIME_SYNC_BACKWARD_TOLERANCE_SECONDS = 0.03;
     var ASS_TIME_SYNC_SEEK_BACK_SECONDS = 0.75;
     var PLAYBACK_DIAGNOSTICS_UPDATE_INTERVAL = 500;
     var SCRIPT_PATCH_FETCH_TIMEOUT_MS = 8000;
+    var PGS_FORCE_MAIN_THREAD_KEY = 'webos_pgs_force_main_thread';
+    var PGS_PATCH_OBJECT_REUSE_KEY = 'webos_pgs_patch_object_reuse';
+    var DEFAULT_PGS_FORCE_MAIN_THREAD = true;
+    var DEFAULT_PGS_PATCH_OBJECT_REUSE = true;
     var HDR_UI_DIM_BRIGHTNESS_KEY = 'webos_hdr_ui_dim_brightness';
     var HDR_UI_DIM_DEFAULT_BRIGHTNESS = 0.3;
     var HDR_UI_DIM_MIN_BRIGHTNESS = 0.05;
@@ -76,7 +82,9 @@
     var HDR_SUBTITLE_DEFAULT_OPACITY_PERCENT = Math.round(HDR_SUBTITLE_DEFAULT_OPACITY * 100);
     var playbackDiagnosticsEnabled = !!(featureOverrides && featureOverrides.playbackDiagnosticsEnabled);
     var disableAssRenderAhead = featureOverrides && typeof featureOverrides.disableAssRenderAhead === 'boolean' ? featureOverrides.disableAssRenderAhead : true;
-    var dropAssAnimations = !!(featureOverrides && featureOverrides.dropAssAnimations);
+    var assTimeSyncFixEnabled = featureOverrides && typeof featureOverrides.assTimeSyncFixEnabled === 'boolean' ? featureOverrides.assTimeSyncFixEnabled : true;
+    var pgsForceMainThread = featureOverrides && typeof featureOverrides.pgsForceMainThread === 'boolean' ? featureOverrides.pgsForceMainThread : DEFAULT_PGS_FORCE_MAIN_THREAD;
+    var pgsPatchObjectReuse = featureOverrides && typeof featureOverrides.pgsPatchObjectReuse === 'boolean' ? featureOverrides.pgsPatchObjectReuse : DEFAULT_PGS_PATCH_OBJECT_REUSE;
     var hdrUiDimBrightness = HDR_UI_DIM_DEFAULT_BRIGHTNESS;
     var hdrSubtitleOpacity = HDR_SUBTITLE_DEFAULT_OPACITY;
     var HDR_UI_DIM_CLASS = 'webos-hdr-ui-dim';
@@ -112,9 +120,7 @@
     var playbackDiagnosticsLongTaskDisplayDuration = 0;
     var playbackDiagnosticsLongTaskDisplayMax = 0;
     var assRendererInterceptionInitialized = false;
-    var assWorkerInitPatchCount = 0;
     var assWorkerOneshotBlockedCount = 0;
-    var assWorkerLastPatchInfo = 'none';
     var assScriptInterceptionInitialized = false;
     var assScriptPatchCount = 0;
     var assScriptLastPatchInfo = 'none';
@@ -136,6 +142,9 @@
     var pgsScriptTimePatchCount = 0;
     var pgsScriptAsyncPatchCount = 0;
     var pgsScriptRenderPatchCount = 0;
+    var pgsScriptMainThreadPatchCount = 0;
+    var pgsScriptObjectPatchCount = 0;
+    var pgsScriptModePatchCount = 0;
     var pgsScriptLastPatchInfo = 'none';
     var pgsTimeSampleWindowStartTs = 0;
     var pgsTimeSampleWindowCount = 0;
@@ -154,6 +163,10 @@
     var pgsRenderBackwardCount = 0;
     var pgsRenderDropCount = 0;
     var pgsRenderLastInfo = 'none';
+    var pgsMainThreadRequestCount = 0;
+    var pgsMainThreadDrawCount = 0;
+    var pgsMainThreadDropCount = 0;
+    var pgsMainThreadLastInfo = 'none';
 
     function postMessage(type, data) {
         window.top.postMessage({
@@ -458,13 +471,13 @@
         playbackDiagnosticsOverlay.style.pointerEvents = 'none';
         playbackDiagnosticsOverlay.style.background = 'rgba(0, 0, 0, 0.76)';
         playbackDiagnosticsOverlay.style.color = '#d6f6ff';
-        playbackDiagnosticsOverlay.style.font = '13px/1.35 monospace';
+        playbackDiagnosticsOverlay.style.font = '12px/1.35 monospace';
         playbackDiagnosticsOverlay.style.whiteSpace = 'pre';
         playbackDiagnosticsOverlay.style.padding = '0.55rem 0.7rem';
         playbackDiagnosticsOverlay.style.border = '1px solid rgba(0, 164, 220, 0.65)';
         playbackDiagnosticsOverlay.style.borderRadius = '4px';
-        playbackDiagnosticsOverlay.style.maxWidth = '44rem';
-        playbackDiagnosticsOverlay.textContent = 'webOS playback diagnostics';
+        playbackDiagnosticsOverlay.style.maxWidth = '38rem';
+        playbackDiagnosticsOverlay.textContent = 'webOS diagnostics';
         document.body.appendChild(playbackDiagnosticsOverlay);
 
         return playbackDiagnosticsOverlay;
@@ -484,14 +497,6 @@
         }
 
         var canvas = canvases[0];
-        var parent = findParentByClass(canvas, 'libassjs-canvas-parent') || canvas.parentNode || canvas;
-        var computedStyle = null;
-        try {
-            computedStyle = window.getComputedStyle ? window.getComputedStyle(parent) : null;
-        } catch (error) {
-            computedStyle = null;
-        }
-
         var size = (canvas.width || 0).toString() + 'x' + (canvas.height || 0).toString();
         var cssSize = 'n/a';
         try {
@@ -502,45 +507,42 @@
         } catch (error) {
             cssSize = 'n/a';
         }
-        var filter = computedStyle ? computedStyle.filter || computedStyle.webkitFilter || 'none' : 'n/a';
-        var opacity = computedStyle ? computedStyle.opacity || 'n/a' : 'n/a';
-        return canvases.length.toString() + ' size=' + size + ' css=' + cssSize + ' filter=' + filter + ' opacity=' + opacity;
+        return canvases.length.toString() + ' ' + size + '/' + cssSize;
     }
 
     function getPlaybackDiagnosticsAssWorkerInfo() {
-        return 'initPatch=' + assWorkerInitPatchCount.toString()
-            + ' oneshotBlocked=' + assWorkerOneshotBlockedCount.toString()
-            + ' renderAhead=' + (disableAssRenderAhead ? ASS_RENDER_AHEAD_LIMIT_MIB.toString() : 'upstream')
-            + ' scriptPatch=' + assScriptPatchCount.toString()
-            + ' videoMsg=' + assWorkerVideoMessageDisplayCount.toString() + 'ps'
-            + ' activeSync=off'
-            + ' msgPatch=' + assWorkerVideoMessagePatchCount.toString()
+        return 'patch=' + assScriptPatchCount.toString()
+            + '/' + assWorkerVideoMessagePatchCount.toString()
+            + ' msg=' + assWorkerVideoMessageDisplayCount.toString() + '/s'
             + ' clamp=' + assWorkerTimeSyncClampCount.toString()
-            + ' dropAnim=' + dropAssAnimations
-            + ' last=' + assWorkerLastPatchInfo
-            + ' script=' + assScriptLastPatchInfo;
+            + ' timeFix=' + (assTimeSyncFixEnabled ? 'on' : 'off');
     }
 
     function getPlaybackDiagnosticsPgsInfo() {
-        return 'scriptPatch=' + pgsScriptPatchCount.toString()
-            + '(time' + pgsScriptTimePatchCount.toString()
-            + '/async' + pgsScriptAsyncPatchCount.toString()
-            + '/render' + pgsScriptRenderPatchCount.toString() + ')'
-            + ' time=' + pgsTimeSampleDisplayCount.toString() + 'ps'
+        return 'patch=' + pgsScriptPatchCount.toString()
+            + '(t' + pgsScriptTimePatchCount.toString()
+            + '/a' + pgsScriptAsyncPatchCount.toString()
+            + '/r' + pgsScriptRenderPatchCount.toString()
+            + '/m' + pgsScriptMainThreadPatchCount.toString()
+            + '/o' + pgsScriptObjectPatchCount.toString()
+            + '/mode' + pgsScriptModePatchCount.toString() + ')'
+            + ' target=' + (pgsForceMainThread ? 'main' : 'auto')
+            + ' obj=' + (pgsPatchObjectReuse ? 'on' : 'off')
+            + ' time=' + pgsTimeSampleDisplayCount.toString() + '/s'
             + ' back=' + pgsTimeBackwardCount.toString()
-            + ' maxBack=' + pgsTimeMaxBackwardMs.toString() + 'ms'
+            + ' max=' + pgsTimeMaxBackwardMs.toString() + 'ms'
             + ' clamp=' + pgsTimeClampCount.toString()
-            + ' lastClamp=' + pgsTimeLastClampInfo
-            + ' async=req' + pgsAsyncRequestCount.toString()
-            + '/draw' + pgsAsyncDrawCount.toString()
-            + '/drop' + pgsAsyncStaleDropCount.toString()
-            + ' lastAsync=' + pgsAsyncLastInfo
-            + ' render=req' + pgsRenderRequestCount.toString()
-            + '/post' + pgsRenderPostCount.toString()
-            + '/back' + pgsRenderBackwardCount.toString()
-            + '/drop' + pgsRenderDropCount.toString()
-            + ' lastRender=' + pgsRenderLastInfo
-            + ' script=' + pgsScriptLastPatchInfo;
+            + '\nPGS ctr'
+            + ' async=' + pgsAsyncRequestCount.toString()
+            + '/' + pgsAsyncDrawCount.toString()
+            + '/' + pgsAsyncStaleDropCount.toString()
+            + ' render=' + pgsRenderRequestCount.toString()
+            + '/' + pgsRenderPostCount.toString()
+            + '/' + pgsRenderBackwardCount.toString()
+            + '/' + pgsRenderDropCount.toString()
+            + ' main=' + pgsMainThreadRequestCount.toString()
+            + '/' + pgsMainThreadDrawCount.toString()
+            + '/' + pgsMainThreadDropCount.toString();
     }
 
     function updatePlaybackDiagnosticsText(now) {
@@ -569,16 +571,11 @@
         var rVfcSupported = !!(video && video.requestVideoFrameCallback);
 
         overlay.textContent = [
-            'webOS playback diagnostics',
-            'state=' + playbackState + ' range=' + playbackDynamicRange,
-            'rAF=' + playbackDiagnosticsRafFps + ' fps rVFC=' + (rVfcSupported ? playbackDiagnosticsVideoFrameFps + ' fps' : 'unsupported') + ' vSyncDelta=' + (rVfcSupported ? playbackDiagnosticsVideoFrameDelta + 'ms' : 'n/a'),
-            'longTask=' + formatPlaybackDiagnosticsLongTaskInfo(now),
-            'video=' + dimensions + ' t=' + currentTime + ' paused=' + (video ? video.paused : 'n/a') + ' ready=' + (video ? video.readyState : 'n/a') + ' rate=' + (video ? video.playbackRate : 'n/a'),
-            'assCanvas=' + getPlaybackDiagnosticsAssCanvasInfo(),
-            'assWorker=' + getPlaybackDiagnosticsAssWorkerInfo(),
-            'pgs=' + getPlaybackDiagnosticsPgsInfo(),
-            'frames dropped=' + formatPlaybackDiagnosticsNumber(dropped) + ' total=' + formatPlaybackDiagnosticsNumber(total),
-            'ua=' + navigator.userAgent
+            'webOS diagnostics',
+            'state=' + playbackState + ' range=' + playbackDynamicRange + ' rAF=' + playbackDiagnosticsRafFps + ' rVFC=' + (rVfcSupported ? playbackDiagnosticsVideoFrameFps : 'n/a') + ' delta=' + (rVfcSupported ? playbackDiagnosticsVideoFrameDelta + 'ms' : 'n/a'),
+            'long=' + formatPlaybackDiagnosticsLongTaskInfo(now) + ' video=' + dimensions + ' t=' + currentTime + ' drop=' + formatPlaybackDiagnosticsNumber(dropped) + '/' + formatPlaybackDiagnosticsNumber(total),
+            'ASS canvas=' + getPlaybackDiagnosticsAssCanvasInfo() + ' worker=' + getPlaybackDiagnosticsAssWorkerInfo(),
+            'PGS ' + getPlaybackDiagnosticsPgsInfo()
         ].join('\n');
 
         playbackDiagnosticsLastUpdateTs = now;
@@ -847,7 +844,9 @@
             }
             playbackDiagnosticsEnabled = parseStoredBoolean(localStorage.getItem(PLAYBACK_DIAGNOSTICS_KEY), playbackDiagnosticsEnabled);
             disableAssRenderAhead = parseStoredBoolean(localStorage.getItem(DISABLE_ASS_RENDER_AHEAD_KEY), disableAssRenderAhead);
-            dropAssAnimations = parseStoredBoolean(localStorage.getItem(DROP_ASS_ANIMATIONS_KEY), dropAssAnimations);
+            assTimeSyncFixEnabled = parseStoredBoolean(localStorage.getItem(ASS_TIME_SYNC_FIX_KEY), assTimeSyncFixEnabled);
+            pgsForceMainThread = parseStoredBoolean(localStorage.getItem(PGS_FORCE_MAIN_THREAD_KEY), pgsForceMainThread);
+            pgsPatchObjectReuse = parseStoredBoolean(localStorage.getItem(PGS_PATCH_OBJECT_REUSE_KEY), pgsPatchObjectReuse);
         } catch (error) {
             console.warn('Failed to load persisted webOS diagnostics settings:', error);
         }
@@ -860,7 +859,9 @@
             }
             localStorage.setItem(PLAYBACK_DIAGNOSTICS_KEY, playbackDiagnosticsEnabled ? 'true' : 'false');
             localStorage.setItem(DISABLE_ASS_RENDER_AHEAD_KEY, disableAssRenderAhead ? 'true' : 'false');
-            localStorage.setItem(DROP_ASS_ANIMATIONS_KEY, dropAssAnimations ? 'true' : 'false');
+            localStorage.setItem(ASS_TIME_SYNC_FIX_KEY, assTimeSyncFixEnabled ? 'true' : 'false');
+            localStorage.setItem(PGS_FORCE_MAIN_THREAD_KEY, pgsForceMainThread ? 'true' : 'false');
+            localStorage.setItem(PGS_PATCH_OBJECT_REUSE_KEY, pgsPatchObjectReuse ? 'true' : 'false');
         } catch (error) {
             console.warn('Failed to save webOS diagnostics settings:', error);
         }
@@ -879,17 +880,16 @@
         debugLog('ASS/libass render-ahead limit changed (' + reason + '): ' + disableAssRenderAhead);
     }
 
-    function setDropAssAnimations(enabled, reason) {
+    function setAssTimeSyncFixEnabled(enabled, reason) {
         var nextValue = !!enabled;
-        if (dropAssAnimations === nextValue) {
+        if (assTimeSyncFixEnabled === nextValue) {
             return;
         }
 
-        dropAssAnimations = nextValue;
+        assTimeSyncFixEnabled = nextValue;
         savePersistedPlaybackDiagnosticsSettings();
-        syncAssRendererOptions();
         emitFeatureOverridesChanged();
-        debugLog('ASS/libass animation dropping changed (' + reason + '): ' + dropAssAnimations);
+        debugLog('ASS/libass time rollback fix changed (' + reason + '): ' + assTimeSyncFixEnabled);
     }
 
     function setPlaybackDiagnosticsEnabled(enabled, reason) {
@@ -906,19 +906,48 @@
         debugLog('Playback diagnostics overlay changed (' + reason + '): ' + playbackDiagnosticsEnabled);
     }
 
+    function setPgsForceMainThread(enabled, reason) {
+        var nextValue = !!enabled;
+        if (pgsForceMainThread === nextValue) {
+            syncPgsRendererOptionsHelper();
+            return;
+        }
+
+        pgsForceMainThread = nextValue;
+        savePersistedPlaybackDiagnosticsSettings();
+        syncPgsRendererOptionsHelper();
+        emitFeatureOverridesChanged();
+        debugLog('PGS force main-thread renderer changed (' + reason + '): ' + pgsForceMainThread);
+    }
+
+    function setPgsPatchObjectReuse(enabled, reason) {
+        var nextValue = !!enabled;
+        if (pgsPatchObjectReuse === nextValue) {
+            syncPgsRendererOptionsHelper();
+            return;
+        }
+
+        pgsPatchObjectReuse = nextValue;
+        savePersistedPlaybackDiagnosticsSettings();
+        syncPgsRendererOptionsHelper();
+        emitFeatureOverridesChanged();
+        debugLog('PGS object reuse patch changed (' + reason + '): ' + pgsPatchObjectReuse);
+    }
+
     function emitFeatureOverridesChanged() {
         postMessage('WebOS.featureOverrides', {
             playbackDiagnosticsEnabled: !!playbackDiagnosticsEnabled,
             disableAssRenderAhead: !!disableAssRenderAhead,
-            dropAssAnimations: !!dropAssAnimations
+            assTimeSyncFixEnabled: !!assTimeSyncFixEnabled,
+            pgsForceMainThread: !!pgsForceMainThread,
+            pgsPatchObjectReuse: !!pgsPatchObjectReuse
         });
     }
 
     function syncAssRendererOptions() {
         window.WebOSAssRendererOptions = {
             limitRenderAhead: !!disableAssRenderAhead,
-            renderAheadMiB: ASS_RENDER_AHEAD_LIMIT_MIB,
-            dropAssAnimations: !!dropAssAnimations
+            renderAheadMiB: ASS_RENDER_AHEAD_LIMIT_MIB
         };
     }
 
@@ -1021,6 +1050,30 @@
         };
     }
 
+    function syncPgsMainThreadStatsHelper() {
+        window.WebOSPgsMainThreadStats = {
+            request: function (index) {
+                pgsMainThreadRequestCount++;
+                pgsMainThreadLastInfo = 'req=' + index;
+            },
+            draw: function (index) {
+                pgsMainThreadDrawCount++;
+                pgsMainThreadLastInfo = 'draw=' + index;
+            },
+            drop: function (index, latestIndex) {
+                pgsMainThreadDropCount++;
+                pgsMainThreadLastInfo = 'drop=' + index + ' latest=' + latestIndex;
+            }
+        };
+    }
+
+    function syncPgsRendererOptionsHelper() {
+        var options = window.WebOSPgsRendererOptions || {};
+        options.forceMainThread = !!pgsForceMainThread;
+        options.patchObjectReuse = !!pgsPatchObjectReuse;
+        window.WebOSPgsRendererOptions = options;
+    }
+
     function createPgsRenderGuard() {
         var entries = [];
 
@@ -1107,20 +1160,28 @@
         return 'renderAhead:(window.WebOSAssRendererOptions&&window.WebOSAssRendererOptions.limitRenderAhead?window.WebOSAssRendererOptions.renderAheadMiB:' + originalValue + ')';
     }
 
-    function buildAssDropAnimationsReplacement() {
-        return 'dropAllAnimations:!!(window.WebOSAssRendererOptions&&window.WebOSAssRendererOptions.dropAssAnimations)';
-    }
-
     function buildPgsRenderAtVideoTimestampReplacement(methodPrefix) {
         return methodPrefix + '{if(this.video){var t=this.video.currentTime+this.$timeOffset;this.renderAtTimestamp(window.WebOSMonotonicMediaTime?window.WebOSMonotonicMediaTime.get(this.video,"pgs",t):t)}}';
     }
 
     function buildPgsAsyncSubtitleDataGuardReplacement() {
-        return 'e.prototype.render=function(t){this.__webosLatestPgsIndex=t;window.WebOSPgsAsyncStats&&window.WebOSPgsAsyncStats.request(t);this.worker.postMessage({op:"requestSubtitleData",index:t})},e.prototype.onWorkerMessage=function(e){if("subtitleData"===e.data.op){if(e.data&&typeof e.data.index==="number"&&typeof this.__webosLatestPgsIndex==="number"&&e.data.index!==this.__webosLatestPgsIndex){window.WebOSPgsAsyncStats&&window.WebOSPgsAsyncStats.drop(e.data.index,this.__webosLatestPgsIndex);return}window.WebOSPgsAsyncStats&&window.WebOSPgsAsyncStats.draw(e.data&&e.data.index);var r=e.data.subtitleData;this.renderer&&this.renderer.draw(r)}else t.prototype.onWorkerMessage.call(this,e)}';
+        return 'e.prototype.render=function(t){if(window.WebOSPgsRenderGuard&&!window.WebOSPgsRenderGuard.request(this,t))return;this.__webosLatestPgsIndex=t;window.WebOSPgsAsyncStats&&window.WebOSPgsAsyncStats.request(t);this.worker.postMessage({op:"requestSubtitleData",index:t})},e.prototype.onWorkerMessage=function(e){if("subtitleData"===e.data.op){if(e.data&&typeof e.data.index==="number"&&typeof this.__webosLatestPgsIndex==="number"&&e.data.index!==this.__webosLatestPgsIndex){window.WebOSPgsAsyncStats&&window.WebOSPgsAsyncStats.drop(e.data.index,this.__webosLatestPgsIndex);return}window.WebOSPgsAsyncStats&&window.WebOSPgsAsyncStats.draw(e.data&&e.data.index);var r=e.data.subtitleData;this.renderer&&this.renderer.draw(r)}else t.prototype.onWorkerMessage.call(this,e)}';
     }
 
     function buildPgsOffscreenRenderGuardReplacement() {
         return 'e.prototype.render=function(t){if(window.WebOSPgsRenderGuard&&!window.WebOSPgsRenderGuard.request(this,t))return;this.worker.postMessage({op:"render",index:t})}';
+    }
+
+    function buildPgsMainThreadRenderGuardReplacement(prototypeName, indexName, selfName, subtitleDataName) {
+        return prototypeName + '.prototype.render=function(' + indexName + '){if(window.WebOSPgsRenderGuard&&!window.WebOSPgsRenderGuard.request(this,' + indexName + '))return;this.__webosLatestPgsIndex=' + indexName + ';window.WebOSPgsMainThreadStats&&window.WebOSPgsMainThreadStats.request(' + indexName + ');var ' + selfName + '=this,' + subtitleDataName + '=this.pgs.getSubtitleAtIndex(' + indexName + ');requestAnimationFrame((function(){if(' + selfName + '.__webosLatestPgsIndex!==' + indexName + '){window.WebOSPgsMainThreadStats&&window.WebOSPgsMainThreadStats.drop(' + indexName + ',' + selfName + '.__webosLatestPgsIndex);return}window.WebOSPgsMainThreadStats&&window.WebOSPgsMainThreadStats.draw(' + indexName + ');' + selfName + '.renderer.draw(' + subtitleDataName + ')})),' + selfName + '.pgs.cacheSubtitleAtIndex(' + indexName + '+1)}';
+    }
+
+    function buildPgsLatestObjectDataReplacement(match, compositionName, paletteName, contextName, widthName, heightName, chunksName, indexName, arrayName, objectName) {
+        return 'getPixelDataFromComposition=function(' + compositionName + ',' + paletteName + ',' + contextName + '){var ' + widthName + '=0,' + heightName + '=0,' + chunksName + '=[];if(window.WebOSPgsRendererOptions&&window.WebOSPgsRendererOptions.patchObjectReuse){for(var ' + indexName + '=' + contextName + '.length-1;' + indexName + '>=0;' + indexName + '--){var ' + objectName + '=' + contextName + '[' + indexName + '];if(' + objectName + '.id==' + compositionName + '.id){' + objectName + '.data&&' + chunksName + '.unshift(' + objectName + '.data);if(' + objectName + '.isFirstInSequence){' + widthName + '=' + objectName + '.width,' + heightName + '=' + objectName + '.height;break}}}}else{for(var ' + indexName + '=0,' + arrayName + '=' + contextName + ';' + indexName + '<' + arrayName + '.length;' + indexName + '++){var ' + objectName + '=' + arrayName + '[' + indexName + '];' + objectName + '.id==' + compositionName + '.id&&(' + objectName + '.isFirstInSequence&&(' + widthName + '=' + objectName + '.width,' + heightName + '=' + objectName + '.height),' + objectName + '.data&&' + chunksName + '.push(' + objectName + '.data))}}if(0!=' + chunksName + '.length){';
+    }
+
+    function buildPgsForceMainThreadModeReplacement(match, optionsName, modeName, modeHelperName) {
+        return 'createPgsRenderer=function(' + optionsName + '){var ' + modeName + ';switch(window.WebOSPgsRendererOptions&&window.WebOSPgsRendererOptions.forceMainThread?"mainThread":null!==(' + modeName + '=' + optionsName + '.mode)&&void 0!==' + modeName + '?' + modeName + ':' + modeHelperName + '.getRendererModeByPlatform()){';
     }
 
     function patchAssRendererScriptText(text, url) {
@@ -1128,14 +1189,13 @@
             return text;
         }
 
-        if (text.indexOf('renderAhead') === -1 && text.indexOf('dropAllAnimations') === -1) {
+        if (text.indexOf('renderAhead') === -1) {
             return text;
         }
 
         var patched = text;
         patched = patched.replace(/renderAhead\s*:\s*90\.0\b/g, buildAssRenderAheadReplacement('90'));
         patched = patched.replace(/renderAhead\s*:\s*90(?!\.)\b/g, buildAssRenderAheadReplacement('90'));
-        patched = patched.replace(/dropAllAnimations\s*:\s*(?:false|!1)\b/g, buildAssDropAnimationsReplacement());
 
         if (patched !== text) {
             assScriptPatchCount++;
@@ -1154,7 +1214,10 @@
         var mayPatchTime = text.indexOf('renderAtVideoTimestamp') !== -1 && text.indexOf('video.currentTime') !== -1;
         var mayPatchAsync = text.indexOf('requestSubtitleData') !== -1 && text.indexOf('subtitleData') !== -1;
         var mayPatchRender = text.indexOf('op:"render"') !== -1 && text.indexOf('transferControlToOffscreen') !== -1;
-        if (!mayPatchTime && !mayPatchAsync && !mayPatchRender) {
+        var mayPatchMainThread = text.indexOf('getSubtitleAtIndex') !== -1 && text.indexOf('cacheSubtitleAtIndex') !== -1;
+        var mayPatchObjectData = text.indexOf('getPixelDataFromComposition') !== -1 && text.indexOf('isFirstInSequence') !== -1;
+        var mayPatchMode = text.indexOf('createPgsRenderer') !== -1 && text.indexOf('getRendererModeByPlatform') !== -1;
+        if (!mayPatchTime && !mayPatchAsync && !mayPatchRender && !mayPatchMainThread && !mayPatchObjectData && !mayPatchMode) {
             return text;
         }
 
@@ -1162,6 +1225,9 @@
         var patchedTime = false;
         var patchedAsync = false;
         var patchedRender = false;
+        var patchedMainThread = false;
+        var patchedObjectData = false;
+        var patchedMode = false;
         if (mayPatchTime) {
             var beforeTimePatch = patched;
             var prototypeNeedle = 'renderAtVideoTimestamp=function(){this.video&&this.renderAtTimestamp(this.video.currentTime+this.$timeOffset)}';
@@ -1178,6 +1244,26 @@
             patchedTime = patched !== beforeTimePatch;
         }
 
+        if (mayPatchObjectData) {
+            var beforeObjectDataPatch = patched;
+            patched = patched.replace(
+                /getPixelDataFromComposition=function\((\w+),(\w+),(\w+)\)\{for\(var (\w+)=0,(\w+)=0,(\w+)=\[\],(\w+)=0,(\w+)=\3;\7<\8\.length;\7\+\+\)\{var (\w+)=\8\[\7\];\9\.id==\1\.id&&\(\9\.isFirstInSequence&&\(\4=\9\.width,\5=\9\.height\),\9\.data&&\6\.push\(\9\.data\)\)\}if\(0!=\6\.length\)\{/g,
+                buildPgsLatestObjectDataReplacement
+            );
+            patchedObjectData = patched !== beforeObjectDataPatch;
+        }
+
+        if (mayPatchMainThread) {
+            var beforeMainThreadPatch = patched;
+            patched = patched.replace(
+                /(\w+)\.prototype\.render=function\((\w+)\)\{var (\w+)=this,(\w+)=this\.pgs\.getSubtitleAtIndex\(\2\);requestAnimationFrame\(\(function\(\)\{\3\.renderer\.draw\(\4\)\}\)\),this\.pgs\.cacheSubtitleAtIndex\(\2\+1\)\}/g,
+                function (match, prototypeName, indexName, selfName, subtitleDataName) {
+                    return buildPgsMainThreadRenderGuardReplacement(prototypeName, indexName, selfName, subtitleDataName);
+                }
+            );
+            patchedMainThread = patched !== beforeMainThreadPatch;
+        }
+
         if (mayPatchAsync) {
             var beforeAsyncPatch = patched;
             var asyncSubtitleDataNeedle = 'e.prototype.render=function(t){this.worker.postMessage({op:"requestSubtitleData",index:t})},e.prototype.onWorkerMessage=function(e){if("subtitleData"===e.data.op){var r=e.data.subtitleData;this.renderer&&this.renderer.draw(r)}else t.prototype.onWorkerMessage.call(this,e)}';
@@ -1192,6 +1278,15 @@
             patchedRender = patched !== beforeRenderPatch;
         }
 
+        if (mayPatchMode) {
+            var beforeModePatch = patched;
+            patched = patched.replace(
+                /createPgsRenderer=function\((\w+)\)\{var (\w+);switch\(null!==\(\2=\1\.mode\)&&void 0!==\2\?\2:(\w+)\.getRendererModeByPlatform\(\)\)\{/g,
+                buildPgsForceMainThreadModeReplacement
+            );
+            patchedMode = patched !== beforeModePatch;
+        }
+
         if (patched !== text) {
             pgsScriptPatchCount++;
             if (patchedTime) {
@@ -1202,6 +1297,15 @@
             }
             if (patchedRender) {
                 pgsScriptRenderPatchCount++;
+            }
+            if (patchedMainThread) {
+                pgsScriptMainThreadPatchCount++;
+            }
+            if (patchedObjectData) {
+                pgsScriptObjectPatchCount++;
+            }
+            if (patchedMode) {
+                pgsScriptModePatchCount++;
             }
             pgsScriptLastPatchInfo = 'patched ' + (url || 'script');
             debugLog('Patched PGS renderer script:', url || 'inline');
@@ -1499,26 +1603,7 @@
 
         markAssWorker(worker);
 
-        var patched = cloneShallowObject(message);
-        var changed = false;
-
-        if (dropAssAnimations && patched.dropAllAnimations !== true) {
-            patched.dropAllAnimations = true;
-            changed = true;
-        }
-
-        var targetFps = typeof patched.targetFps === 'number' ? Math.round(patched.targetFps * 10) / 10 : patched.targetFps;
-        assWorkerLastPatchInfo = 'fps=' + targetFps
-            + ',renderOnDemand=' + patched.renderOnDemand
-            + ',mode=' + patched.renderMode
-            + ',drop=' + patched.dropAllAnimations;
-
-        if (changed) {
-            assWorkerInitPatchCount++;
-            debugLog('Patched ASS worker init:', assWorkerLastPatchInfo);
-        }
-
-        return patched;
+        return message;
     }
 
     function shouldBlockAssWorkerMessage(message) {
@@ -1603,7 +1688,8 @@
         if (hasCurrentTime) {
             var nextCurrentTime = message.currentTime;
             var predictedTime = getPredictedAssWorkerTime(entry, now);
-            if (typeof predictedTime === 'number'
+            if (assTimeSyncFixEnabled
+                && typeof predictedTime === 'number'
                 && nextCurrentTime + ASS_TIME_SYNC_BACKWARD_TOLERANCE_SECONDS < predictedTime) {
                 var backwardsBy = predictedTime - nextCurrentTime;
                 if (backwardsBy < ASS_TIME_SYNC_SEEK_BACK_SECONDS) {
@@ -1689,6 +1775,9 @@
 
     function getClampedAssCurrentTime(entry, video) {
         var currentTime = typeof video.currentTime === 'number' ? video.currentTime : 0;
+        if (!assTimeSyncFixEnabled) {
+            return currentTime;
+        }
         if (typeof entry.lastPostedCurrentTime === 'number'
             && currentTime + ASS_TIME_SYNC_BACKWARD_TOLERANCE_SECONDS < entry.lastPostedCurrentTime) {
             var backwardsBy = entry.lastPostedCurrentTime - currentTime;
@@ -1899,18 +1988,6 @@
         return findParentByClass(element, 'checkboxContainer');
     }
 
-    function insertControlAfter(referenceNode, controlNode) {
-        if (referenceNode === document.body && controlNode) {
-            document.body.appendChild(controlNode);
-            return;
-        }
-
-        if (!referenceNode || !referenceNode.parentNode || !controlNode) {
-            return;
-        }
-        referenceNode.parentNode.insertBefore(controlNode, referenceNode.nextSibling);
-    }
-
     function getNearestControlContainer(element) {
         if (!element) {
             return null;
@@ -1922,12 +1999,103 @@
     }
 
     function getPlaybackSettingsAnchor() {
-        return document.querySelector('.fldEnableDts')
+        return getNearestControlContainer(document.querySelector('.fldEnableDts'))
             || getNearestControlContainer(document.querySelector('.chkEnableDts'))
-            || document.querySelector('.fldEnableTrueHd')
+            || getNearestControlContainer(document.querySelector('.fldEnableTrueHd'))
             || getNearestControlContainer(document.querySelector('.chkEnableTrueHd'))
             || getNearestControlContainer(document.querySelector('#selectPreferredTranscodeVideoCodec'))
             || getNearestControlContainer(document.querySelector('#selectAllowedAudioChannels'));
+    }
+
+    function isValidPlaybackSettingsRoot(candidate, selector) {
+        if (!candidate || candidate === document.body || !candidate.querySelector) {
+            return false;
+        }
+
+        return !!(candidate.querySelector(selector)
+            && candidate.querySelectorAll('.checkboxContainer,.selectContainer,.inputContainer').length >= 3);
+    }
+
+    function getPlaybackSettingsRoot(settingsAnchor) {
+        var anchorContainer = getNearestControlContainer(settingsAnchor);
+        var selector = '.fldEnableDts,.chkEnableDts,.fldEnableTrueHd,.chkEnableTrueHd,#selectPreferredTranscodeVideoCodec,#selectAllowedAudioChannels';
+        var current = anchorContainer ? anchorContainer.parentNode : settingsAnchor && settingsAnchor.parentNode;
+        var fallbackRoot = null;
+        while (current && current !== document.body) {
+            if (current.querySelector && current.querySelector(selector)) {
+                if (!fallbackRoot) {
+                    fallbackRoot = current;
+                }
+                if (isValidPlaybackSettingsRoot(current, selector)) {
+                    return current;
+                }
+            }
+            current = current.parentNode;
+        }
+
+        return fallbackRoot;
+    }
+
+    function createWebOSSettingsRoot() {
+        var root = document.createElement('div');
+        root.className = 'webos-settings-section-root';
+        return root;
+    }
+
+    function ensureWebOSSettingsRootHeading(root) {
+        var heading = root.querySelector('.webos-settings-main-title');
+        if (!heading) {
+            heading = document.createElement('h2');
+            heading.className = 'webos-settings-main-title';
+            heading.textContent = 'webOS playback fixes';
+        }
+        if (root.firstChild !== heading) {
+            root.insertBefore(heading, root.firstChild);
+        }
+    }
+
+    function ensureWebOSSettingsRoot(settingsAnchor) {
+        var playbackSettingsRoot = getPlaybackSettingsRoot(settingsAnchor);
+        if (!playbackSettingsRoot) {
+            removeWebOSSettingsRoot();
+            return null;
+        }
+
+        var root = document.querySelector('.webos-settings-section-root') || createWebOSSettingsRoot();
+        if (root.parentNode !== playbackSettingsRoot || root.nextSibling) {
+            playbackSettingsRoot.appendChild(root);
+        }
+        ensureWebOSSettingsRootHeading(root);
+        return root;
+    }
+
+    function removeWebOSSettingsRoot() {
+        var root = document.querySelector('.webos-settings-section-root');
+        if (root && root.parentNode) {
+            root.parentNode.removeChild(root);
+        }
+    }
+
+    function ensureWebOSSettingsGroup(root, groupClassName, title) {
+        var group = root.querySelector('.' + groupClassName);
+        if (!group) {
+            group = document.createElement('div');
+            group.className = 'webos-settings-group ' + groupClassName;
+            var heading = document.createElement('h3');
+            heading.className = 'webos-settings-group-title';
+            heading.textContent = title;
+            group.appendChild(heading);
+        }
+        if (group.parentNode !== root) {
+            root.appendChild(group);
+        }
+        return group;
+    }
+
+    function appendControlToGroup(group, control) {
+        if (group && control && control.parentNode !== group) {
+            group.appendChild(control);
+        }
     }
 
     function updateHdrUiDimControlDisplay(container) {
@@ -2019,24 +2187,36 @@
     function ensureWebOSSettingsControls() {
         var settingsAnchor = getPlaybackSettingsAnchor();
         if (!settingsAnchor) {
+            removeWebOSSettingsRoot();
             return false;
         }
 
+        var settingsRoot = ensureWebOSSettingsRoot(settingsAnchor);
+        if (!settingsRoot) {
+            return false;
+        }
+
+        var hdrGroup = ensureWebOSSettingsGroup(settingsRoot, 'webos-settings-group-hdr', 'webOS HDR UI');
+        var assGroup = ensureWebOSSettingsGroup(settingsRoot, 'webos-settings-group-ass', 'webOS ASS subtitles');
+        var pgsGroup = ensureWebOSSettingsGroup(settingsRoot, 'webos-settings-group-pgs', 'webOS PGS subtitles');
+        var diagnosticsGroup = ensureWebOSSettingsGroup(settingsRoot, 'webos-settings-group-diagnostics', 'webOS diagnostics');
         var hdrDimContainer = getControlContainerBySelector('.webosHdrUiDimSlider');
         var hdrSubtitleOpacityContainer = getControlContainerBySelector('.webosHdrSubtitleOpacitySlider');
+        var assTimeSyncContainer = getControlContainerBySelector('.chkWebOSAssTimeSyncFix');
         var assRenderAheadContainer = getControlContainerBySelector('.chkWebOSDisableAssRenderAhead');
-        var dropAssAnimationsContainer = getControlContainerBySelector('.chkWebOSDropAssAnimations');
         var diagnosticsContainer = getControlContainerBySelector('.chkWebOSPlaybackDiagnostics');
+        var pgsForceMainThreadContainer = getControlContainerBySelector('.chkWebOSPgsForceMainThread');
+        var pgsPatchObjectReuseContainer = getControlContainerBySelector('.chkWebOSPgsPatchObjectReuse');
 
         if (!hdrDimContainer) {
             hdrDimContainer = createHdrUiDimControlContainer();
-            insertControlAfter(settingsAnchor, hdrDimContainer);
         }
+        appendControlToGroup(hdrGroup, hdrDimContainer);
 
         if (!hdrSubtitleOpacityContainer) {
             hdrSubtitleOpacityContainer = createHdrSubtitleOpacityControlContainer();
-            insertControlAfter(hdrDimContainer || settingsAnchor, hdrSubtitleOpacityContainer);
         }
+        appendControlToGroup(hdrGroup, hdrSubtitleOpacityContainer);
 
         if (!assRenderAheadContainer) {
             assRenderAheadContainer = createWebOSCheckboxControlContainer(
@@ -2044,17 +2224,16 @@
                 'webOS: Disable ASS render-ahead',
                 'Disables Jellyfin/libass-wasm one-shot prerender cache on webOS. This avoids cached ASS animation frames being replayed out of sync. Restart playback after changing.'
             );
-            insertControlAfter(hdrSubtitleOpacityContainer || hdrDimContainer || settingsAnchor, assRenderAheadContainer);
         }
-
-        if (!dropAssAnimationsContainer) {
-            dropAssAnimationsContainer = createWebOSCheckboxControlContainer(
-                'chkWebOSDropAssAnimations',
-                'webOS: Drop ASS animations',
-                'Last-resort compatibility mode for very heavy ASS tracks. Removes animated ASS effects after playback restart.'
+        if (!assTimeSyncContainer) {
+            assTimeSyncContainer = createWebOSCheckboxControlContainer(
+                'chkWebOSAssTimeSyncFix',
+                'webOS: Fix ASS time rollback',
+                'Clamps small backward video-time samples sent to libass on webOS. Takes effect immediately for new worker messages; restart playback if unsure.'
             );
-            insertControlAfter(assRenderAheadContainer || hdrSubtitleOpacityContainer || hdrDimContainer || settingsAnchor, dropAssAnimationsContainer);
         }
+        appendControlToGroup(assGroup, assTimeSyncContainer);
+        appendControlToGroup(assGroup, assRenderAheadContainer);
 
         if (!diagnosticsContainer) {
             diagnosticsContainer = createWebOSCheckboxControlContainer(
@@ -2062,12 +2241,42 @@
                 'webOS: Playback diagnostics overlay',
                 'Shows rAF, video-frame callback, video quality, and timing data on top of playback.'
             );
-            insertControlAfter(dropAssAnimationsContainer || assRenderAheadContainer || hdrSubtitleOpacityContainer || hdrDimContainer || settingsAnchor, diagnosticsContainer);
         }
 
+        if (!pgsForceMainThreadContainer) {
+            pgsForceMainThreadContainer = createWebOSCheckboxControlContainer(
+                'chkWebOSPgsForceMainThread',
+                'webOS: Force PGS main-thread renderer',
+                'Diagnostic switch for PGS stale-text tests. Restart playback after changing; restart the app for a clean script-load test.'
+            );
+        }
+        appendControlToGroup(pgsGroup, pgsForceMainThreadContainer);
+
+        if (!pgsPatchObjectReuseContainer) {
+            pgsPatchObjectReuseContainer = createWebOSCheckboxControlContainer(
+                'chkWebOSPgsPatchObjectReuse',
+                'webOS: Patch PGS object reuse',
+                'Diagnostic switch for reused PGS object ids. Uses the newest ODS sequence when enabled. Restart playback after changing.'
+            );
+        }
+        appendControlToGroup(pgsGroup, pgsPatchObjectReuseContainer);
+        appendControlToGroup(diagnosticsGroup, diagnosticsContainer);
+
+        var assTimeSyncCheckbox = document.querySelector('.chkWebOSAssTimeSyncFix');
         var assRenderAheadCheckbox = document.querySelector('.chkWebOSDisableAssRenderAhead');
-        var dropAssAnimationsCheckbox = document.querySelector('.chkWebOSDropAssAnimations');
         var diagnosticsCheckbox = document.querySelector('.chkWebOSPlaybackDiagnostics');
+        var pgsForceMainThreadCheckbox = document.querySelector('.chkWebOSPgsForceMainThread');
+        var pgsPatchObjectReuseCheckbox = document.querySelector('.chkWebOSPgsPatchObjectReuse');
+
+        if (assTimeSyncCheckbox) {
+            assTimeSyncCheckbox.checked = !!assTimeSyncFixEnabled;
+            if (assTimeSyncCheckbox.getAttribute('data-webos-init') !== 'true') {
+                assTimeSyncCheckbox.addEventListener('change', function () {
+                    setAssTimeSyncFixEnabled(assTimeSyncCheckbox.checked, 'settings-page');
+                });
+                assTimeSyncCheckbox.setAttribute('data-webos-init', 'true');
+            }
+        }
 
         if (assRenderAheadCheckbox) {
             assRenderAheadCheckbox.checked = !!disableAssRenderAhead;
@@ -2076,16 +2285,6 @@
                     setDisableAssRenderAhead(assRenderAheadCheckbox.checked, 'settings-page');
                 });
                 assRenderAheadCheckbox.setAttribute('data-webos-init', 'true');
-            }
-        }
-
-        if (dropAssAnimationsCheckbox) {
-            dropAssAnimationsCheckbox.checked = !!dropAssAnimations;
-            if (dropAssAnimationsCheckbox.getAttribute('data-webos-init') !== 'true') {
-                dropAssAnimationsCheckbox.addEventListener('change', function () {
-                    setDropAssAnimations(dropAssAnimationsCheckbox.checked, 'settings-page');
-                });
-                dropAssAnimationsCheckbox.setAttribute('data-webos-init', 'true');
             }
         }
 
@@ -2099,6 +2298,26 @@
             }
         }
 
+        if (pgsForceMainThreadCheckbox) {
+            pgsForceMainThreadCheckbox.checked = !!pgsForceMainThread;
+            if (pgsForceMainThreadCheckbox.getAttribute('data-webos-init') !== 'true') {
+                pgsForceMainThreadCheckbox.addEventListener('change', function () {
+                    setPgsForceMainThread(pgsForceMainThreadCheckbox.checked, 'settings-page');
+                });
+                pgsForceMainThreadCheckbox.setAttribute('data-webos-init', 'true');
+            }
+        }
+
+        if (pgsPatchObjectReuseCheckbox) {
+            pgsPatchObjectReuseCheckbox.checked = !!pgsPatchObjectReuse;
+            if (pgsPatchObjectReuseCheckbox.getAttribute('data-webos-init') !== 'true') {
+                pgsPatchObjectReuseCheckbox.addEventListener('change', function () {
+                    setPgsPatchObjectReuse(pgsPatchObjectReuseCheckbox.checked, 'settings-page');
+                });
+                pgsPatchObjectReuseCheckbox.setAttribute('data-webos-init', 'true');
+            }
+        }
+
         initializeHdrUiDimControl(hdrDimContainer);
         initializeHdrSubtitleOpacityControl(hdrSubtitleOpacityContainer);
         return true;
@@ -2107,13 +2326,16 @@
     function runScheduledSettingsEnsure() {
         settingsEnsureTimer = null;
         settingsEnsureScheduled = false;
+        settingsEnsureLastRunTs = Date.now();
         var hasPlaybackSettingsAnchor = ensureWebOSSettingsControls();
 
         if (document.querySelector('.webosHdrUiDimSlider')
             && document.querySelector('.webosHdrSubtitleOpacitySlider')
+            && document.querySelector('.chkWebOSAssTimeSyncFix')
             && document.querySelector('.chkWebOSDisableAssRenderAhead')
-            && document.querySelector('.chkWebOSDropAssAnimations')
-            && document.querySelector('.chkWebOSPlaybackDiagnostics')) {
+            && document.querySelector('.chkWebOSPlaybackDiagnostics')
+            && document.querySelector('.chkWebOSPgsForceMainThread')
+            && document.querySelector('.chkWebOSPgsPatchObjectReuse')) {
             settingsEnsureAttemptsLeft = 0;
             return;
         }
@@ -2142,8 +2364,17 @@
             return;
         }
 
+        var requestedDelay = typeof delay === 'number' ? delay : SETTINGS_INJECTION_MUTATION_DELAY;
+        if (!resetAttempts && requestedDelay < SETTINGS_INJECTION_MUTATION_DELAY) {
+            requestedDelay = SETTINGS_INJECTION_MUTATION_DELAY;
+        }
+        var elapsedSinceLastRun = Date.now() - settingsEnsureLastRunTs;
+        if (!resetAttempts && elapsedSinceLastRun >= 0 && elapsedSinceLastRun < SETTINGS_INJECTION_MUTATION_DELAY) {
+            requestedDelay = Math.max(requestedDelay, SETTINGS_INJECTION_MUTATION_DELAY - elapsedSinceLastRun);
+        }
+
         settingsEnsureScheduled = true;
-        settingsEnsureTimer = setTimeout(runScheduledSettingsEnsure, typeof delay === 'number' ? delay : 0);
+        settingsEnsureTimer = setTimeout(runScheduledSettingsEnsure, requestedDelay);
     }
 
     function isLikelyPlaybackSettingsRoute() {
@@ -2165,9 +2396,11 @@
     function hasInjectedWebOSSettingsControls() {
         return !!(document.querySelector('.webosHdrUiDimSlider')
             || document.querySelector('.webosHdrSubtitleOpacitySlider')
+            || document.querySelector('.chkWebOSAssTimeSyncFix')
             || document.querySelector('.chkWebOSDisableAssRenderAhead')
-            || document.querySelector('.chkWebOSDropAssAnimations')
-            || document.querySelector('.chkWebOSPlaybackDiagnostics'));
+            || document.querySelector('.chkWebOSPlaybackDiagnostics')
+            || document.querySelector('.chkWebOSPgsForceMainThread')
+            || document.querySelector('.chkWebOSPgsPatchObjectReuse'));
     }
 
     function elementMatchesSelector(element, selector) {
@@ -2209,7 +2442,47 @@
         return false;
     }
 
+    function isInsideWebOSSettingsRoot(node) {
+        var current = node && node.nodeType === 1 ? node : node && node.parentNode;
+        while (current) {
+            if (current.classList && current.classList.contains('webos-settings-section-root')) {
+                return true;
+            }
+            current = current.parentNode;
+        }
+        return false;
+    }
+
+    function mutationListOnlyTouchesWebOSSettingsRoot(mutations) {
+        if (!mutations || !mutations.length) {
+            return false;
+        }
+
+        for (var i = 0; i < mutations.length; i++) {
+            var mutation = mutations[i];
+            if (!isInsideWebOSSettingsRoot(mutation.target)) {
+                return false;
+            }
+            for (var j = 0; j < mutation.addedNodes.length; j++) {
+                if (!isInsideWebOSSettingsRoot(mutation.addedNodes[j])) {
+                    return false;
+                }
+            }
+            for (var k = 0; k < mutation.removedNodes.length; k++) {
+                if (!isInsideWebOSSettingsRoot(mutation.removedNodes[k])) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
     function shouldScheduleSettingsInjectionFromMutations(mutations) {
+        if (mutationListOnlyTouchesWebOSSettingsRoot(mutations)) {
+            return false;
+        }
+
         if (hasPlaybackSettingsDom() || hasInjectedWebOSSettingsControls()) {
             return true;
         }
@@ -3966,7 +4239,9 @@
     syncAssRendererOptions();
     syncMonotonicMediaTimeHelper();
     syncPgsAsyncStatsHelper();
+    syncPgsMainThreadStatsHelper();
     syncPgsRenderGuard();
+    syncPgsRendererOptionsHelper();
     initAssScriptInterception();
     initAssRendererInterception();
     applyHdrUiDimSettings();

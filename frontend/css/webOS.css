@@ -87,6 +87,11 @@
     width: 100%;
 }
 
+.layout-tv .webos-hdr-ui-dim-control {
+    width: 100%;
+    max-width: none;
+}
+
 .layout-tv .webos-hdr-ui-dim-control .webos-hdr-ui-dim-value {
     opacity: 0.78;
     font-variant-numeric: tabular-nums;
@@ -94,8 +99,42 @@
 
 .layout-tv .webos-hdr-ui-dim-control .webos-hdr-ui-dim-slider-wrap {
     margin-top: 0.35em;
+    width: 100%;
 }
 
-.layout-tv .webos-hdr-ui-dim-control .webosHdrUiDimSlider {
+.layout-tv .webos-hdr-ui-dim-control .webosHdrUiDimSlider,
+.layout-tv .webos-hdr-ui-dim-control .webosHdrSubtitleOpacitySlider {
+    display: block;
     width: 100%;
+    min-width: 18rem;
+    box-sizing: border-box;
+}
+
+.layout-tv .webos-settings-section-root {
+    margin-top: 1.2em;
+}
+
+.layout-tv .webos-settings-main-title {
+    margin: 1.25em 0 0.75em;
+    font-size: 1.22em;
+    font-weight: 700;
+    line-height: 1.35;
+}
+
+.layout-tv .webos-settings-group {
+    margin-top: 1.1em;
+}
+
+.layout-tv .webos-settings-group-title {
+    margin: 0 0 0.45em;
+    font-size: 1.08em;
+    font-weight: 600;
+    line-height: 1.35;
+    opacity: 0.86;
+}
+
+.layout-tv .webos-settings-group .checkboxContainer {
+    margin-top: 0.45em;
+    width: 100%;
+    max-width: none;
 }

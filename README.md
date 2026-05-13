@@ -20,124 +20,182 @@ TVs, several playback behaviors still need webOS-side intervention:
   attach to the wrong DOM or not attach at all;
 - complex ASS subtitles can stutter or visually jump when webOS reports small
   backward media-time samples to the subtitle renderer;
-- complex PGS subtitles can flash stale text because libpgs may schedule worker
-  draws asynchronously;
+- complex PGS subtitles can flash stale text when libpgs reuses object ids in
+  worker/offscreen paths that this fork cannot safely patch in-place;
 - debugging real-device playback needs an on-screen overlay because DevTools is
   not always available during TV testing.
 
-## Local changes
+## Local problem log
 
 ### Playback bitrate and quality menu
 
-- Adds extra high bitrate menu entries: `120 Mbps`, `100 Mbps`, and `80 Mbps`.
-- Forces PlaybackInfo `MaxStreamingBitrate` / `maxStreamingBitrate` in both URL
-  query strings and request bodies during playback startup.
-- Arms a short force window from explicit playback-start signals and from new
-  PlaybackInfo item ids, so new videos do not fall back to Jellyfin Web's
-  `60 Mbps` cap before media-session state is ready.
-- Narrows quality action-sheet patching to bitrate-shaped menu items inside the
-  action sheet scroller, reducing false positives when Jellyfin Web changes menu
-  structure.
-- Keeps the quality menu observer active so late-created action sheets are
-  patched even when Jellyfin Web opens them before playback state settles.
+Problem: new playback sessions can fall back to Jellyfin Web's upstream
+`60 Mbps` cap, and the quality action sheet can miss the locally injected
+high-bitrate entries.
 
-Review note: do not narrow this back to `PLAYING` state only. On real devices,
-Jellyfin Web can create PlaybackInfo requests and quality action sheets before
-`updateMediaSession()` / fullscreen state has settled. If the observer or force
-window waits for `PLAYING`, a newly opened video can keep the upstream `60 Mbps`
-cap until the user manually changes quality.
+Cause: real-device traces showed that Jellyfin Web can issue PlaybackInfo
+requests and create quality action sheets before the webOS adapter reaches the
+normal `PLAYING` / media-session state. Upstream UI changes also made the old
+menu injection too dependent on one action-sheet DOM shape.
+
+Approach:
+
+- add extra high bitrate menu entries: `120 Mbps`, `100 Mbps`, and `80 Mbps`;
+- force PlaybackInfo `MaxStreamingBitrate` / `maxStreamingBitrate` in both URL
+  query strings and request bodies during a short playback-start window;
+- arm that force window from explicit playback-start signals and from new
+  PlaybackInfo item ids;
+- patch only bitrate-shaped menu items inside the action-sheet scroller to avoid
+  false positives;
+- keep the quality-menu observer active so late-created action sheets are still
+  patched.
+
+Status: active workaround. Do not narrow this back to `PLAYING` state only; that
+reintroduces the startup race where a newly opened video can keep the upstream
+`60 Mbps` cap until the user manually changes quality.
 
 ### Settings injection
 
-The fork injects webOS-specific settings into the current playback/settings UI
-using a conservative always-on observer instead of relying on one fixed upstream
-DOM shape or route name.
+Problem: locally injected playback options can disappear after leaving and
+re-entering the Playback settings page, or fail when Jellyfin Web changes route
+names / setting DOM structure.
 
-Injected controls include:
+Cause: the hosted Jellyfin Web settings UI is rebuilt dynamically. A route-gated
+or single-anchor injection strategy can miss the later DOM instance.
+
+Approach:
+
+- keep a conservative always-on observer for settings injection;
+- persist settings through the local webOS feature override state;
+- append all local controls to the end of the Playback settings content;
+- never fall back to injecting into `body`; if the Playback settings container
+  cannot be found, remove any stale injected block;
+- put them under a dedicated `webOS playback fixes` main heading;
+- group them under secondary headings: HDR UI, ASS subtitles, PGS subtitles, and
+  diagnostics;
+- move already-injected controls into the grouped block instead of duplicating
+  them;
+- throttle mutation-triggered injection refreshes and ignore mutations inside
+  the injected block, so sliders and checkboxes keep focus while being used.
+
+Injected controls:
 
 - HDR/DV UI dim brightness for playback overlays and ASS/PGS subtitles;
 - HDR/DV ASS/PGS subtitle opacity;
+- fix ASS time rollback;
 - disable ASS render-ahead;
-- drop ASS animations, for diagnostics only;
+- force PGS main-thread renderer;
+- patch PGS object reuse;
 - playback diagnostics overlay.
 
-The settings are persisted through the same local feature override mechanism
-used by the webOS adapter.
+Status: active workaround. The observer is intentionally not route-gated.
+Playback/settings menus are not active while video is rendering, so the
+practical cost is low.
 
-Review note: this observer is intentionally not route-gated. Playback/settings
-menus are not active while video is rendering, so the practical cost is low, and
-route-gating caused injected controls to disappear after leaving and re-entering
-the Playback settings page.
+### HDR UI and subtitle brightness
 
-### ASS subtitle fixes
+Problem: during HDR/Dolby Vision playback, Jellyfin Web overlays and subtitles
+can be visually too bright on LG webOS panels. ASS and PGS overlays also need a
+consistent subtitle opacity control.
 
-ASS rendering is handled through Jellyfin/libass script and worker patching:
+Cause: the video plane and Web UI plane are handled differently by the TV. The
+server cannot reliably tone-map Jellyfin Web overlays, canvas subtitles, and
+image subtitles after they reach the webOS WebView.
 
-- patches libass renderer script options so `renderAhead` defaults to `0` on
+Approach:
+
+- add an HDR/DV UI brightness slider backed by CSS variables;
+- apply dimming to OSD/dialog/action-sheet UI without touching the video pixels;
+- derive ASS and PGS subtitle brightness from the same UI brightness setting;
+- add one shared subtitle opacity slider for ASS and PGS overlays.
+
+Status: active feature. ASS and PGS intentionally share
+`--webos-hdr-subtitle-opacity`; keeping a separate PGS opacity variable made the
+implementation look more configurable than the UI actually is.
+
+### ASS subtitle timing
+
+Problem: complex ASS subtitles can stutter, visually jump, or show small
+animation rollbacks on webOS even when normal video playback rAF is stable.
+
+Cause: device testing showed small backward `currentTime` samples reaching
+libass. Active high-frequency time sync reduced visible rollback but converted
+the jitter into high-frequency visual stutter. libass render-ahead can also
+cache frames that are later replayed out of sync.
+
+Approach:
+
+- patch libass renderer script options so `renderAhead` defaults to `0` on
   webOS;
-- keeps `dropAllAnimations` disabled by default, because dropping ASS animations
-  removes subtitle effects and defeats the purpose of the fix;
-- clamps small backward `currentTime` messages posted to the ASS worker instead
-  of actively re-syncing the worker at high frequency;
-- leaves large backward jumps and seek behavior alone.
+- expose the small-backward-time clamp as `webOS: Fix ASS time rollback`,
+  enabled by default;
+- clamp only small backward `currentTime` messages posted to the ASS worker when
+  that option is enabled;
+- leave large backward jumps and seek behavior alone;
+- do not remove ASS animations, because that defeats the purpose of preserving
+  animated subtitles.
 
-Reason: testing showed that active time sync reduced visible rollback but turned
-media-time jitter into high-frequency visual stutter. Letting libass run on its
-own clock while clamping only small backward samples produced the best observed
-result.
+Status: verified improvement. The best observed behavior came from letting
+libass run on its own clock while preventing small backward media-time samples.
 
-### PGS subtitle fixes (unfinished)
+### PGS subtitle stale text
 
-PGS rendering uses libpgs, which can run in several modes. This fork instruments
-and guards all relevant paths found during real-device testing:
+Problem: complex PGS subtitles, especially vertical/text-heavy tracks, can flash
+the previous subtitle text just before the next subtitle appears.
 
-- patches `renderAtVideoTimestamp()` to pass PGS time through a monotonic helper;
-- counts raw backward PGS media-time samples and clamped samples separately;
-- guards `workerWithoutOffscreenCanvas` subtitle-data replies against stale
+Cause: diagnostics showed PGS render request/post counters increasing while
+backward/drop counters stayed at zero. That ruled out a simple main-thread index
+rollback. A worker-side Blob URL patch was tested but disabled because it can
+prevent PGS workers from starting on webOS WebView. Further isolation found that
+the stale text only disappears when libpgs is forced into the patchable
+main-thread path and the object-id reuse fix is enabled. This points at stale
+subtitle data in libpgs display-set parsing: reused object ids can concatenate
+old ODS data with the current object data.
+
+Approach:
+
+- pass `renderAtVideoTimestamp()` through a monotonic media-time helper;
+- count raw backward PGS media-time samples and clamped samples separately;
+- guard main-thread delayed `requestAnimationFrame` draws against stale indexes;
+- guard `workerWithoutOffscreenCanvas` subtitle-data replies against stale
   returned indexes;
-- guards OffscreenCanvas `render` posts against non-seek backward indexes;
+- guard OffscreenCanvas `render` posts against non-seek backward indexes;
+- force libpgs to use the `mainThread` renderer by default on webOS;
+- patch libpgs object lookup so reused object ids use the newest ODS sequence
+  instead of all matching object definitions since the last epoch break.
 
-Reason: on the tested device, PGS client `render req/post` increased while
-`back/drop` stayed at zero, meaning the main thread was not sending backward
-indexes. A worker-side Blob URL patch was tested but disabled because it can
-prevent PGS workers from starting on webOS WebView. If stale PGS text persists,
-the next safe path is to inspect libpgs display-set parsing or find a non-Blob
-worker patch strategy.
-
-Status: unfinished. The current code keeps diagnostics and client-side guards,
-but the remaining stale-text flash has not been fully fixed.
+Status: verified workaround. The verified good combination is `target=main`,
+`obj=on`. `target=main`, `obj=off` still flashes, so the object-id reuse fix is
+required. `target=auto`, `obj=on` still flashes on the tested device because the
+active worker/offscreen path does not receive the main-script object-id patch.
+The two PGS switches remain available for future isolation or for evaluating a
+safe non-Blob worker patch.
 
 ### Playback diagnostics overlay
 
-The diagnostics overlay is enabled from the injected settings UI. It reports:
+Problem: TV-side playback debugging often has to happen without reliable
+DevTools access, and full console/script URLs are too noisy for real-device A/B
+tests.
 
-- playback state and dynamic range;
-- `requestAnimationFrame` FPS;
-- `requestVideoFrameCallback` FPS when available;
-- long-task count, duration, and max duration;
-- video dimensions, time, paused state, ready state, and playback rate;
-- ASS canvas size and CSS size;
-- ASS script/worker patch counters and media-time clamp counters;
-- PGS script/client patch counters, media-time counters, render counters, and
-  stale draw/drop counters;
-- browser user agent.
+Cause: the relevant failures are timing and path-selection issues. The useful
+signal is whether the expected patch path is active and whether counters move
+during playback, not static environment strings.
 
-This is intentionally verbose because it is used to decide whether a real-device
-test is hitting the expected patched path.
+Approach:
 
-### HDR UI dimming
+- provide an optional on-screen diagnostics overlay from the injected settings;
+- show playback state, dynamic range, rAF FPS, `requestVideoFrameCallback` FPS
+  when available, long-task stats, video dimensions/time, and dropped frames;
+- show compact ASS patch/message/clamp counters;
+- show compact PGS patch/media-time/render/main-thread counters and active PGS
+  diagnostic switches;
+- omit static values such as browser user agent, patched script URL, and CSS
+  filter details.
 
-The fork keeps HDR/DV UI dimming support for playback overlays and keeps the
-ASS/libass and PGS/image subtitle brightness controls for HDR/DV viewing. The
-HDR/DV UI brightness slider updates the UI brightness variable plus derived
-subtitle brightness variables used by ASS and PGS overlays. A separate subtitle
-opacity slider controls the single subtitle opacity variable shared by ASS and
-PGS overlays. These controls are independent of the ASS timing fixes.
-
-Review note: ASS and PGS intentionally share `--webos-hdr-subtitle-opacity`.
-There is only one opacity slider and both subtitle families should move
-together. Keeping a second `--webos-hdr-pgs-opacity` variable made the code look
-more configurable than the UI actually is and caused unnecessary CR noise.
+Status: active diagnostic tool. PGS patch counters such as `mode1` and `o1`
+mean the conditional hook was installed into libpgs. They do not mean the switch
+is currently active; use `target=main/auto` and `obj=on/off` for the active test
+case.
 
 ## Build and test
 
@@ -186,9 +244,19 @@ ares-launch -d tv org.jellyfin.webos
   active.
 - For PGS OffscreenCanvas tests, `pgs render req/post` increasing means the
   client render path is active.
-- If PGS still flashes old text while all backward/drop counters stay at zero,
-  inspect the PGS display-set parsing path next; the stale text may already be
-  present in the subtitle data returned for the current index.
+- In the current PGS workaround, `PGS ... target=main` and increasing `main`
+  counters mean libpgs is using the forced main-thread renderer and the delayed
+  draw guard is active. If `main` drop stays zero, the delayed draw guard did
+  not contribute to the observed fix.
+- The verified good PGS combination is `target=main`, `obj=on`.
+- The verified isolation results are:
+  - `target=main`, `obj=off`: still flashes stale text, so the object-id reuse
+    fix is required.
+  - `target=auto`, `obj=on`: still flashes stale text on the tested device,
+    because the active worker/offscreen path does not receive the main-script
+    object-id patch.
+  - `target=auto`, `obj=off`: upstream-like baseline and expected to reproduce
+    the stale-text flash.
 
 ## Upstream README
 
