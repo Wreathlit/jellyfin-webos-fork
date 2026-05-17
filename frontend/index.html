@@ -7,6 +7,9 @@
 
 <head>
 	<meta charset="UTF-8" />
+	<!-- Scheme-permissive CSP: LAN servers are usually plain http://, so http: must stay allowed.
+	     Hardens the shell document (no remote scripts, no <object>, no <base> hijack). -->
+	<meta http-equiv="Content-Security-Policy" content="default-src 'self' http: https: data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' http: https: data: blob:; connect-src 'self' http: https: ws: wss:; frame-src 'self' http: https:; object-src 'none'; base-uri 'self'" />
 	<title>Jellyfin for webOS</title>
 	<link rel="stylesheet" href="css/main.css" type="text/css"/>
 	<script src="webOSTVjs-1.2.11/webOSTV.js" charset="utf-8"></script>

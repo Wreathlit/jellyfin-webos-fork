@@ -2,11 +2,22 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
+const path = require('path');
 
+const repoRoot = path.join(__dirname, '..');
 const outfile = process.argv[2];
-const appinfo = JSON.parse(fs.readFileSync('frontend/appinfo.json'));
+if (!outfile) {
+  console.error('Usage: gen-manifest.js <output-file>');
+  process.exit(1);
+}
+const appinfo = JSON.parse(fs.readFileSync(path.join(repoRoot, 'frontend/appinfo.json')));
 const ipkfile = `${appinfo.id}_${appinfo.version}_all.ipk`;
-const ipkhash = crypto.createHash('sha256').update(fs.readFileSync(`build/${ipkfile}`)).digest('hex');
+const ipkpath = path.join(repoRoot, 'build', ipkfile);
+if (!fs.existsSync(ipkpath)) {
+  console.error(`Build artifact not found: ${ipkpath}\nRun "npm run package" first.`);
+  process.exit(1);
+}
+const ipkhash = crypto.createHash('sha256').update(fs.readFileSync(ipkpath)).digest('hex');
 
 fs.writeFileSync(
   outfile,

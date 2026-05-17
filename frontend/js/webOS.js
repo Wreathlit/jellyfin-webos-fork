@@ -32,7 +32,7 @@
     var playbackState = PlaybackState.IDLE;
     var exitToIdleTimer = null;
     var EXIT_TO_IDLE_TIMEOUT = 2000;
-    var HEADER_PIN_INTERVAL = 2500;
+    var HEADER_PIN_INTERVAL = 12000; // fallback heartbeat only; scroll/resize/hashchange drive normal updates
     var MIN_HEADER_HEIGHT = 72;
     var headerPinTimer = null;
     var headerPinningInitialized = false;
@@ -130,9 +130,11 @@
     var hdrUiInfoCorrectionUntil = 0;
     var hdrUiInfoCorrectionTimer = null;
     var hdrUiInfoCorrectedHdrUntil = 0;
+    var hdrUiInfoInitialScanTimer = null;
     var currentMediaSessionItemId = null;
     var currentPlaybackMediaSourceId = null;
     var mediaItemDynamicRangeCache = {};
+    var MEDIA_DYNAMIC_RANGE_CACHE_LIMIT = 64;
     var mediaItemDynamicRangeInFlight = {};
     var playbackInfoDynamicRangeHints = {};
     var playbackInfoInterceptionInitialized = false;
@@ -4023,6 +4025,11 @@
 
         mediaItemDynamicRangeInFlight[cacheKey] = request.then(function (item) {
             var hint = getDynamicRangeHintFromItem(item, normalizedMediaSourceId);
+            // Bound the cache so a long-running session that browses many items
+            // cannot grow it without limit.
+            if (Object.keys(mediaItemDynamicRangeCache).length >= MEDIA_DYNAMIC_RANGE_CACHE_LIMIT) {
+                mediaItemDynamicRangeCache = {};
+            }
             mediaItemDynamicRangeCache[cacheKey] = hint;
             return hint;
         }, function (error) {
@@ -4747,17 +4754,23 @@
             if (!hdrUiInfoObserverActive) {
                 var targetNode = document.body || document.documentElement;
                 if (targetNode) {
+                    // childList/subtree is enough to notice the OSD media-info
+                    // elements appearing; characterData would fire this callback
+                    // on every subtitle/clock text tick during playback.
                     hdrUiInfoObserver.observe(targetNode, {
                         childList: true,
-                        subtree: true,
-                        characterData: true
+                        subtree: true
                     });
                     hdrUiInfoObserverActive = true;
                 }
             }
 
             scheduleHdrUiInfoScan(0);
-            setTimeout(function () {
+            if (hdrUiInfoInitialScanTimer) {
+                clearTimeout(hdrUiInfoInitialScanTimer);
+            }
+            hdrUiInfoInitialScanTimer = setTimeout(function () {
+                hdrUiInfoInitialScanTimer = null;
                 scheduleHdrUiInfoScan(0);
             }, 400);
             return;
@@ -4768,6 +4781,10 @@
             hdrUiInfoObserverActive = false;
         }
 
+        if (hdrUiInfoInitialScanTimer) {
+            clearTimeout(hdrUiInfoInitialScanTimer);
+            hdrUiInfoInitialScanTimer = null;
+        }
         clearHdrUiInfoScanTimer();
     }
 

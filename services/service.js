@@ -14,6 +14,25 @@ var Service = require('webos-service');
 // Register com.yourdomain.@DIR@.service, on both buses
 var service = new Service(pkgInfo.name);
 
+var DEBUG_LOG = false;
+function log() {
+	if (DEBUG_LOG && typeof console !== 'undefined' && console.log) {
+		console.log.apply(console, arguments);
+	}
+}
+
+// Discovery responses arrive over unauthenticated UDP broadcast and are
+// attacker-influenceable; validate them before storing or forwarding to the UI.
+var MAX_SCAN_RESULTS = 64;
+function isValidServerAddress(address) {
+	if (typeof address !== 'string' || address.length === 0 || address.length > 2048) {
+		return false;
+	}
+	// Require a plain http(s) origin: scheme + host(:port), optional path,
+	// no embedded credentials ('@') and no whitespace.
+	return /^https?:\/\/[^\s/@]+(?:\/[^\s]*)?$/i.test(address);
+}
+
 var dgram = require('dgram');
 var client4 = dgram.createSocket("udp4");
 
@@ -21,7 +40,7 @@ var client4 = dgram.createSocket("udp4");
 // try {
 // 	client6 = dgram.createSocket("udp6");
 // } catch (err) {
-// 	console.log(err);
+// 	log(err);
 // 	client6 = false;
 // }
 
@@ -50,11 +69,14 @@ function pruneScanResults() {
 
 function sendScanResults(server_id) {
 	pruneScanResults();
-	console.log("Sending responses, subscription count=" + Object.keys(subscriptions).length);
+	log("Sending responses, subscription count=" + Object.keys(subscriptions).length);
 	for (var i in subscriptions) {
 		if (subscriptions.hasOwnProperty(i)) {
 			var s = subscriptions[i];
 			if (server_id) {
+				if (!scanresult[server_id]) {
+					continue;
+				}
 				var res = {};
 				res[server_id] = scanresult[server_id];
 				s.respond({
@@ -73,10 +95,17 @@ function handleDiscoveryResponse(message, remote) {
 	try {
 		var msg = JSON.parse(message.toString('utf-8'));
 
-		if (typeof msg == "object" &&
-			typeof msg.Id == "string" &&
-			typeof msg.Name == "string" &&
-			typeof msg.Address == "string") {
+		if (typeof msg == "object" && msg !== null &&
+			typeof msg.Id == "string" && msg.Id.length > 0 && msg.Id.length <= 256 &&
+			typeof msg.Name == "string" && msg.Name.length <= 256 &&
+			typeof msg.Address == "string" && isValidServerAddress(msg.Address)) {
+
+			if (!scanresult.hasOwnProperty(msg.Id) && Object.keys(scanresult).length >= MAX_SCAN_RESULTS) {
+				pruneScanResults();
+				if (Object.keys(scanresult).length >= MAX_SCAN_RESULTS) {
+					return;
+				}
+			}
 
 			scanresult[msg.Id] = msg;
 			scanresult[msg.Id].source = {
@@ -88,7 +117,7 @@ function handleDiscoveryResponse(message, remote) {
 			sendScanResults(msg.Id);
 		}
 	} catch (err) {
-		console.log(err);
+		log(err);
 	}
 }
 
@@ -110,7 +139,7 @@ function discoverInitial() {
 
 client4.on("listening", function () {
 	var address = client4.address();
-	console.log('UDP Client listening on ' + address.address + ":" + address.port);
+	log('UDP Client listening on ' + address.address + ":" + address.port);
 	client4.setBroadcast(true)
 	client4.setMulticastTTL(128);
 	//client.addMembership('230.185.192.108');
@@ -125,7 +154,7 @@ client4.bind({
 // if (client6) {
 // 	client6.on("listening", function () {
 // 		var address = client4.address();
-// 		console.log('UDP Client listening on ' + address.address + ":" + address.port);
+// 		log('UDP Client listening on ' + address.address + ":" + address.port);
 // 		client6.setMulticastTTL(128);
 // 		//client.addMembership('230.185.192.108');
 // 	});
@@ -135,7 +164,7 @@ client4.bind({
 // 	try { // client6 bind failing even in a try catch.
 // 		//client6.bind(JELLYFIN_DISCOVERY_PORT, discoverInitial);
 // 	} catch (err) {
-// 		console.log(err);
+// 		log(err);
 // 	}
 // }
 
@@ -147,7 +176,7 @@ function createInterval() {
 	if (interval) {
 		return;
 	}
-	console.log("create new interval");
+	log("create new interval");
 	interval = setInterval(function () {
 		sendJellyfinDiscovery();
 	}, SCAN_INTERVAL);
@@ -157,7 +186,7 @@ var discover = service.register("discover");
 discover.on("request", function (message) {
 	sendScanResults();
 	var uniqueToken = message.uniqueToken;
-	console.log("discover callback, uniqueToken: " + uniqueToken + ", token: " + message.token);
+	log("discover callback, uniqueToken: " + uniqueToken + ", token: " + message.token);
 
 	sendJellyfinDiscovery();
 
@@ -170,11 +199,11 @@ discover.on("request", function (message) {
 });
 discover.on("cancel", function (message) {
 	var uniqueToken = message.uniqueToken;
-	console.log("Canceled " + uniqueToken);
+	log("Canceled " + uniqueToken);
 	delete subscriptions[uniqueToken];
 	var keys = Object.keys(subscriptions);
 	if (keys.length === 0) {
-		console.log("no more subscriptions, canceling interval");
+		log("no more subscriptions, canceling interval");
 		clearInterval(interval);
 		interval = undefined;
 	}

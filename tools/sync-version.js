@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 
 const fs = require('fs');
+const path = require('path');
 
-const packageInfo = JSON.parse(fs.readFileSync('package.json'));
-const appInfo = JSON.parse(fs.readFileSync('frontend/appinfo.json'));
+const repoRoot = path.join(__dirname, '..');
+const appInfoPath = path.join(repoRoot, 'frontend/appinfo.json');
+const packageInfo = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json')));
+const appInfo = JSON.parse(fs.readFileSync(appInfoPath));
 
 fs.writeFileSync(
-  'frontend/appinfo.json',
+  appInfoPath,
   `${JSON.stringify(
     {
       ...appInfo,

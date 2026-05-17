@@ -93,6 +93,7 @@ function findIndex(array, currentNode) {
         if (currentNode.isEqualNode(item))
             return i;
     }
+    return -1;
 }
 
 function navigate(amount) {
@@ -111,10 +112,21 @@ function navigate(amount) {
 
         //Find the current tab index.
         const currentIndex = findIndex(allElements, currentNode);
+        if (currentIndex < 0) {
+            navigationInit();
+            return;
+        }
 
-        //focus the following element
-        if (allElements[currentIndex + amount])
-            allElements[currentIndex + amount].focus();
+        //focus the following element, clamped to the list bounds so the
+        //first/last element does not dead-end focus
+        var nextIndex = currentIndex + amount;
+        if (nextIndex < 0) {
+            nextIndex = 0;
+        } else if (nextIndex > allElements.length - 1) {
+            nextIndex = allElements.length - 1;
+        }
+        if (allElements[nextIndex])
+            allElements[nextIndex].focus();
     }
 }
 
@@ -200,6 +212,28 @@ function navigationInit() {
 
 function getEffectiveFeatureOverrides() {
     return storage.get(featureOverrideStorageKey) || {};
+}
+
+// Only persist the known feature-override flags posted by the content frame,
+// coerced to booleans, so a compromised page cannot inject arbitrary state.
+function sanitizeFeatureOverrides(data) {
+    var allowed = [
+        'playbackDiagnosticsEnabled',
+        'disableAssRenderAhead',
+        'assTimeSyncFixEnabled',
+        'pgsForceMainThread',
+        'pgsPatchObjectReuse'
+    ];
+    var result = {};
+    if (data && typeof data === 'object') {
+        for (var i = 0; i < allowed.length; i++) {
+            var key = allowed[i];
+            if (Object.prototype.hasOwnProperty.call(data, key)) {
+                result[key] = !!data[key];
+            }
+        }
+    }
+    return result;
 }
 
 function Init() {
@@ -388,6 +422,11 @@ function handleSuccessServerInfo(data, baseurl, auto_connect) {
 function lruStrategy(old_items,max_items,new_item) {
     var result = {}
     var id = new_item.id
+    // Guard against a server response without an Id: fall back to the URL as the
+    // key so distinct servers never collide on a single "undefined" entry.
+    if (id === undefined || id === null || id === false || id === '') {
+        id = new_item.baseurl;
+    }
 
     delete old_items[id] // LRU: re-insert entry (in front) each time it is used
     result[id] =  new_item
@@ -403,6 +442,12 @@ function lruStrategy(old_items,max_items,new_item) {
 
 function handleSuccessManifest(data, baseurl) {
     var startUrl = (data && typeof data.start_url === 'string' && data.start_url.length > 0) ? data.start_url : 'index.html';
+    // Treat start_url strictly as a server-relative path. Reject absolute URLs,
+    // protocol-relative URLs and parent-directory traversal so a manifest cannot
+    // redirect the webview off the chosen server.
+    if (/^[a-z][a-z0-9+.-]*:/i.test(startUrl) || startUrl.indexOf('//') === 0 || startUrl.indexOf('..') !== -1) {
+        startUrl = 'index.html';
+    }
     if (startUrl.indexOf("/web") !== -1) {
         var hosturl = normalizeUrl(baseurl + "/" + startUrl);
     } else {
@@ -411,6 +456,9 @@ function handleSuccessManifest(data, baseurl) {
 
     curr_req = false;
 
+    // Read the current persisted list rather than relying on a stale global
+    // left behind by an earlier handleSuccessServerInfo call.
+    connected_servers = getConnectedServers();
     for (var server_id in connected_servers) {
         var info = connected_servers[server_id]
         if (!info || typeof info !== 'object') {
@@ -516,7 +564,16 @@ function loadUrl(url, success, failure) {
     xhr.send();
 }
 
+var injectBundleCache = null;
+
 function getTextToInject(success, failure) {
+    if (injectBundleCache) {
+        // Local app assets never change at runtime; reuse the first load
+        // instead of re-fetching webOS.js/webOS.css on every (re)connect.
+        success(injectBundleCache);
+        return;
+    }
+
     var bundle = {};
 
     var urls = ['js/webOS.js', 'css/webOS.css'];
@@ -524,6 +581,7 @@ function getTextToInject(success, failure) {
     // imitate promises as they're borked in at least WebOS 2
     var looper = function (idx) {
         if (idx >= urls.length) {
+            injectBundleCache = bundle;
             success(bundle);
         } else {
             var url = urls[idx];
@@ -540,14 +598,14 @@ function getTextToInject(success, failure) {
 function injectScriptText(document, text) {
     var script = document.createElement('script');
     script.type = 'text/javascript';
-    script.innerHTML = text;
-    document.head.appendChild(script);
+    script.text = text;
+    (document.head || document.documentElement).appendChild(script);
 }
 
 function injectStyleText(document, text) {
     var style = document.createElement('style');
-    style.innerHTML = text;
-    document.body.appendChild(style);
+    style.textContent = text;
+    (document.body || document.head || document.documentElement).appendChild(style);
 }
 
 function handoff(url, bundle) {
@@ -561,10 +619,20 @@ function handoff(url, bundle) {
     var contentWindow = contentFrame.contentWindow;
 
     var timer;
+    var onLoadDone = false;
 
     function onLoad() {
+        // The interval below can hit 'complete' more than once, and the 'load'
+        // listener can also fire; guarantee the bundle is injected exactly once.
+        if (onLoadDone) {
+            return;
+        }
+        onLoadDone = true;
+
         clearInterval(timer);
-        contentFrame.contentDocument.removeEventListener('DOMContentLoaded', onLoad);
+        if (contentFrame.contentDocument) {
+            contentFrame.contentDocument.removeEventListener('DOMContentLoaded', onLoad);
+        }
         contentFrame.removeEventListener('load', onLoad);
 
         injectScriptText(contentFrame.contentDocument, 'window.AppInfo = ' + JSON.stringify(appInfo) + ';');
@@ -583,6 +651,7 @@ function handoff(url, bundle) {
     function onUnload() {
         contentWindow.removeEventListener('unload', onUnload);
 
+        clearInterval(timer);
         timer = setInterval(function () {
             var contentDocument = contentFrame.contentDocument;
             if (!contentDocument) {
@@ -598,6 +667,7 @@ function handoff(url, bundle) {
                 // In the case of "loading" is not caught
                 case 'interactive':
                 case 'complete':
+                    clearInterval(timer);
                     onLoad();
                     break;
             }
@@ -629,7 +699,7 @@ window.addEventListener('message', function (event) {
 
     switch (msg.type) {
         case 'WebOS.featureOverrides':
-            storage.set(featureOverrideStorageKey, msg.data || {});
+            storage.set(featureOverrideStorageKey, sanitizeFeatureOverrides(msg.data));
             break;
         case 'selectServer':
             startDiscovery();
@@ -667,39 +737,49 @@ function renderSingleServer(server_id, server) {
         server_card = document.createElement("li");
         server_card.id = "server_" + server_id;
         server_card.className = "server_card";
+
+        // Server name
+        var title = document.createElement("div");
+        title.className = "server_card_title";
+        server_card.appendChild(title);
+
+        // Server URL
+        var server_url = document.createElement("div");
+        server_url.className = "server_card_url";
+        server_card.appendChild(server_url);
+
+        // Button
+        var btn = document.createElement("button");
+        btn.innerText = "Connect";
+        btn.type = "button";
+        btn.onclick = function () {
+            var urlfield = document.getElementById("baseurl");
+            urlfield.value = this.value;
+            handleServerSelect();
+        };
+        server_card.appendChild(btn);
+
         server_list.appendChild(server_card);
     }
-    server_card.innerHTML = "";
 
-    // Server name
-    var title = document.createElement("div");
-    title.className = "server_card_title";
-    title.innerText = server.Name;
-    server_card.appendChild(title);
-
-    // Server URL
-    var server_url = document.createElement("div");
-    server_url.className = "server_card_url";
-    server_url.innerText = server.Address;
-    server_card.appendChild(server_url);
-
-    // Button
-    var btn = document.createElement("button");
-    btn.innerText = "Connect";
-    btn.type = "button";
-    btn.value = server.Address;
-    btn.onclick = function () {
-        var urlfield = document.getElementById("baseurl");
-        urlfield.value = this.value;
-        handleServerSelect();
-    };
-    server_card.appendChild(btn);
+    // Discovery re-renders the same servers every ~15s; update text in place
+    // instead of tearing the card down and rebuilding closures each cycle.
+    server_card.querySelector(".server_card_title").innerText = server.Name;
+    server_card.querySelector(".server_card_url").innerText = server.Address;
+    server_card.querySelector("button").value = server.Address;
 }
 
 
 var servers_verifying = {};
 
 function verifyThenAdd(server) {
+    if (!server || typeof server !== 'object' || typeof server.Id !== 'string' || !server.Id) {
+        return;
+    }
+    if (typeof server.Address !== 'string' || !validURL(normalizeUrl(server.Address))) {
+        debugLog("Ignoring discovered server with invalid address:", server.Address);
+        return;
+    }
     if (servers_verifying[server.Id]) {
         return;
     }
