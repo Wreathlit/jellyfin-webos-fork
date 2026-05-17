@@ -10,6 +10,7 @@ if (!outfile) {
   console.error('Usage: gen-manifest.js <output-file>');
   process.exit(1);
 }
+const outputPath = path.isAbsolute(outfile) ? outfile : path.join(repoRoot, outfile);
 const appinfo = JSON.parse(fs.readFileSync(path.join(repoRoot, 'frontend/appinfo.json')));
 const ipkfile = `${appinfo.id}_${appinfo.version}_all.ipk`;
 const ipkpath = path.join(repoRoot, 'build', ipkfile);
@@ -20,7 +21,7 @@ if (!fs.existsSync(ipkpath)) {
 const ipkhash = crypto.createHash('sha256').update(fs.readFileSync(ipkpath)).digest('hex');
 
 fs.writeFileSync(
-  outfile,
+  outputPath,
   JSON.stringify({
     id: appinfo.id,
     version: appinfo.version,

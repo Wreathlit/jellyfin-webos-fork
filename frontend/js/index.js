@@ -565,6 +565,7 @@ function loadUrl(url, success, failure) {
 }
 
 var injectBundleCache = null;
+var activeHandoffCleanup = null;
 
 function getTextToInject(success, failure) {
     if (injectBundleCache) {
@@ -608,9 +609,71 @@ function injectStyleText(document, text) {
     (document.body || document.head || document.documentElement).appendChild(style);
 }
 
+function parseHandoffUrl(value) {
+    var anchor = document.createElement('a');
+    anchor.href = value;
+    return {
+        protocol: anchor.protocol,
+        host: anchor.host
+    };
+}
+
+function getHandoffUrlOrigin(value) {
+    var parsed = parseHandoffUrl(value);
+    if (!parsed.protocol || !parsed.host) {
+        return '';
+    }
+    return parsed.protocol + '//' + parsed.host;
+}
+
+function getHandoffDocumentHref(contentDocument) {
+    var href = '';
+    try {
+        href = contentDocument && contentDocument.location ? contentDocument.location.href : '';
+    } catch (error) {
+        return '';
+    }
+    return href;
+}
+
+function isLikelyHandoffTargetDocument(contentDocument, targetUrl) {
+    var href = getHandoffDocumentHref(contentDocument);
+
+    if (!href || href === 'about:blank' || href.indexOf('about:') === 0) {
+        return false;
+    }
+
+    var current = parseHandoffUrl(href);
+    var target = parseHandoffUrl(targetUrl);
+    return current.protocol === target.protocol && current.host === target.host;
+}
+
+function getHandoffDocumentOrigin(contentDocument) {
+    var href = getHandoffDocumentHref(contentDocument);
+    if (!href || href === 'about:blank' || href.indexOf('about:') === 0) {
+        return '';
+    }
+    return getHandoffUrlOrigin(href);
+}
+
+function isRemoteHandoffDocument(contentDocument) {
+    var href = getHandoffDocumentHref(contentDocument);
+
+    if (!href || href === 'about:blank' || href.indexOf('about:') === 0) {
+        return false;
+    }
+
+    var current = parseHandoffUrl(href);
+    return current.protocol === 'http:' || current.protocol === 'https:';
+}
+
 function handoff(url, bundle) {
     debugLog("Handoff called with: ", url)
     //hideConnecting();
+
+    if (activeHandoffCleanup) {
+        activeHandoffCleanup();
+    }
 
     stopDiscovery();
     document.querySelector('.container').style.display = 'none';
@@ -619,65 +682,139 @@ function handoff(url, bundle) {
     var contentWindow = contentFrame.contentWindow;
 
     var timer;
-    var onLoadDone = false;
+    var injectedDocument = null;
+    var domContentLoadedDocument = null;
+    var handoffCleanedUp = false;
+    var acceptedHandoffOrigin = '';
 
-    function onLoad() {
-        // The interval below can hit 'complete' more than once, and the 'load'
-        // listener can also fire; guarantee the bundle is injected exactly once.
-        if (onLoadDone) {
-            return;
-        }
-        onLoadDone = true;
-
-        clearInterval(timer);
-        if (contentFrame.contentDocument) {
-            contentFrame.contentDocument.removeEventListener('DOMContentLoaded', onLoad);
-        }
-        contentFrame.removeEventListener('load', onLoad);
-
-        injectScriptText(contentFrame.contentDocument, 'window.AppInfo = ' + JSON.stringify(appInfo) + ';');
-        injectScriptText(contentFrame.contentDocument, 'window.DeviceInfo = ' + JSON.stringify(deviceInfo) + ';');
-        injectScriptText(contentFrame.contentDocument, 'window.WebOSFeatureOverrides = ' + JSON.stringify(getEffectiveFeatureOverrides()) + ';');
-
-        if (bundle.js) {
-            injectScriptText(contentFrame.contentDocument, bundle.js);
-        }
-
-        if (bundle.css) {
-            injectStyleText(contentFrame.contentDocument, bundle.css);
+    function clearLoadPollTimer() {
+        if (timer) {
+            clearInterval(timer);
+            timer = null;
         }
     }
 
-    function onUnload() {
-        contentWindow.removeEventListener('unload', onUnload);
+    function getContentDocument() {
+        try {
+            return contentFrame.contentDocument;
+        } catch (error) {
+            return null;
+        }
+    }
 
-        clearInterval(timer);
+    function ensureLoadPollTimer() {
+        if (timer) {
+            return;
+        }
+
         timer = setInterval(function () {
-            var contentDocument = contentFrame.contentDocument;
+            var contentDocument = getContentDocument();
             if (!contentDocument) {
                 return;
             }
 
             switch (contentDocument.readyState) {
                 case 'loading':
-                    clearInterval(timer);
-                    contentDocument.addEventListener('DOMContentLoaded', onLoad);
+                    if (domContentLoadedDocument !== contentDocument) {
+                        if (domContentLoadedDocument) {
+                            domContentLoadedDocument.removeEventListener('DOMContentLoaded', onDomContentLoaded);
+                        }
+                        domContentLoadedDocument = contentDocument;
+                        contentDocument.addEventListener('DOMContentLoaded', onDomContentLoaded);
+                    }
                     break;
 
                 // In the case of "loading" is not caught
                 case 'interactive':
                 case 'complete':
-                    clearInterval(timer);
-                    onLoad();
+                    onLoad(false);
                     break;
             }
         }, 50);
     }
 
+    function onDomContentLoaded() {
+        onLoad(false);
+    }
+
+    function onFrameLoad() {
+        onLoad(true);
+    }
+
+    function onLoad(allowRedirectedDocument) {
+        if (handoffCleanedUp) {
+            return;
+        }
+
+        var contentDocument = getContentDocument();
+        if (!contentDocument || contentDocument === injectedDocument) {
+            return;
+        }
+
+        // Redirects and about:blank transitions can briefly expose intermediate
+        // documents. Polling injects only into the selected origin; iframe load
+        // also accepts a redirected http(s) origin because reverse proxies can
+        // canonicalize the server address after manifest discovery.
+        var currentOrigin = getHandoffDocumentOrigin(contentDocument);
+        var targetOrigin = getHandoffUrlOrigin(url);
+        var isTargetOrigin = currentOrigin && currentOrigin === targetOrigin;
+        var isAcceptedOrigin = acceptedHandoffOrigin && currentOrigin === acceptedHandoffOrigin;
+        var isInitialRedirectedOrigin = !acceptedHandoffOrigin && allowRedirectedDocument && isRemoteHandoffDocument(contentDocument);
+
+        if (!isTargetOrigin && !isAcceptedOrigin && !isInitialRedirectedOrigin) {
+            ensureLoadPollTimer();
+            return;
+        }
+
+        clearLoadPollTimer();
+        if (domContentLoadedDocument) {
+            domContentLoadedDocument.removeEventListener('DOMContentLoaded', onDomContentLoaded);
+            domContentLoadedDocument = null;
+        }
+        contentDocument.removeEventListener('DOMContentLoaded', onDomContentLoaded);
+        injectedDocument = contentDocument;
+        if (!acceptedHandoffOrigin) {
+            acceptedHandoffOrigin = currentOrigin;
+        }
+
+        injectScriptText(contentDocument, 'window.AppInfo = ' + JSON.stringify(appInfo) + ';');
+        injectScriptText(contentDocument, 'window.DeviceInfo = ' + JSON.stringify(deviceInfo) + ';');
+        injectScriptText(contentDocument, 'window.WebOSFeatureOverrides = ' + JSON.stringify(getEffectiveFeatureOverrides()) + ';');
+
+        if (bundle.js) {
+            injectScriptText(contentDocument, bundle.js);
+        }
+
+        if (bundle.css) {
+            injectStyleText(contentDocument, bundle.css);
+        }
+    }
+
+    function onUnload() {
+        contentWindow.removeEventListener('unload', onUnload);
+        clearLoadPollTimer();
+        ensureLoadPollTimer();
+    }
+
+    function cleanupHandoff() {
+        handoffCleanedUp = true;
+        clearLoadPollTimer();
+        if (domContentLoadedDocument) {
+            domContentLoadedDocument.removeEventListener('DOMContentLoaded', onDomContentLoaded);
+            domContentLoadedDocument = null;
+        }
+        contentWindow.removeEventListener('unload', onUnload);
+        contentFrame.removeEventListener('load', onFrameLoad);
+        if (activeHandoffCleanup === cleanupHandoff) {
+            activeHandoffCleanup = null;
+        }
+    }
+
+    activeHandoffCleanup = cleanupHandoff;
     contentWindow.addEventListener('unload', onUnload);
 
     // In the case of "loading" and "interactive" are not caught
-    contentFrame.addEventListener('load', onLoad);
+    contentFrame.addEventListener('load', onFrameLoad);
 
     waitForDeviceInfo(function () {
         contentFrame.style.display = '';
@@ -702,6 +839,9 @@ window.addEventListener('message', function (event) {
             storage.set(featureOverrideStorageKey, sanitizeFeatureOverrides(msg.data));
             break;
         case 'selectServer':
+            if (activeHandoffCleanup) {
+                activeHandoffCleanup();
+            }
             startDiscovery();
             document.querySelector('.container').style.display = '';
             hideConnecting();

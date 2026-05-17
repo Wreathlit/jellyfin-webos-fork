@@ -35,6 +35,8 @@
     var HEADER_PIN_INTERVAL = 12000; // fallback heartbeat only; scroll/resize/hashchange drive normal updates
     var MIN_HEADER_HEIGHT = 72;
     var headerPinTimer = null;
+    var headerPinObserver = null;
+    var headerPinObserverActive = false;
     var headerPinningInitialized = false;
     var headerPinScheduled = false;
     var cachedHeaderElement = null;
@@ -93,6 +95,7 @@
     var HDR_SUBTITLE_MAX_OPACITY_PERCENT = Math.round(HDR_SUBTITLE_MAX_OPACITY * 100);
     var HDR_SUBTITLE_DEFAULT_OPACITY_PERCENT = Math.round(HDR_SUBTITLE_DEFAULT_OPACITY * 100);
     var HDR_UI_INFO_CORRECTION_WINDOW_MS = 8000;
+    var HDR_UI_INFO_FALLBACK_SCAN_INTERVAL = 500;
     var POINTER_FIRST_CLICK_FOCUS_RESTORE_DELAYS = [0, 40, 120];
     var POINTER_FIRST_CLICK_SUPPRESS_NATIVE_CLICK_MS = 700;
     var POINTER_FIRST_CLICK_MAX_MOVE_PX = 14;
@@ -127,9 +130,11 @@
     var hdrUiInfoObserver = null;
     var hdrUiInfoObserverActive = false;
     var hdrUiInfoScanTimer = null;
+    var hdrUiInfoFallbackScanTimer = null;
     var hdrUiInfoCorrectionUntil = 0;
     var hdrUiInfoCorrectionTimer = null;
     var hdrUiInfoCorrectedHdrUntil = 0;
+    var hdrUiInfoCorrectedHdrReason = null;
     var hdrUiInfoInitialScanTimer = null;
     var currentMediaSessionItemId = null;
     var currentPlaybackMediaSourceId = null;
@@ -277,6 +282,106 @@
         }
     }
 
+    function headerNeedsPinnedRefresh(header) {
+        if (!header || !header.classList || !header.style) {
+            return true;
+        }
+
+        return header.classList.contains('hide')
+            || header.classList.contains('hidden')
+            || header.classList.contains('skinHeader-hidden')
+            || header.style.position !== 'fixed'
+            || header.style.transform !== 'translateY(0)'
+            || header.style.opacity === '0'
+            || header.style.visibility === 'hidden';
+    }
+
+    function initHeaderPinObserver() {
+        if (headerPinObserver || !window.MutationObserver) {
+            return;
+        }
+
+        headerPinObserver = new MutationObserver(function (mutations) {
+            var shouldRescanHeader = false;
+            var shouldSchedule = false;
+
+            for (var i = 0; i < mutations.length; i++) {
+                var mutation = mutations[i];
+                if (mutation.type === 'childList') {
+                    shouldRescanHeader = true;
+                    shouldSchedule = true;
+                    break;
+                }
+
+                if (mutation.type === 'attributes') {
+                    if (headerNeedsPinnedRefresh(mutation.target)) {
+                        shouldSchedule = true;
+                    }
+                }
+            }
+
+            if (shouldRescanHeader) {
+                cachedHeaderElement = null;
+                setHeaderPinObserverEnabled(true);
+            }
+
+            if (shouldSchedule) {
+                lastHeaderMeasureTs = 0;
+                scheduleForceHeaderPinned();
+            }
+        });
+    }
+
+    function setHeaderPinObserverEnabled(enabled) {
+        if (!window.MutationObserver) {
+            return;
+        }
+
+        if (!enabled) {
+            if (headerPinObserver && headerPinObserverActive) {
+                headerPinObserver.disconnect();
+                headerPinObserverActive = false;
+            }
+            return;
+        }
+
+        if (!headerPinObserver) {
+            initHeaderPinObserver();
+        }
+
+        if (!headerPinObserver) {
+            return;
+        }
+
+        headerPinObserver.disconnect();
+        headerPinObserverActive = false;
+
+        var header = getHeaderElement();
+        if (header) {
+            headerPinObserver.observe(header, {
+                attributes: true,
+                attributeFilter: ['class', 'style']
+            });
+            headerPinObserverActive = true;
+
+            if (header.parentNode) {
+                headerPinObserver.observe(header.parentNode, {
+                    childList: true
+                });
+            }
+            return;
+        }
+
+        var body = document.body || document.documentElement;
+        if (body) {
+            headerPinObserver.observe(body, {
+                childList: true,
+                subtree: true
+            });
+            headerPinObserverActive = true;
+        }
+    }
+
     function setHeaderPinningEnabled(enabled) {
         if (!document.body) {
             return;
@@ -293,6 +398,7 @@
             }
             scheduleForceHeaderPinned();
             updateHeaderPinHeartbeat();
+            setHeaderPinObserverEnabled(true);
             return;
         }
 
@@ -300,6 +406,7 @@
         document.body.style.paddingTop = '';
         document.documentElement.style.removeProperty('--webos-header-offset');
         updateHeaderPinHeartbeat();
+        setHeaderPinObserverEnabled(false);
 
         if (header) {
             header.style.position = '';
@@ -3469,6 +3576,13 @@
         }
     }
 
+    function clearHdrUiInfoFallbackScanTimer() {
+        if (hdrUiInfoFallbackScanTimer) {
+            clearTimeout(hdrUiInfoFallbackScanTimer);
+            hdrUiInfoFallbackScanTimer = null;
+        }
+    }
+
     function clearHdrUiInfoCorrectionTimer() {
         if (hdrUiInfoCorrectionTimer) {
             clearTimeout(hdrUiInfoCorrectionTimer);
@@ -3479,6 +3593,8 @@
     function clearHdrUiInfoCorrectionWindow() {
         hdrUiInfoCorrectionUntil = 0;
         hdrUiInfoCorrectedHdrUntil = 0;
+        hdrUiInfoCorrectedHdrReason = null;
+        clearHdrUiInfoFallbackScanTimer();
         clearHdrUiInfoCorrectionTimer();
     }
 
@@ -3490,6 +3606,7 @@
             hdrUiInfoCorrectionTimer = null;
             hdrUiInfoCorrectionUntil = 0;
             hdrUiInfoCorrectedHdrUntil = 0;
+            hdrUiInfoCorrectedHdrReason = null;
             setHdrUiInfoObserverEnabled(shouldUseHdrUiInfoObserver());
         }, HDR_UI_INFO_CORRECTION_WINDOW_MS);
 
@@ -3521,6 +3638,22 @@
                 refreshHdrUiDimming('playback-ui-scan');
             }
         }, typeof delay === 'number' ? delay : 0);
+    }
+
+    function scheduleHdrUiInfoFallbackScan() {
+        if (hdrUiInfoFallbackScanTimer || !shouldUseHdrUiInfoObserver() || Date.now() >= hdrUiInfoCorrectionUntil) {
+            return;
+        }
+
+        hdrUiInfoFallbackScanTimer = setTimeout(function () {
+            hdrUiInfoFallbackScanTimer = null;
+            if (!shouldUseHdrUiInfoObserver() || Date.now() >= hdrUiInfoCorrectionUntil) {
+                return;
+            }
+
+            scheduleHdrUiInfoScan(0);
+            scheduleHdrUiInfoFallbackScan();
+        }, HDR_UI_INFO_FALLBACK_SCAN_INTERVAL);
     }
 
     function normalizeDynamicRangeText(value) {
@@ -4698,17 +4831,24 @@
             nextRange = 'unknown';
         }
 
+        var authoritativeSdr = nextRange === 'sdr' && reason && reason !== 'playback-ui';
         if (nextRange === 'sdr'
             && playbackDynamicRange === 'hdr'
             && hdrUiInfoCorrectedHdrUntil
             && Date.now() < hdrUiInfoCorrectedHdrUntil) {
-            debugLog('Ignored SDR dynamic range during HDR correction window (' + reason + ')');
-            setHdrUiInfoObserverEnabled(shouldUseHdrUiInfoObserver());
-            return;
+            if (hdrUiInfoCorrectedHdrReason === 'playback-ui' && authoritativeSdr) {
+                debugLog('Accepted authoritative SDR after playback UI HDR correction (' + reason + ')');
+                clearHdrUiInfoCorrectionWindow();
+            } else {
+                debugLog('Ignored SDR dynamic range during HDR correction window (' + reason + ')');
+                setHdrUiInfoObserverEnabled(shouldUseHdrUiInfoObserver());
+                return;
+            }
         }
 
         if (nextRange === 'hdr' && Date.now() < hdrUiInfoCorrectionUntil) {
             hdrUiInfoCorrectedHdrUntil = Math.max(hdrUiInfoCorrectedHdrUntil, hdrUiInfoCorrectionUntil);
+            hdrUiInfoCorrectedHdrReason = reason || null;
         } else if (nextRange === 'hdr') {
             if (!hdrUiInfoCorrectedHdrUntil || Date.now() >= hdrUiInfoCorrectedHdrUntil) {
                 clearHdrUiInfoCorrectionWindow();
@@ -4754,9 +4894,9 @@
             if (!hdrUiInfoObserverActive) {
                 var targetNode = document.body || document.documentElement;
                 if (targetNode) {
-                    // childList/subtree is enough to notice the OSD media-info
-                    // elements appearing; characterData would fire this callback
-                    // on every subtitle/clock text tick during playback.
+                    // Use childList for OSD media-info nodes appearing. A low-rate
+                    // fallback scan below catches text-only HDR/DV updates without
+                    // firing on every subtitle/clock characterData mutation.
                     hdrUiInfoObserver.observe(targetNode, {
                         childList: true,
                         subtree: true
@@ -4773,6 +4913,7 @@
                 hdrUiInfoInitialScanTimer = null;
                 scheduleHdrUiInfoScan(0);
             }, 400);
+            scheduleHdrUiInfoFallbackScan();
             return;
         }
 
@@ -4786,6 +4927,7 @@
             hdrUiInfoInitialScanTimer = null;
         }
         clearHdrUiInfoScanTimer();
+        clearHdrUiInfoFallbackScanTimer();
     }
 
     function parseCommaSeparatedList(value) {

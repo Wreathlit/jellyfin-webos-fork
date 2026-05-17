@@ -10,6 +10,8 @@
 
 var pkgInfo = require('./package.json');
 var Service = require('webos-service');
+var net = require('net');
+var url = require('url');
 
 // Register com.yourdomain.@DIR@.service, on both buses
 var service = new Service(pkgInfo.name);
@@ -24,13 +26,78 @@ function log() {
 // Discovery responses arrive over unauthenticated UDP broadcast and are
 // attacker-influenceable; validate them before storing or forwarding to the UI.
 var MAX_SCAN_RESULTS = 64;
+var MAX_SCAN_RESULTS_PER_SOURCE = 8;
+var UNSAFE_MAP_KEYS = {
+	'__proto__': true,
+	'constructor': true,
+	'hasOwnProperty': true,
+	'prototype': true,
+	'toString': true,
+	'valueOf': true
+};
+
+function hasOwn(obj, key) {
+	return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function isSafeMapKey(value) {
+	return typeof value === 'string'
+		&& value.length > 0
+		&& value.length <= 256
+		&& !UNSAFE_MAP_KEYS[value]
+		&& !/[\u0000-\u001f\u007f]/.test(value);
+}
+
 function isValidServerAddress(address) {
 	if (typeof address !== 'string' || address.length === 0 || address.length > 2048) {
 		return false;
 	}
+
 	// Require a plain http(s) origin: scheme + host(:port), optional path,
 	// no embedded credentials ('@') and no whitespace.
-	return /^https?:\/\/[^\s/@]+(?:\/[^\s]*)?$/i.test(address);
+	if (/[\u0000-\u001f\u007f\s@\\]/.test(address)) {
+		return false;
+	}
+
+	var authorityMatch = /^https?:\/\/([^\/?#]+)/i.exec(address);
+	if (!authorityMatch || !authorityMatch[1]) {
+		return false;
+	}
+	var authority = authorityMatch[1];
+	if (authority.charAt(0) === '[') {
+		var ipv6End = authority.indexOf(']');
+		var ipv6Rest = ipv6End >= 0 ? authority.substring(ipv6End + 1) : '';
+		if (ipv6End <= 0 || (ipv6Rest && !/^:\d+$/.test(ipv6Rest))) {
+			return false;
+		}
+	} else if (authority.indexOf(':') !== -1 && !/^[^:]+:\d+$/.test(authority)) {
+		return false;
+	}
+
+	var parsed = url.parse(address);
+	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+		return false;
+	}
+	if (!parsed.hostname || !parsed.host || parsed.auth || parsed.hash) {
+		return false;
+	}
+	if (parsed.search || parsed.query) {
+		return false;
+	}
+	if (authority.charAt(0) === '[' && net.isIP(parsed.hostname) !== 6) {
+		return false;
+	}
+	if (parsed.hostname.length > 253) {
+		return false;
+	}
+	if (parsed.port) {
+		var port = parseInt(parsed.port, 10);
+		if (!/^\d+$/.test(parsed.port) || port <= 0 || port > 65535) {
+			return false;
+		}
+	}
+
+	return true;
 }
 
 var dgram = require('dgram');
@@ -51,12 +118,16 @@ const SCAN_INTERVAL = 15 * 1000;
 const SCAN_RESULT_TTL = 5 * SCAN_INTERVAL;
 const SCAN_ON_START = true;
 
-var scanresult = {};
+var scanresult = Object.create(null);
+
+function createResultMap() {
+	return Object.create(null);
+}
 
 function pruneScanResults() {
 	var now = Date.now();
 	for (var serverId in scanresult) {
-		if (!scanresult.hasOwnProperty(serverId)) {
+		if (!hasOwn(scanresult, serverId)) {
 			continue;
 		}
 
@@ -67,17 +138,57 @@ function pruneScanResults() {
 	}
 }
 
+function evictOldestScanResult() {
+	var oldestServerId = null;
+	var oldestLastSeen = Infinity;
+
+	for (var serverId in scanresult) {
+		if (!hasOwn(scanresult, serverId)) {
+			continue;
+		}
+
+		var server = scanresult[serverId];
+		var lastSeen = server && typeof server.lastSeen === 'number' ? server.lastSeen : 0;
+		if (lastSeen < oldestLastSeen) {
+			oldestLastSeen = lastSeen;
+			oldestServerId = serverId;
+		}
+	}
+
+	if (oldestServerId !== null) {
+		delete scanresult[oldestServerId];
+		return true;
+	}
+
+	return false;
+}
+
+function countScanResultsForSource(address) {
+	var count = 0;
+	for (var serverId in scanresult) {
+		if (!hasOwn(scanresult, serverId)) {
+			continue;
+		}
+
+		var server = scanresult[serverId];
+		if (server && server.source && server.source.address === address) {
+			count++;
+		}
+	}
+	return count;
+}
+
 function sendScanResults(server_id) {
 	pruneScanResults();
 	log("Sending responses, subscription count=" + Object.keys(subscriptions).length);
 	for (var i in subscriptions) {
-		if (subscriptions.hasOwnProperty(i)) {
+		if (hasOwn(subscriptions, i)) {
 			var s = subscriptions[i];
 			if (server_id) {
-				if (!scanresult[server_id]) {
+				if (!hasOwn(scanresult, server_id)) {
 					continue;
 				}
-				var res = {};
+				var res = createResultMap();
 				res[server_id] = scanresult[server_id];
 				s.respond({
 					results: res
@@ -96,18 +207,27 @@ function handleDiscoveryResponse(message, remote) {
 		var msg = JSON.parse(message.toString('utf-8'));
 
 		if (typeof msg == "object" && msg !== null &&
-			typeof msg.Id == "string" && msg.Id.length > 0 && msg.Id.length <= 256 &&
+			isSafeMapKey(msg.Id) &&
 			typeof msg.Name == "string" && msg.Name.length <= 256 &&
 			typeof msg.Address == "string" && isValidServerAddress(msg.Address)) {
 
-			if (!scanresult.hasOwnProperty(msg.Id) && Object.keys(scanresult).length >= MAX_SCAN_RESULTS) {
+			var isNewServerId = !hasOwn(scanresult, msg.Id);
+			if (isNewServerId && countScanResultsForSource(remote.address) >= MAX_SCAN_RESULTS_PER_SOURCE) {
+				return;
+			}
+
+			if (isNewServerId && Object.keys(scanresult).length >= MAX_SCAN_RESULTS) {
 				pruneScanResults();
 				if (Object.keys(scanresult).length >= MAX_SCAN_RESULTS) {
-					return;
+					evictOldestScanResult();
 				}
 			}
 
-			scanresult[msg.Id] = msg;
+			scanresult[msg.Id] = {
+				Id: msg.Id,
+				Name: msg.Name,
+				Address: msg.Address
+			};
 			scanresult[msg.Id].source = {
 				address: remote.address,
 				port: remote.port,
@@ -170,7 +290,7 @@ client4.bind({
 
 
 var interval;
-var subscriptions = {};
+var subscriptions = Object.create(null);
 
 function createInterval() {
 	if (interval) {
