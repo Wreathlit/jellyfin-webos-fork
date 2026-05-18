@@ -474,7 +474,7 @@ function handleSuccessManifest(data, baseurl) {
 
         // avoid Promise as it's buggy in some WebOS
             getTextToInject(function (bundle) {
-                handoff(hosturl, bundle);
+                handoff(hosturl, bundle, info.id && info.id !== false ? info.id : null);
             }, function (error) {
                 console.error(error);
                 displayError(error);
@@ -501,7 +501,7 @@ function handleSuccessManifest(data, baseurl) {
     debugLog(connected_servers[fallbackId]);
 
     getTextToInject(function (bundle) {
-        handoff(hosturl, bundle);
+        handoff(hosturl, bundle, null);
     }, function (error) {
         console.error(error);
         displayError(error);
@@ -566,6 +566,7 @@ function loadUrl(url, success, failure) {
 
 var injectBundleCache = null;
 var activeHandoffCleanup = null;
+var HANDOFF_INJECTION_TIMEOUT_MS = 45000;
 
 function getTextToInject(success, failure) {
     if (injectBundleCache) {
@@ -636,50 +637,13 @@ function getHandoffDocumentHref(contentDocument) {
     return href;
 }
 
-function getHandoffHostname(value) {
-    var anchor = document.createElement('a');
-    anchor.href = value;
-    return (anchor.hostname || '').toLowerCase();
-}
-
-function isPrivateOrLocalHandoffHostname(hostname) {
-    if (!hostname) {
-        return false;
-    }
-    // Bare hostnames (no dot), loopback and LAN suffixes count as local.
-    if (hostname === 'localhost'
-        || hostname.indexOf('.') === -1
-        || /\.(local|lan|home|internal|intranet)$/.test(hostname)) {
-        return true;
-    }
-    // IPv4 private ranges: 10/8, 127/8, 169.254/16, 172.16-31/12, 192.168/16.
-    var v4 = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(hostname);
-    if (!v4) {
-        return false;
-    }
-    var a = parseInt(v4[1], 10);
-    var b = parseInt(v4[2], 10);
-    return a === 10
-        || a === 127
-        || (a === 169 && b === 254)
-        || (a === 172 && b >= 16 && b <= 31)
-        || (a === 192 && b === 168);
-}
-
-function isAcceptableRedirectedHandoffDocument(contentDocument, targetUrl) {
-    var href = getHandoffDocumentHref(contentDocument);
-    if (!href) {
-        return false;
-    }
-    var currentHostname = getHandoffHostname(href);
-    if (!currentHostname) {
-        return false;
-    }
-    // A reverse proxy may canonicalize the server address after manifest
-    // discovery. Accept a redirect only when it stays on the target host or a
-    // private/LAN host; reject a redirect to an arbitrary public origin.
-    return currentHostname === getHandoffHostname(targetUrl)
-        || isPrivateOrLocalHandoffHostname(currentHostname);
+function shouldValidateRedirectedHandoffDocument(contentDocument, targetUrl) {
+    var currentOrigin = getHandoffDocumentOrigin(contentDocument);
+    var current = parseHandoffUrl(currentOrigin);
+    var target = parseHandoffUrl(targetUrl);
+    return !!currentOrigin
+        && currentOrigin !== getHandoffUrlOrigin(targetUrl)
+        && !(target.protocol === 'https:' && current.protocol === 'http:');
 }
 
 function getHandoffDocumentOrigin(contentDocument) {
@@ -701,7 +665,7 @@ function isRemoteHandoffDocument(contentDocument) {
     return current.protocol === 'http:' || current.protocol === 'https:';
 }
 
-function handoff(url, bundle) {
+function handoff(url, bundle, expectedServerId) {
     debugLog("Handoff called with: ", url)
     //hideConnecting();
 
@@ -713,13 +677,18 @@ function handoff(url, bundle) {
     document.querySelector('.container').style.display = 'none';
 
     var contentFrame = document.querySelector('#contentFrame');
-    var contentWindow = contentFrame.contentWindow;
 
     var timer;
     var injectedDocument = null;
     var domContentLoadedDocument = null;
     var handoffCleanedUp = false;
     var acceptedHandoffOrigin = '';
+    var injectionFailureTimer = null;
+    var validatedRedirectOrigins = {};
+    var validatingRedirectOrigins = {};
+    var redirectValidationRequests = [];
+    var frameNavigationStarted = false;
+    var unloadWindow = null;
 
     function clearLoadPollTimer() {
         if (timer) {
@@ -728,12 +697,69 @@ function handoff(url, bundle) {
         }
     }
 
+    function clearInjectionFailureTimer() {
+        if (injectionFailureTimer) {
+            clearTimeout(injectionFailureTimer);
+            injectionFailureTimer = null;
+        }
+    }
+
+    function scheduleInjectionFailureTimer(message) {
+        if (injectionFailureTimer) {
+            return;
+        }
+
+        injectionFailureTimer = setTimeout(function () {
+            failHandoff(message);
+        }, HANDOFF_INJECTION_TIMEOUT_MS);
+    }
+
+    function abortRedirectValidationRequests() {
+        for (var i = 0; i < redirectValidationRequests.length; i++) {
+            var request = redirectValidationRequests[i];
+            if (request && request.abort) {
+                try {
+                    request.abort();
+                } catch (error) {
+                    debugLog('Failed to abort handoff redirect validation:', error);
+                }
+            }
+        }
+        redirectValidationRequests = [];
+    }
+
     function getContentDocument() {
         try {
             return contentFrame.contentDocument;
         } catch (error) {
             return null;
         }
+    }
+
+    function getContentWindow() {
+        try {
+            return contentFrame.contentWindow;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function removeUnloadListener() {
+        if (unloadWindow) {
+            unloadWindow.removeEventListener('unload', onUnload);
+            unloadWindow = null;
+        }
+    }
+
+    function addUnloadListener() {
+        var nextWindow = getContentWindow();
+        if (!nextWindow || nextWindow === unloadWindow) {
+            return;
+        }
+
+        removeUnloadListener();
+        unloadWindow = nextWindow;
+        unloadWindow.addEventListener('unload', onUnload);
     }
 
     function ensureLoadPollTimer() {
@@ -772,11 +798,66 @@ function handoff(url, bundle) {
     }
 
     function onFrameLoad() {
+        if (!frameNavigationStarted) {
+            return;
+        }
         onLoad(true);
+    }
+
+    function validateRedirectedHandoffOrigin(origin) {
+        if (!origin || validatedRedirectOrigins[origin] || validatingRedirectOrigins[origin]) {
+            return;
+        }
+
+        validatingRedirectOrigins[origin] = true;
+        var request = new XMLHttpRequest();
+        var validationUrl = normalizeUrl(origin + "/System/Info/Public");
+
+        request.open('GET', validationUrl);
+        request.timeout = 5000;
+        request.onreadystatechange = function () {
+            if (request.readyState !== XMLHttpRequest.DONE) {
+                return;
+            }
+
+            validatingRedirectOrigins[origin] = false;
+            if (request.status !== 200 || !request.responseURL || getHandoffUrlOrigin(request.responseURL) !== origin) {
+                return;
+            }
+
+            var data = null;
+            try {
+                data = JSON.parse(request.responseText);
+            } catch (error) {
+                data = null;
+            }
+
+            if (data && data.ProductName == "Jellyfin Server"
+                && (!expectedServerId || data.Id === expectedServerId)) {
+                validatedRedirectOrigins[origin] = true;
+                if (!handoffCleanedUp && getHandoffDocumentOrigin(getContentDocument()) === origin) {
+                    onLoad(true);
+                }
+            }
+        };
+        request.onerror = function () {
+            validatingRedirectOrigins[origin] = false;
+        };
+        request.ontimeout = function () {
+            validatingRedirectOrigins[origin] = false;
+        };
+        request.onabort = function () {
+            validatingRedirectOrigins[origin] = false;
+        };
+        request.send();
+        redirectValidationRequests.push(request);
     }
 
     function onLoad(allowRedirectedDocument) {
         if (handoffCleanedUp) {
+            return;
+        }
+        if (!frameNavigationStarted) {
             return;
         }
 
@@ -786,9 +867,9 @@ function handoff(url, bundle) {
         }
 
         // Redirects and about:blank transitions can briefly expose intermediate
-        // documents. Polling injects only into the selected origin; iframe load
-        // also accepts a redirect to the target host or a private/LAN host (see
-        // isAcceptableRedirectedHandoffDocument) for reverse-proxy canonicalization.
+        // documents. Polling injects only into the selected origin. Other
+        // origins must first validate as the same Jellyfin server via
+        // /System/Info/Public before receiving the privileged webOS bundle.
         var currentOrigin = getHandoffDocumentOrigin(contentDocument);
         var targetOrigin = getHandoffUrlOrigin(url);
         var isTargetOrigin = currentOrigin && currentOrigin === targetOrigin;
@@ -796,14 +877,22 @@ function handoff(url, bundle) {
         var isInitialRedirectedOrigin = !acceptedHandoffOrigin
             && allowRedirectedDocument
             && isRemoteHandoffDocument(contentDocument)
-            && isAcceptableRedirectedHandoffDocument(contentDocument, url);
+            && !!validatedRedirectOrigins[currentOrigin];
 
         if (!isTargetOrigin && !isAcceptedOrigin && !isInitialRedirectedOrigin) {
+            if (!acceptedHandoffOrigin
+                && allowRedirectedDocument
+                && isRemoteHandoffDocument(contentDocument)
+                && shouldValidateRedirectedHandoffDocument(contentDocument, url)) {
+                validateRedirectedHandoffOrigin(currentOrigin);
+            }
+            scheduleInjectionFailureTimer("Failed to load Jellyfin Web in the webOS frame. The server may have redirected to an unsupported origin.");
             ensureLoadPollTimer();
             return;
         }
 
         clearLoadPollTimer();
+        clearInjectionFailureTimer();
         if (domContentLoadedDocument) {
             domContentLoadedDocument.removeEventListener('DOMContentLoaded', onDomContentLoaded);
             domContentLoadedDocument = null;
@@ -813,6 +902,7 @@ function handoff(url, bundle) {
         if (!acceptedHandoffOrigin) {
             acceptedHandoffOrigin = currentOrigin;
         }
+        addUnloadListener();
 
         injectScriptText(contentDocument, 'window.AppInfo = ' + JSON.stringify(appInfo) + ';');
         injectScriptText(contentDocument, 'window.DeviceInfo = ' + JSON.stringify(deviceInfo) + ';');
@@ -828,35 +918,53 @@ function handoff(url, bundle) {
     }
 
     function onUnload() {
-        contentWindow.removeEventListener('unload', onUnload);
+        removeUnloadListener();
         clearLoadPollTimer();
         ensureLoadPollTimer();
+        scheduleInjectionFailureTimer("Failed to reload Jellyfin Web in the webOS frame.");
     }
 
     function cleanupHandoff() {
         handoffCleanedUp = true;
         clearLoadPollTimer();
+        clearInjectionFailureTimer();
+        abortRedirectValidationRequests();
         if (domContentLoadedDocument) {
             domContentLoadedDocument.removeEventListener('DOMContentLoaded', onDomContentLoaded);
             domContentLoadedDocument = null;
         }
-        contentWindow.removeEventListener('unload', onUnload);
+        removeUnloadListener();
         contentFrame.removeEventListener('load', onFrameLoad);
         if (activeHandoffCleanup === cleanupHandoff) {
             activeHandoffCleanup = null;
         }
     }
 
+    function failHandoff(message) {
+        cleanupHandoff();
+        contentFrame.style.display = 'none';
+        contentFrame.src = '';
+        document.querySelector('.container').style.display = '';
+        startDiscovery();
+        hideConnecting();
+        displayError(message);
+    }
+
     activeHandoffCleanup = cleanupHandoff;
-    contentWindow.addEventListener('unload', onUnload);
 
     // In the case of "loading" and "interactive" are not caught
     contentFrame.addEventListener('load', onFrameLoad);
 
     waitForDeviceInfo(function () {
+        if (handoffCleanedUp) {
+            return;
+        }
+        frameNavigationStarted = true;
+        addUnloadListener();
         contentFrame.style.display = '';
         contentFrame.src = url;
         contentFrame.focus();
+        scheduleInjectionFailureTimer("Failed to load Jellyfin Web in the webOS frame. The server did not finish loading in time.");
     });
 }
 
