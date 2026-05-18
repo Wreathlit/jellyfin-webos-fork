@@ -636,16 +636,50 @@ function getHandoffDocumentHref(contentDocument) {
     return href;
 }
 
-function isLikelyHandoffTargetDocument(contentDocument, targetUrl) {
-    var href = getHandoffDocumentHref(contentDocument);
+function getHandoffHostname(value) {
+    var anchor = document.createElement('a');
+    anchor.href = value;
+    return (anchor.hostname || '').toLowerCase();
+}
 
-    if (!href || href === 'about:blank' || href.indexOf('about:') === 0) {
+function isPrivateOrLocalHandoffHostname(hostname) {
+    if (!hostname) {
         return false;
     }
+    // Bare hostnames (no dot), loopback and LAN suffixes count as local.
+    if (hostname === 'localhost'
+        || hostname.indexOf('.') === -1
+        || /\.(local|lan|home|internal|intranet)$/.test(hostname)) {
+        return true;
+    }
+    // IPv4 private ranges: 10/8, 127/8, 169.254/16, 172.16-31/12, 192.168/16.
+    var v4 = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(hostname);
+    if (!v4) {
+        return false;
+    }
+    var a = parseInt(v4[1], 10);
+    var b = parseInt(v4[2], 10);
+    return a === 10
+        || a === 127
+        || (a === 169 && b === 254)
+        || (a === 172 && b >= 16 && b <= 31)
+        || (a === 192 && b === 168);
+}
 
-    var current = parseHandoffUrl(href);
-    var target = parseHandoffUrl(targetUrl);
-    return current.protocol === target.protocol && current.host === target.host;
+function isAcceptableRedirectedHandoffDocument(contentDocument, targetUrl) {
+    var href = getHandoffDocumentHref(contentDocument);
+    if (!href) {
+        return false;
+    }
+    var currentHostname = getHandoffHostname(href);
+    if (!currentHostname) {
+        return false;
+    }
+    // A reverse proxy may canonicalize the server address after manifest
+    // discovery. Accept a redirect only when it stays on the target host or a
+    // private/LAN host; reject a redirect to an arbitrary public origin.
+    return currentHostname === getHandoffHostname(targetUrl)
+        || isPrivateOrLocalHandoffHostname(currentHostname);
 }
 
 function getHandoffDocumentOrigin(contentDocument) {
@@ -753,13 +787,16 @@ function handoff(url, bundle) {
 
         // Redirects and about:blank transitions can briefly expose intermediate
         // documents. Polling injects only into the selected origin; iframe load
-        // also accepts a redirected http(s) origin because reverse proxies can
-        // canonicalize the server address after manifest discovery.
+        // also accepts a redirect to the target host or a private/LAN host (see
+        // isAcceptableRedirectedHandoffDocument) for reverse-proxy canonicalization.
         var currentOrigin = getHandoffDocumentOrigin(contentDocument);
         var targetOrigin = getHandoffUrlOrigin(url);
         var isTargetOrigin = currentOrigin && currentOrigin === targetOrigin;
         var isAcceptedOrigin = acceptedHandoffOrigin && currentOrigin === acceptedHandoffOrigin;
-        var isInitialRedirectedOrigin = !acceptedHandoffOrigin && allowRedirectedDocument && isRemoteHandoffDocument(contentDocument);
+        var isInitialRedirectedOrigin = !acceptedHandoffOrigin
+            && allowRedirectedDocument
+            && isRemoteHandoffDocument(contentDocument)
+            && isAcceptableRedirectedHandoffDocument(contentDocument, url);
 
         if (!isTargetOrigin && !isAcceptedOrigin && !isInitialRedirectedOrigin) {
             ensureLoadPollTimer();
