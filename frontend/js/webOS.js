@@ -70,7 +70,6 @@
     var ASS_RENDER_AHEAD_LIMIT_MIB = 0;
     var ASS_TIME_SYNC_BACKWARD_TOLERANCE_SECONDS = 0.03;
     var ASS_TIME_SYNC_SEEK_BACK_SECONDS = 0.75;
-    var ASS_TIME_SYNC_MAX_PREDICTION_INTERVAL_MS = 250;
     var PLAYBACK_DIAGNOSTICS_UPDATE_INTERVAL = 500;
     var SCRIPT_PATCH_FETCH_TIMEOUT_MS = 8000;
     var SCRIPT_PATCH_SPECULATIVE_FETCH_TIMEOUT_MS = 750;
@@ -2368,12 +2367,7 @@
             return entry.lastPostedCurrentTime;
         }
 
-        var elapsedMs = Math.max(0, now - entry.lastPostedAt);
-        if (elapsedMs > ASS_TIME_SYNC_MAX_PREDICTION_INTERVAL_MS) {
-            return null;
-        }
-
-        var elapsedSeconds = elapsedMs / 1000;
+        var elapsedSeconds = Math.max(0, (now - entry.lastPostedAt) / 1000);
         return entry.lastPostedCurrentTime + elapsedSeconds * entry.lastPostedRate;
     }
 
@@ -2393,19 +2387,20 @@
 
         if (hasCurrentTime) {
             var nextCurrentTime = message.currentTime;
+            // Clamp samples that fall behind the worker's smooth extrapolation, not just
+            // raw backwards samples — under load most regressions look like "behind by 20-80ms"
+            // rather than a literal numeric decrease. Clamp to predictedTime so the worker's
+            // clock advances monotonically; pinning to lastPostedCurrentTime would re-anchor
+            // it on a stale value.
             var predictedTime = getPredictedAssWorkerTime(entry, now);
             if (assTimeSyncFixEnabled
                 && typeof predictedTime === 'number'
-                && !entry.lastPostedPaused
-                && !nextPaused
-                && typeof entry.lastPostedCurrentTime === 'number'
-                && nextCurrentTime + ASS_TIME_SYNC_BACKWARD_TOLERANCE_SECONDS < entry.lastPostedCurrentTime
                 && nextCurrentTime + ASS_TIME_SYNC_BACKWARD_TOLERANCE_SECONDS < predictedTime) {
                 var backwardsBy = predictedTime - nextCurrentTime;
                 if (backwardsBy < ASS_TIME_SYNC_SEEK_BACK_SECONDS) {
                     patched = cloneShallowObject(message);
-                    patched.currentTime = entry.lastPostedCurrentTime;
-                    nextCurrentTime = entry.lastPostedCurrentTime;
+                    patched.currentTime = predictedTime;
+                    nextCurrentTime = predictedTime;
                     assWorkerTimeSyncClampCount++;
                     assWorkerVideoMessagePatchCount++;
                 }
