@@ -34,11 +34,11 @@
 .layout-tv body.webos-hdr-ui-dim .promptDialog,
 .layout-tv body.webos-hdr-ui-dim .toast,
 .layout-tv body.webos-hdr-ui-dim .dialog {
-    filter: brightness(var(--webos-hdr-ui-brightness, 0.3)) saturate(0.92) !important;
+    filter: brightness(var(--webos-hdr-ui-brightness, 0.3)) saturate(0.92);
 }
 
 .layout-tv body.webos-hdr-ui-dim .dialogBackdrop {
-    background-color: rgba(0, 0, 0, 0.78) !important;
+    background-color: rgba(0, 0, 0, 0.78);
 }
 
 /* Dim subtitle luminance in HDR/Dolby Vision mode. */
@@ -49,16 +49,16 @@
 }
 
 .layout-tv body.webos-hdr-ui-dim .htmlvideoplayer::-webkit-media-text-track-display {
-    filter: brightness(var(--webos-hdr-subtitle-brightness, 0.52)) !important;
+    filter: brightness(var(--webos-hdr-subtitle-brightness, 0.52));
 }
 
 .layout-tv body.webos-hdr-ui-dim .videoSubtitles {
-    color: rgba(205, 205, 205, 0.58) !important;
+    color: rgba(205, 205, 205, 0.58);
 }
 
 .layout-tv body.webos-hdr-ui-dim .videoSubtitlesInner,
 .layout-tv body.webos-hdr-ui-dim .videoSecondarySubtitlesInner {
-    opacity: var(--webos-hdr-subtitle-opacity, 0.62) !important;
+    opacity: var(--webos-hdr-subtitle-opacity, 0.62);
 }
 
 /* PGS/image subtitle renderers commonly draw into canvas/img overlays. */
@@ -69,21 +69,21 @@
 .layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="libpgs"] img,
 .layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="subtitle"] canvas,
 .layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="subtitle"] img {
-    filter: brightness(var(--webos-hdr-pgs-brightness, 0.5)) !important;
-    opacity: var(--webos-hdr-subtitle-opacity, 0.62) !important;
+    filter: brightness(var(--webos-hdr-pgs-brightness, 0.5));
+    opacity: var(--webos-hdr-subtitle-opacity, 0.62);
 }
 
-/* Last-resort: many PGS renderers emit plain canvas/img nodes without class names. */
-.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer canvas,
-.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer img {
-    filter: brightness(var(--webos-hdr-pgs-brightness, 0.5)) !important;
+/* Last-resort: plain canvas/img nodes without identifiable PGS/subtitle class names. */
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer canvas:not([class*="pgs"]):not([class*="libpgs"]):not([class*="subtitle"]):not([class*="libass"]),
+.layout-tv body.webos-hdr-ui-dim .videoPlayerContainer img:not([class*="pgs"]):not([class*="libpgs"]):not([class*="subtitle"]):not([class*="libass"]) {
+    filter: brightness(var(--webos-hdr-pgs-brightness, 0.5));
 }
 
 .layout-tv body.webos-hdr-ui-dim .videoPlayerContainer .libassjs-canvas-parent canvas,
 .layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="libass"] canvas,
 .layout-tv body.webos-hdr-ui-dim .videoPlayerContainer [class*="libass"] img {
-    filter: brightness(var(--webos-hdr-subtitle-brightness, 0.52)) !important;
-    opacity: var(--webos-hdr-subtitle-opacity, 0.62) !important;
+    filter: brightness(var(--webos-hdr-subtitle-brightness, 0.52));
+    opacity: var(--webos-hdr-subtitle-opacity, 0.62);
 }
 
 .layout-tv .webos-hdr-ui-dim-control .webos-hdr-ui-dim-header {

@@ -233,6 +233,47 @@
     var pointerFirstClickSuppressX = null;
     var pointerFirstClickSuppressY = null;
 
+    function createRateTracker() {
+        var windowStartTs = 0;
+        var count = 0;
+        return {
+            record: function (now) {
+                if (!windowStartTs) {
+                    windowStartTs = now;
+                }
+                count++;
+                var elapsed = now - windowStartTs;
+                if (elapsed >= 1000) {
+                    var rate = Math.round((count * 1000 / elapsed) * 10) / 10;
+                    count = 0;
+                    windowStartTs = now;
+                    return rate;
+                }
+                return null;
+            },
+            increment: function () {
+                count++;
+            },
+            check: function (now) {
+                if (!windowStartTs) {
+                    windowStartTs = now;
+                }
+                var elapsed = now - windowStartTs;
+                if (elapsed >= 1000) {
+                    var rate = Math.round((count * 1000 / elapsed) * 10) / 10;
+                    count = 0;
+                    windowStartTs = now;
+                    return rate;
+                }
+                return null;
+            },
+            reset: function () {
+                windowStartTs = 0;
+                count = 0;
+            }
+        };
+    }
+
     function postMessage(type, data) {
         window.top.postMessage({
             type: type,
@@ -1350,8 +1391,8 @@
         return clampHdrSubtitleOpacity(parsedPercent / 100);
     }
 
-    function getHdrSubtitleBrightness() {
-        var brightness = hdrUiDimBrightness + 0.22;
+    function getHdrDerivedBrightness(offset) {
+        var brightness = hdrUiDimBrightness + offset;
         if (brightness > 1) {
             brightness = 1;
         }
@@ -1361,15 +1402,12 @@
         return brightness;
     }
 
+    function getHdrSubtitleBrightness() {
+        return getHdrDerivedBrightness(0.22);
+    }
+
     function getHdrPgsOverlayBrightness() {
-        var brightness = hdrUiDimBrightness + 0.2;
-        if (brightness > 1) {
-            brightness = 1;
-        }
-        if (brightness < 0.08) {
-            brightness = 0.08;
-        }
-        return brightness;
+        return getHdrDerivedBrightness(0.2);
     }
 
     function getHdrSubtitleOpacity() {
@@ -1518,71 +1556,68 @@
         }
     }
 
-    function setDisableAssRenderAhead(enabled, reason) {
+    function setFeatureFlag(enabled, reason, config) {
         var nextValue = !!enabled;
-        if (disableAssRenderAhead === nextValue) {
+        if (config.getValue() === nextValue) {
+            if (config.onNoChange) {
+                config.onNoChange();
+            }
             return;
         }
-
-        disableAssRenderAhead = nextValue;
+        config.setValue(nextValue);
         savePersistedPlaybackDiagnosticsSettings();
+        if (config.syncFn) {
+            config.syncFn();
+        }
         emitFeatureOverridesChanged();
-        syncAssRendererOptions();
-        debugLog('ASS/libass render-ahead limit changed (' + reason + '): ' + disableAssRenderAhead);
+        debugLog(config.debugLabel + ' changed (' + reason + '): ' + nextValue);
+    }
+
+    function setDisableAssRenderAhead(enabled, reason) {
+        setFeatureFlag(enabled, reason, {
+            getValue: function () { return disableAssRenderAhead; },
+            setValue: function (v) { disableAssRenderAhead = v; },
+            syncFn: syncAssRendererOptions,
+            debugLabel: 'ASS/libass render-ahead limit'
+        });
     }
 
     function setAssTimeSyncFixEnabled(enabled, reason) {
-        var nextValue = !!enabled;
-        if (assTimeSyncFixEnabled === nextValue) {
-            return;
-        }
-
-        assTimeSyncFixEnabled = nextValue;
-        savePersistedPlaybackDiagnosticsSettings();
-        emitFeatureOverridesChanged();
-        debugLog('ASS/libass time rollback fix changed (' + reason + '): ' + assTimeSyncFixEnabled);
+        setFeatureFlag(enabled, reason, {
+            getValue: function () { return assTimeSyncFixEnabled; },
+            setValue: function (v) { assTimeSyncFixEnabled = v; },
+            debugLabel: 'ASS/libass time rollback fix'
+        });
     }
 
     function setPlaybackDiagnosticsEnabled(enabled, reason) {
-        var nextValue = !!enabled;
-        if (playbackDiagnosticsEnabled === nextValue) {
-            updatePlaybackDiagnosticsOverlay();
-            return;
-        }
-
-        playbackDiagnosticsEnabled = nextValue;
-        savePersistedPlaybackDiagnosticsSettings();
-        updatePlaybackDiagnosticsOverlay();
-        emitFeatureOverridesChanged();
-        debugLog('Playback diagnostics overlay changed (' + reason + '): ' + playbackDiagnosticsEnabled);
+        setFeatureFlag(enabled, reason, {
+            getValue: function () { return playbackDiagnosticsEnabled; },
+            setValue: function (v) { playbackDiagnosticsEnabled = v; },
+            syncFn: updatePlaybackDiagnosticsOverlay,
+            onNoChange: updatePlaybackDiagnosticsOverlay,
+            debugLabel: 'Playback diagnostics overlay'
+        });
     }
 
     function setPgsForceMainThread(enabled, reason) {
-        var nextValue = !!enabled;
-        if (pgsForceMainThread === nextValue) {
-            syncPgsRendererOptionsHelper();
-            return;
-        }
-
-        pgsForceMainThread = nextValue;
-        savePersistedPlaybackDiagnosticsSettings();
-        syncPgsRendererOptionsHelper();
-        emitFeatureOverridesChanged();
-        debugLog('PGS force main-thread renderer changed (' + reason + '): ' + pgsForceMainThread);
+        setFeatureFlag(enabled, reason, {
+            getValue: function () { return pgsForceMainThread; },
+            setValue: function (v) { pgsForceMainThread = v; },
+            syncFn: syncPgsRendererOptionsHelper,
+            onNoChange: syncPgsRendererOptionsHelper,
+            debugLabel: 'PGS force main-thread renderer'
+        });
     }
 
     function setPgsPatchObjectReuse(enabled, reason) {
-        var nextValue = !!enabled;
-        if (pgsPatchObjectReuse === nextValue) {
-            syncPgsRendererOptionsHelper();
-            return;
-        }
-
-        pgsPatchObjectReuse = nextValue;
-        savePersistedPlaybackDiagnosticsSettings();
-        syncPgsRendererOptionsHelper();
-        emitFeatureOverridesChanged();
-        debugLog('PGS object reuse patch changed (' + reason + '): ' + pgsPatchObjectReuse);
+        setFeatureFlag(enabled, reason, {
+            getValue: function () { return pgsPatchObjectReuse; },
+            setValue: function (v) { pgsPatchObjectReuse = v; },
+            syncFn: syncPgsRendererOptionsHelper,
+            onNoChange: syncPgsRendererOptionsHelper,
+            debugLabel: 'PGS object reuse patch'
+        });
     }
 
     function emitFeatureOverridesChanged() {
@@ -2700,25 +2735,25 @@
         }
     }
 
-    function initializeHdrUiDimControl(container) {
+    function initializeHdrSlider(container, config) {
         if (!container) {
             return;
         }
 
-        var slider = container.querySelector('.webosHdrUiDimSlider');
+        var slider = container.querySelector(config.sliderClass);
         if (!slider) {
             return;
         }
 
         if (slider.getAttribute('data-webos-init') !== 'true') {
             slider.addEventListener('input', function () {
-                setHdrUiDimBrightness(percentToBrightness(slider.value), 'settings-slider-input', false);
+                config.setValue(slider.value, false);
                 schedulePersistedHdrSettingsSave();
-                updateHdrUiDimControlDisplay(container);
+                config.updateDisplay(container);
             });
             slider.addEventListener('change', function () {
-                setHdrUiDimBrightness(percentToBrightness(slider.value), 'settings-slider-change', true);
-                updateHdrUiDimControlDisplay(container);
+                config.setValue(slider.value, true);
+                config.updateDisplay(container);
             });
             slider.addEventListener('blur', function () {
                 flushPersistedHdrSettingsSave();
@@ -2732,42 +2767,35 @@
             slider.setAttribute('data-webos-init', 'true');
         }
 
-        updateHdrUiDimControlDisplay(container);
+        config.updateDisplay(container);
+    }
+
+    function initializeHdrUiDimControl(container) {
+        initializeHdrSlider(container, {
+            sliderClass: '.webosHdrUiDimSlider',
+            setValue: function (value, isFinal) {
+                setHdrUiDimBrightness(
+                    percentToBrightness(value),
+                    isFinal ? 'settings-slider-change' : 'settings-slider-input',
+                    isFinal
+                );
+            },
+            updateDisplay: updateHdrUiDimControlDisplay
+        });
     }
 
     function initializeHdrSubtitleOpacityControl(container) {
-        if (!container) {
-            return;
-        }
-
-        var slider = container.querySelector('.webosHdrSubtitleOpacitySlider');
-        if (!slider) {
-            return;
-        }
-
-        if (slider.getAttribute('data-webos-init') !== 'true') {
-            slider.addEventListener('input', function () {
-                setHdrSubtitleOpacity(percentToOpacity(slider.value), 'settings-opacity-slider-input', false);
-                schedulePersistedHdrSettingsSave();
-                updateHdrSubtitleOpacityControlDisplay(container);
-            });
-            slider.addEventListener('change', function () {
-                setHdrSubtitleOpacity(percentToOpacity(slider.value), 'settings-opacity-slider-change', true);
-                updateHdrSubtitleOpacityControlDisplay(container);
-            });
-            slider.addEventListener('blur', function () {
-                flushPersistedHdrSettingsSave();
-            });
-            slider.addEventListener('pointerup', function () {
-                flushPersistedHdrSettingsSave();
-            });
-            slider.addEventListener('keyup', function () {
-                flushPersistedHdrSettingsSave();
-            });
-            slider.setAttribute('data-webos-init', 'true');
-        }
-
-        updateHdrSubtitleOpacityControlDisplay(container);
+        initializeHdrSlider(container, {
+            sliderClass: '.webosHdrSubtitleOpacitySlider',
+            setValue: function (value, isFinal) {
+                setHdrSubtitleOpacity(
+                    percentToOpacity(value),
+                    isFinal ? 'settings-opacity-slider-change' : 'settings-opacity-slider-input',
+                    isFinal
+                );
+            },
+            updateDisplay: updateHdrSubtitleOpacityControlDisplay
+        });
     }
 
     function ensureWebOSSettingsControls() {

@@ -1,46 +1,55 @@
-/* 
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  *
  * This file incorporates work covered by the following copyright and
  * permission notice:
- * 
+ *
  *   Copyright 2019 Simon J. Hogan
- * 
+ *
  *    Licensed under the Apache License, Version 2.0 (the "License");
  *    you may not use this file except in compliance with the License.
  *    You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  *    Unless required by applicable law or agreed to in writing, software
  *    distributed under the License is distributed on an "AS IS" BASIS,
  *    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *    See the License for the specific language governing permissions and
  *    limitations under the License.
- * 
+ *
 */
 
 var storage = new STORAGE();
 
 function STORAGE() {};
 
+var _localStorageRef = null;
+var _localStorageChecked = false;
+
 function getLocalStorage() {
+	if (_localStorageChecked) {
+		return _localStorageRef;
+	}
+	_localStorageChecked = true;
 	try {
 		if (typeof window !== 'undefined' && window.localStorage) {
-			return window.localStorage;
+			_localStorageRef = window.localStorage;
+			return _localStorageRef;
 		}
 	} catch (error) {
 		// ignore inaccessible storage
 	}
-
 	return null;
 }
 
-STORAGE.prototype.get = function(name, isJSON) {	
+var DEFAULT_IS_JSON = true;
+
+STORAGE.prototype.get = function(name, isJSON) {
 	if (isJSON === undefined) {
-		isJSON = true;	
+		isJSON = DEFAULT_IS_JSON;
 	}
 
 	var localStorageRef = getLocalStorage();
@@ -67,7 +76,7 @@ STORAGE.prototype.get = function(name, isJSON) {
 
 STORAGE.prototype.set = function(name, data, isJSON) {
 	if (isJSON === undefined) {
-		isJSON = true;	
+		isJSON = DEFAULT_IS_JSON;
 	}
 
 	var localStorageRef = getLocalStorage();
@@ -84,21 +93,21 @@ STORAGE.prototype.set = function(name, data, isJSON) {
 	} catch (error) {
 		console.warn('Failed to save localStorage value for key:', name);
 	}
-	
+
 	return data;
 };
 
 STORAGE.prototype.remove = function(name) {
 	var localStorageRef = getLocalStorage();
 	if (localStorageRef) {
-		localStorageRef.removeItem(name);	
-	}	
+		localStorageRef.removeItem(name);
+	}
 };
 
 STORAGE.prototype.exists = function(name) {
 	var localStorageRef = getLocalStorage();
 	if (localStorageRef && localStorageRef.getItem(name) !== null) {
 		return true;
-	}	
+	}
 	return false;
 };
