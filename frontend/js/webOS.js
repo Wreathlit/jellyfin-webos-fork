@@ -4197,9 +4197,17 @@
             return;
         }
 
+        var itemChanged = currentMediaSessionItemId !== normalizedItemId;
         currentMediaSessionItemId = normalizedItemId;
         currentPlaybackMediaSourceId = normalizedMediaSourceId;
-        if (normalizedItemId) {
+        if (normalizedItemId && itemChanged) {
+            // Only reset the detected range and re-arm the correction window
+            // when the item itself changed. A bare mediaSourceId change (same
+            // item, different stream metadata) should not wipe an
+            // already-detected HDR signal — that would invite the PlaybackInfo
+            // cache key to mismatch on the followup lookup and strand the
+            // range at 'unknown', and re-arming the window would also reset
+            // hdrUiInfoCorrectedHdrUntil and let later SDR overwrite HDR.
             setPlaybackDynamicRange('unknown', reason || 'item-changed');
             armHdrUiInfoCorrectionWindow(reason || 'item-changed');
         }
@@ -4463,7 +4471,11 @@
         }
 
         if (!currentMediaSessionItemId) {
-            return false;
+            // Accept the response without waiting for updateMediaSession when this
+            // is the most recent PlaybackInfo request. Some Jellyfin Web flows
+            // never call updateMediaSession, which would otherwise leave the
+            // PlaybackInfo-detected range stranded in the cache forever.
+            return !!(contextSequence && contextSequence === latestPlaybackInfoRequestSequence);
         }
 
         if (contextSequence
