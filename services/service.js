@@ -16,13 +16,6 @@ var url = require('url');
 // Register com.yourdomain.@DIR@.service, on both buses
 var service = new Service(pkgInfo.name);
 
-var DEBUG_LOG = false;
-function log() {
-	if (DEBUG_LOG && typeof console !== 'undefined' && console.log) {
-		console.log.apply(console, arguments);
-	}
-}
-
 // Discovery responses arrive over unauthenticated UDP broadcast and are
 // attacker-influenceable; validate them before storing or forwarding to the UI.
 var MAX_SCAN_RESULTS = 64;
@@ -36,8 +29,10 @@ var UNSAFE_MAP_KEYS = {
 	'valueOf': true
 };
 
+// scanresult and subscriptions are null-prototype maps; for...in only
+// visits own properties, so direct access is equivalent.
 function hasOwn(obj, key) {
-	return Object.prototype.hasOwnProperty.call(obj, key);
+	return obj[key] != null;
 }
 
 function isSafeMapKey(value) {
@@ -120,9 +115,7 @@ const SCAN_ON_START = true;
 
 var scanresult = Object.create(null);
 
-function createResultMap() {
-	return Object.create(null);
-}
+
 
 function pruneScanResults() {
 	var now = Date.now();
@@ -180,7 +173,6 @@ function countScanResultsForSource(address) {
 
 function sendScanResults(server_id) {
 	pruneScanResults();
-	log("Sending responses, subscription count=" + Object.keys(subscriptions).length);
 	for (var i in subscriptions) {
 		if (hasOwn(subscriptions, i)) {
 			var s = subscriptions[i];
@@ -188,7 +180,7 @@ function sendScanResults(server_id) {
 				if (!hasOwn(scanresult, server_id)) {
 					continue;
 				}
-				var res = createResultMap();
+				var res = Object.create(null);
 				res[server_id] = scanresult[server_id];
 				s.respond({
 					results: res
@@ -237,7 +229,7 @@ function handleDiscoveryResponse(message, remote) {
 			sendScanResults(msg.Id);
 		}
 	} catch (err) {
-		log(err);
+		// Discovery parse error — silently ignore malformed responses
 	}
 }
 
@@ -259,7 +251,6 @@ function discoverInitial() {
 
 client4.on("listening", function () {
 	var address = client4.address();
-	log('UDP Client listening on ' + address.address + ":" + address.port);
 	client4.setBroadcast(true)
 	client4.setMulticastTTL(128);
 	//client.addMembership('230.185.192.108');
@@ -296,7 +287,6 @@ function createInterval() {
 	if (interval) {
 		return;
 	}
-	log("create new interval");
 	interval = setInterval(function () {
 		sendJellyfinDiscovery();
 	}, SCAN_INTERVAL);
@@ -306,7 +296,6 @@ var discover = service.register("discover");
 discover.on("request", function (message) {
 	sendScanResults();
 	var uniqueToken = message.uniqueToken;
-	log("discover callback, uniqueToken: " + uniqueToken + ", token: " + message.token);
 
 	sendJellyfinDiscovery();
 
@@ -319,11 +308,9 @@ discover.on("request", function (message) {
 });
 discover.on("cancel", function (message) {
 	var uniqueToken = message.uniqueToken;
-	log("Canceled " + uniqueToken);
 	delete subscriptions[uniqueToken];
 	var keys = Object.keys(subscriptions);
 	if (keys.length === 0) {
-		log("no more subscriptions, canceling interval");
 		clearInterval(interval);
 		interval = undefined;
 	}

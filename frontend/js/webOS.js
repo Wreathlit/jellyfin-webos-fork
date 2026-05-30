@@ -159,21 +159,15 @@
     var playbackDiagnosticsOverlay = null;
     var playbackDiagnosticsRafId = null;
     var playbackDiagnosticsLastRafTs = 0;
-    var playbackDiagnosticsWindowStartTs = 0;
-    var playbackDiagnosticsRafFrames = 0;
     var playbackDiagnosticsRafFps = 0;
     var playbackDiagnosticsLastUpdateTs = 0;
     var playbackDiagnosticsVideo = null;
     var playbackDiagnosticsVideoFrameCallbackId = null;
-    var playbackDiagnosticsVideoFrameCount = 0;
-    var playbackDiagnosticsVideoFrameWindowStartTs = 0;
     var playbackDiagnosticsVideoFrameFps = 0;
     var playbackDiagnosticsVideoFrameDelta = 0;
     var playbackDiagnosticsLongTaskObserver = null;
     var playbackDiagnosticsLongTaskSupported = false;
     var playbackDiagnosticsLongTaskUnavailable = false;
-    var playbackDiagnosticsLongTaskWindowStartTs = 0;
-    var playbackDiagnosticsLongTaskWindowCount = 0;
     var playbackDiagnosticsLongTaskWindowDuration = 0;
     var playbackDiagnosticsLongTaskWindowMax = 0;
     var playbackDiagnosticsLongTaskDisplayCount = 0;
@@ -190,8 +184,6 @@
     var assWorkerTimeSyncClampCount = 0;
     var assWorkerVideoStateEntries = [];
     var assWorkerVideoMessagePatchCount = 0;
-    var assWorkerVideoMessageWindowStartTs = 0;
-    var assWorkerVideoMessageWindowCount = 0;
     var assWorkerVideoMessageDisplayCount = 0;
     var monotonicMediaTimeEntries = [];
     var pgsScriptPatchCount = 0;
@@ -202,8 +194,6 @@
     var pgsScriptObjectPatchCount = 0;
     var pgsScriptModePatchCount = 0;
     var pgsScriptLastPatchInfo = 'none';
-    var pgsTimeSampleWindowStartTs = 0;
-    var pgsTimeSampleWindowCount = 0;
     var pgsTimeSampleDisplayCount = 0;
     var pgsTimeClampCount = 0;
     var pgsTimeLastClampInfo = 'none';
@@ -273,6 +263,12 @@
             }
         };
     }
+
+    var rafTracker = createRateTracker();
+    var videoFrameTracker = createRateTracker();
+    var longTaskCountTracker = createRateTracker();
+    var pgsTimeSampleRateTracker = createRateTracker();
+    var assWorkerVideoMessageRateTracker = createRateTracker();
 
     function postMessage(type, data) {
         window.top.postMessage({
@@ -556,8 +552,7 @@
 
         playbackDiagnosticsVideo = video || null;
         playbackDiagnosticsVideoFrameCallbackId = null;
-        playbackDiagnosticsVideoFrameCount = 0;
-        playbackDiagnosticsVideoFrameWindowStartTs = 0;
+        videoFrameTracker.reset();
         playbackDiagnosticsVideoFrameFps = 0;
         playbackDiagnosticsVideoFrameDelta = 0;
     }
@@ -575,16 +570,9 @@
                 return;
             }
 
-            if (!playbackDiagnosticsVideoFrameWindowStartTs) {
-                playbackDiagnosticsVideoFrameWindowStartTs = now;
-            }
-
-            playbackDiagnosticsVideoFrameCount++;
-            var elapsed = now - playbackDiagnosticsVideoFrameWindowStartTs;
-            if (elapsed >= 1000) {
-                playbackDiagnosticsVideoFrameFps = Math.round((playbackDiagnosticsVideoFrameCount * 1000 / elapsed) * 10) / 10;
-                playbackDiagnosticsVideoFrameCount = 0;
-                playbackDiagnosticsVideoFrameWindowStartTs = now;
+            var frameFps = videoFrameTracker.record(now);
+            if (frameFps !== null) {
+                playbackDiagnosticsVideoFrameFps = frameFps;
             }
 
             if (metadata && typeof metadata.expectedDisplayTime === 'number') {
@@ -607,8 +595,7 @@
     }
 
     function resetPlaybackDiagnosticsLongTaskStats() {
-        playbackDiagnosticsLongTaskWindowStartTs = 0;
-        playbackDiagnosticsLongTaskWindowCount = 0;
+        longTaskCountTracker.reset();
         playbackDiagnosticsLongTaskWindowDuration = 0;
         playbackDiagnosticsLongTaskWindowMax = 0;
         playbackDiagnosticsLongTaskDisplayCount = 0;
@@ -657,16 +644,11 @@
             return window.PerformanceObserver ? 'unavailable' : 'unsupported';
         }
 
-        if (!playbackDiagnosticsLongTaskWindowStartTs) {
-            playbackDiagnosticsLongTaskWindowStartTs = now;
-        }
-
-        if ((now - playbackDiagnosticsLongTaskWindowStartTs) >= 1000) {
-            playbackDiagnosticsLongTaskDisplayCount = playbackDiagnosticsLongTaskWindowCount;
+        var longTaskRate = longTaskCountTracker.check(now);
+        if (longTaskRate !== null) {
+            playbackDiagnosticsLongTaskDisplayCount = longTaskRate;
             playbackDiagnosticsLongTaskDisplayDuration = Math.round(playbackDiagnosticsLongTaskWindowDuration);
             playbackDiagnosticsLongTaskDisplayMax = Math.round(playbackDiagnosticsLongTaskWindowMax);
-            playbackDiagnosticsLongTaskWindowStartTs = now;
-            playbackDiagnosticsLongTaskWindowCount = 0;
             playbackDiagnosticsLongTaskWindowDuration = 0;
             playbackDiagnosticsLongTaskWindowMax = 0;
         }
@@ -817,21 +799,13 @@
             return;
         }
 
-        if (!playbackDiagnosticsWindowStartTs) {
-            playbackDiagnosticsWindowStartTs = now;
-        }
-
         if (playbackDiagnosticsLastRafTs) {
-            playbackDiagnosticsRafFrames++;
+            var rafFps = rafTracker.record(now);
+            if (rafFps !== null) {
+                playbackDiagnosticsRafFps = rafFps;
+            }
         }
         playbackDiagnosticsLastRafTs = now;
-
-        var elapsed = now - playbackDiagnosticsWindowStartTs;
-        if (elapsed >= 1000) {
-            playbackDiagnosticsRafFps = Math.round((playbackDiagnosticsRafFrames * 1000 / elapsed) * 10) / 10;
-            playbackDiagnosticsRafFrames = 0;
-            playbackDiagnosticsWindowStartTs = now;
-        }
 
         if (!playbackDiagnosticsLastUpdateTs || (now - playbackDiagnosticsLastUpdateTs) >= PLAYBACK_DIAGNOSTICS_UPDATE_INTERVAL) {
             updatePlaybackDiagnosticsText(now);
@@ -851,8 +825,7 @@
             resetPlaybackDiagnosticsVideoFrameStats(null);
             disconnectPlaybackDiagnosticsLongTaskObserver(false);
             playbackDiagnosticsLastRafTs = 0;
-            playbackDiagnosticsWindowStartTs = 0;
-            playbackDiagnosticsRafFrames = 0;
+            rafTracker.reset();
             playbackDiagnosticsRafFps = 0;
             playbackDiagnosticsLastUpdateTs = 0;
             if (playbackDiagnosticsOverlay && playbackDiagnosticsOverlay.parentNode) {
@@ -1668,15 +1641,9 @@
     }
 
     function updatePgsTimeSampleStats(now) {
-        if (!pgsTimeSampleWindowStartTs) {
-            pgsTimeSampleWindowStartTs = now;
-        }
-
-        pgsTimeSampleWindowCount++;
-        if ((now - pgsTimeSampleWindowStartTs) >= 1000) {
-            pgsTimeSampleDisplayCount = pgsTimeSampleWindowCount;
-            pgsTimeSampleWindowCount = 0;
-            pgsTimeSampleWindowStartTs = now;
+        var pgsRate = pgsTimeSampleRateTracker.record(now);
+        if (pgsRate !== null) {
+            pgsTimeSampleDisplayCount = pgsRate;
         }
     }
 
@@ -2408,15 +2375,9 @@
     }
 
     function updateAssWorkerVideoMessageStats(now) {
-        if (!assWorkerVideoMessageWindowStartTs) {
-            assWorkerVideoMessageWindowStartTs = now;
-        }
-
-        assWorkerVideoMessageWindowCount++;
-        if ((now - assWorkerVideoMessageWindowStartTs) >= 1000) {
-            assWorkerVideoMessageDisplayCount = assWorkerVideoMessageWindowCount;
-            assWorkerVideoMessageWindowCount = 0;
-            assWorkerVideoMessageWindowStartTs = now;
+        var assMsgRate = assWorkerVideoMessageRateTracker.record(now);
+        if (assMsgRate !== null) {
+            assWorkerVideoMessageDisplayCount = assMsgRate;
         }
     }
 
