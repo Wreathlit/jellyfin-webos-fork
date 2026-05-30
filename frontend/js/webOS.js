@@ -5926,6 +5926,43 @@
         return true;
     }
 
+    function isBitmapPgsSubtitleProfileFormat(format) {
+        var normalizedFormat = getProfileTypeName(format);
+        return normalizedFormat === 'pgssub'
+            || normalizedFormat === 'pgs'
+            || normalizedFormat === 'hdmv_pgs_subtitle';
+    }
+
+    function preferExternalSubtitleProfilesForBitmapPgs(profile) {
+        if (!profile || !profile.SubtitleProfiles
+            || Object.prototype.toString.call(profile.SubtitleProfiles) !== '[object Array]') {
+            return;
+        }
+
+        // This is device capability reporting, not a local burn-in override.
+        // Jellyfin still applies AlwaysBurnInSubtitleWhenTranscoding later when
+        // it builds the transcode URL. Without this, an Embed/Encode PGS profile
+        // can win before the client-rendered External path, which loses PGS
+        // delivery and can pull HDR video-copy playback into video encoding.
+        var patchedProfiles = 0;
+        for (var i = 0; i < profile.SubtitleProfiles.length; i++) {
+            var subtitleProfile = profile.SubtitleProfiles[i];
+            if (!subtitleProfile || !isBitmapPgsSubtitleProfileFormat(subtitleProfile.Format)) {
+                continue;
+            }
+            if (getProfileTypeName(subtitleProfile.Method) === 'external') {
+                continue;
+            }
+
+            subtitleProfile.Method = 'External';
+            patchedProfiles++;
+        }
+
+        if (patchedProfiles) {
+            debugLog('Preferred External SubtitleProfile method for PGS profile(s):', patchedProfiles);
+        }
+    }
+
     function hasH264Codec(codecValue) {
         var codecs = parseCommaSeparatedList(codecValue);
         for (var i = 0; i < codecs.length; i++) {
@@ -6159,6 +6196,7 @@
         patchDirectPlayProfilesForProblematicFormats(profile);
         patchH264InterlaceSupport(profile);
         patchVideoTranscodingProfilesForAudioOnlyTranscode(profile);
+        preferExternalSubtitleProfilesForBitmapPgs(profile);
         patchExternalSubtitleProfiles(profile);
         patchHlsSubtitleManifestSupport(profile);
         patchPlaybackProfileBitrateLimits(profile);

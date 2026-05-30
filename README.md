@@ -84,8 +84,9 @@ Approach:
 
 - keep the HEVC/H265 video-copy patch for audio-only transcode;
 - explicitly advertise external `ass`, `ssa`, `pgssub`, and `pgs` subtitle
-  profiles for Jellyfin Web's client-side renderers without rewriting an
-  existing subtitle profile's delivery method;
+  profiles for Jellyfin Web's client-side renderers;
+- prefer External delivery for existing PGS subtitle profiles so Jellyfin picks
+  the client-rendered PGS path before Embed/Encode when burn-in is not required;
 - enable subtitles in HLS video transcoding manifests so text subtitle tracks
   remain visible when the server chooses an HLS direct-stream path;
 - do not rewrite PlaybackInfo subtitle delivery responses locally. BDMV folder
@@ -94,8 +95,9 @@ Approach:
   methods;
 - respect Jellyfin's `Always burn in subtitle on transcoding` setting for all
   subtitle formats. webOS profile reporting can still make unsupported video
-  formats such as interlaced H264 transcode, but subtitle burn-in remains the
-  server/user setting's responsibility;
+  formats such as interlaced H264 transcode, and can prefer client-rendered PGS
+  delivery, but subtitle burn-in remains the server/user setting's
+  responsibility;
 - keep the last PlaybackInfo payload available for the playback-start fallback
   window for HDR detection without adding more subtitle delivery heuristics.
 
