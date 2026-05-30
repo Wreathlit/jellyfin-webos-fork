@@ -84,22 +84,25 @@ Approach:
 
 - keep the HEVC/H265 video-copy patch for audio-only transcode;
 - explicitly advertise external `ass`, `ssa`, `pgssub`, and `pgs` subtitle
-  profiles for Jellyfin Web's client-side renderers;
+  profiles for Jellyfin Web's client-side renderers without rewriting an
+  existing subtitle profile's delivery method;
 - enable subtitles in HLS video transcoding manifests so text subtitle tracks
   remain visible when the server chooses an HLS direct-stream path;
-- patch PlaybackInfo responses only for video-copy/direct-stream media sources
-  (`PlayMethod=DirectStream` or `Static=true`) when client-renderable ASS/PGS
-  streams still come back as `Encode`/`Embed` or without `DeliveryUrl`, replacing
-  them with an external `/Videos/.../Subtitles/.../Stream.*` URL and removing
-  matching subtitle burn-in parameters from the transcode URL;
+- do not rewrite PlaybackInfo subtitle delivery responses locally. BDMV folder
+  PGS delivery failures have been traced to upstream/server path selection, so
+  the client should not synthesize subtitle URLs or override server delivery
+  methods;
+- respect Jellyfin's `Always burn in subtitle on transcoding` setting for all
+  subtitle formats. webOS profile reporting can still make unsupported video
+  formats such as interlaced H264 transcode, but subtitle burn-in remains the
+  server/user setting's responsibility;
 - keep the last PlaybackInfo payload available for the playback-start fallback
-  window so subtitle-delivery normalization can be re-run without adding more
-  media-source heuristics.
+  window for HDR detection without adding more subtitle delivery heuristics.
 
-Status: active workaround. This is intentionally separate from subtitle burn-in:
-normal video transcoding keeps Jellyfin's original subtitle handling, while
-video-copy paths keep HDR-preserving video copy and deliver complex subtitles to
-the web client.
+Status: active workaround. This fork still advertises client-renderable subtitle
+profiles and keeps the HEVC/H265 video-copy path, but it no longer rewrites
+PlaybackInfo subtitle delivery. PGS timing/main-thread/object-reuse fixes are
+renderer-side patches and are separate from server subtitle delivery.
 
 ### Startup handoff and iframe focus
 

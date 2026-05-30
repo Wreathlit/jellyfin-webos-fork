@@ -181,6 +181,7 @@
     var pgsSubtitleDeliveryDiagnostic = 'none';
     var pgsSubtitleFetchDiagnostic = 'none';
     var playbackDiagnosticsOverlay = null;
+    var playbackDiagnosticsOverlayRetryTimer = null;
     var playbackDiagnosticsRafId = null;
     var playbackDiagnosticsLastRafTs = 0;
     var playbackDiagnosticsRafFps = 0;
@@ -737,6 +738,11 @@
             return playbackDiagnosticsOverlay;
         }
 
+        if (playbackDiagnosticsOverlayRetryTimer) {
+            clearTimeout(playbackDiagnosticsOverlayRetryTimer);
+            playbackDiagnosticsOverlayRetryTimer = null;
+        }
+
         playbackDiagnosticsOverlay = document.createElement('div');
         playbackDiagnosticsOverlay.className = 'webos-playback-diagnostics-overlay';
         playbackDiagnosticsOverlay.style.position = 'fixed';
@@ -756,6 +762,17 @@
         document.body.appendChild(playbackDiagnosticsOverlay);
 
         return playbackDiagnosticsOverlay;
+    }
+
+    function schedulePlaybackDiagnosticsOverlayRetry() {
+        if (playbackDiagnosticsOverlayRetryTimer || !playbackDiagnosticsEnabled) {
+            return;
+        }
+
+        playbackDiagnosticsOverlayRetryTimer = setTimeout(function () {
+            playbackDiagnosticsOverlayRetryTimer = null;
+            updatePlaybackDiagnosticsOverlay();
+        }, 250);
     }
 
     function formatPlaybackDiagnosticsNumber(value, fallback) {
@@ -907,10 +924,17 @@
                 playbackDiagnosticsOverlay.parentNode.removeChild(playbackDiagnosticsOverlay);
             }
             playbackDiagnosticsOverlay = null;
+            if (playbackDiagnosticsOverlayRetryTimer) {
+                clearTimeout(playbackDiagnosticsOverlayRetryTimer);
+                playbackDiagnosticsOverlayRetryTimer = null;
+            }
             return;
         }
 
-        createPlaybackDiagnosticsOverlay();
+        if (!createPlaybackDiagnosticsOverlay()) {
+            schedulePlaybackDiagnosticsOverlayRetry();
+            return;
+        }
         if (!playbackDiagnosticsRafId && window.requestAnimationFrame) {
             playbackDiagnosticsRafId = window.requestAnimationFrame(runPlaybackDiagnosticsOverlay);
         }
@@ -2641,7 +2665,9 @@
             || getNearestControlContainer(document.querySelector('.fldEnableTrueHd'))
             || getNearestControlContainer(document.querySelector('.chkEnableTrueHd'))
             || getNearestControlContainer(document.querySelector('#selectPreferredTranscodeVideoCodec'))
-            || getNearestControlContainer(document.querySelector('#selectAllowedAudioChannels'));
+            || getNearestControlContainer(document.querySelector('#selectAllowedAudioChannels'))
+            || getNearestControlContainer(document.querySelector('.selectVideoInNetworkQuality'))
+            || getNearestControlContainer(document.querySelector('.selectVideoInternetQuality'));
     }
 
     function isValidPlaybackSettingsRoot(candidate, selector) {
@@ -2655,7 +2681,7 @@
 
     function getPlaybackSettingsRoot(settingsAnchor) {
         var anchorContainer = getNearestControlContainer(settingsAnchor);
-        var selector = '.fldEnableDts,.chkEnableDts,.fldEnableTrueHd,.chkEnableTrueHd,#selectPreferredTranscodeVideoCodec,#selectAllowedAudioChannels';
+        var selector = '.fldEnableDts,.chkEnableDts,.fldEnableTrueHd,.chkEnableTrueHd,#selectPreferredTranscodeVideoCodec,#selectAllowedAudioChannels,.selectVideoInNetworkQuality,.selectVideoInternetQuality';
         var current = anchorContainer ? anchorContainer.parentNode : settingsAnchor && settingsAnchor.parentNode;
         var fallbackRoot = null;
         while (current && current !== document.body) {
@@ -2834,7 +2860,140 @@
         });
     }
 
+    function getNativeVideoQualitySelects() {
+        var result = [];
+        var seen = [];
+        var nodes = document.querySelectorAll('.selectVideoInNetworkQuality,.selectVideoInternetQuality');
+
+        for (var i = 0; i < nodes.length; i++) {
+            var node = nodes[i];
+            var select = node && node.tagName && node.tagName.toLowerCase() === 'select'
+                ? node
+                : node && node.querySelector ? node.querySelector('select') : null;
+            if (!select || seen.indexOf(select) !== -1) {
+                continue;
+            }
+            seen.push(select);
+            result.push(select);
+        }
+
+        return result;
+    }
+
+    function hasClassInAncestry(element, className) {
+        var current = element;
+        while (current && current.nodeType === 1) {
+            if (current.classList && current.classList.contains(className)) {
+                return true;
+            }
+            current = current.parentNode;
+        }
+        return false;
+    }
+
+    function getStoredNativeVideoQualityValue(select) {
+        if (!select || !window.localStorage) {
+            return null;
+        }
+
+        var key = null;
+        if (hasClassInAncestry(select, 'selectVideoInNetworkQuality')) {
+            key = 'maxbitrate-Video-true';
+        } else if (hasClassInAncestry(select, 'selectVideoInternetQuality')) {
+            key = 'maxbitrate-Video-false';
+        }
+
+        if (!key) {
+            return null;
+        }
+
+        try {
+            var value = localStorage.getItem(key);
+            return parsePositiveInteger(value) > 0 ? value : null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function addNativeBitrateSelectOption(select, bitrate) {
+        if (!select || !bitrate) {
+            return false;
+        }
+
+        var value = bitrate.toString();
+        for (var i = 0; i < select.options.length; i++) {
+            if (select.options[i].value === value) {
+                return false;
+            }
+        }
+
+        var option = document.createElement('option');
+        option.value = value;
+        option.textContent = formatMbpsLabel(bitrate);
+        option.setAttribute('data-webos-added', 'true');
+
+        var insertBefore = null;
+        for (var j = 0; j < select.options.length; j++) {
+            var optionBitrate = parsePositiveInteger(select.options[j].value);
+            if (optionBitrate > 0 && optionBitrate < bitrate) {
+                insertBefore = select.options[j];
+                break;
+            }
+        }
+
+        select.insertBefore(option, insertBefore);
+        return true;
+    }
+
+    function selectHasOptionValue(select, value) {
+        if (!select || value === null || value === undefined) {
+            return false;
+        }
+
+        var normalizedValue = value.toString();
+        for (var i = 0; i < select.options.length; i++) {
+            if (select.options[i].value === normalizedValue) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function patchNativeVideoQualitySelects() {
+        var selects = getNativeVideoQualitySelects();
+        var changed = false;
+
+        for (var i = 0; i < selects.length; i++) {
+            var select = selects[i];
+            var patchedBefore = select.getAttribute('data-webos-quality-patched') === 'true';
+            var storedValue = getStoredNativeVideoQualityValue(select);
+            var currentValue = select.value;
+            var addedForSelect = false;
+
+            for (var j = 0; j < QUALITY_MENU_EXTRA_BITRATES.length; j++) {
+                if (addNativeBitrateSelectOption(select, QUALITY_MENU_EXTRA_BITRATES[j])) {
+                    changed = true;
+                    addedForSelect = true;
+                }
+            }
+
+            if (storedValue
+                && selectHasOptionValue(select, storedValue)
+                && (!patchedBefore || addedForSelect || !currentValue || currentValue === storedValue)) {
+                select.value = storedValue;
+            } else if (currentValue && selectHasOptionValue(select, currentValue)) {
+                select.value = currentValue;
+            }
+            select.setAttribute('data-webos-quality-patched', 'true');
+        }
+
+        return changed;
+    }
+
     function ensureWebOSSettingsControls() {
+        patchNativeVideoQualitySelects();
+
         var settingsAnchor = getPlaybackSettingsAnchor();
         if (!settingsAnchor) {
             removeWebOSSettingsRoot();
@@ -3063,7 +3222,7 @@
     }
 
     function isPlaybackSettingsMutationNode(node) {
-        var selector = '.fldEnableDts,.chkEnableDts,.fldEnableTrueHd,.chkEnableTrueHd,#selectPreferredTranscodeVideoCodec,#selectAllowedAudioChannels';
+        var selector = '.fldEnableDts,.chkEnableDts,.fldEnableTrueHd,.chkEnableTrueHd,#selectPreferredTranscodeVideoCodec,#selectAllowedAudioChannels,.selectVideoInNetworkQuality,.selectVideoInternetQuality';
         if (!node || node.nodeType !== 1) {
             return false;
         }
@@ -4643,44 +4802,6 @@
         return url + hash;
     }
 
-    function removeQueryParameterValue(url, name) {
-        if (!url || typeof url !== 'string' || !name) {
-            return url;
-        }
-
-        var hash = '';
-        var hashIndex = url.indexOf('#');
-        if (hashIndex !== -1) {
-            hash = url.substring(hashIndex);
-            url = url.substring(0, hashIndex);
-        }
-
-        var queryIndex = url.indexOf('?');
-        if (queryIndex === -1) {
-            return url + hash;
-        }
-
-        var baseUrl = url.substring(0, queryIndex);
-        var query = url.substring(queryIndex + 1);
-        var parts = query ? query.split('&') : [];
-        var encodedName = encodeURIComponent(name).toLowerCase();
-        var kept = [];
-        for (var i = 0; i < parts.length; i++) {
-            var part = parts[i];
-            if (!part) {
-                continue;
-            }
-            var equalsIndex = part.indexOf('=');
-            var partName = equalsIndex === -1 ? part : part.substring(0, equalsIndex);
-            if (partName.toLowerCase() === encodedName || partName.toLowerCase() === name.toLowerCase()) {
-                continue;
-            }
-            kept.push(part);
-        }
-
-        return baseUrl + (kept.length ? '?' + kept.join('&') : '') + hash;
-    }
-
     function cloneShallowObject(value) {
         if (!value || typeof value !== 'object') {
             return {};
@@ -5069,232 +5190,6 @@
         return null;
     }
 
-    function getStreamIndex(stream) {
-        if (!stream || typeof stream !== 'object') {
-            return null;
-        }
-
-        var index = Object.prototype.hasOwnProperty.call(stream, 'Index') ? stream.Index : stream.index;
-        if (index === null || index === undefined || index === '') {
-            return null;
-        }
-
-        return index.toString();
-    }
-
-    function buildSubtitleDeliveryUrl(itemId, mediaSourceId, streamIndex, format) {
-        if (!itemId || !mediaSourceId || streamIndex === null || streamIndex === undefined || !format) {
-            return null;
-        }
-
-        return '/Videos/'
-            + encodeURIComponent(itemId.toString())
-            + '/'
-            + encodeURIComponent(mediaSourceId.toString())
-            + '/Subtitles/'
-            + encodeURIComponent(streamIndex.toString())
-            + '/0/Stream.'
-            + encodeURIComponent(format.toString());
-    }
-
-    function removeSubtitleBurnInParameters(url) {
-        url = removeQueryParameterValue(url, 'SubtitleStreamIndex');
-        url = removeQueryParameterValue(url, 'subtitleStreamIndex');
-        url = removeQueryParameterValue(url, 'SubtitleMethod');
-        url = removeQueryParameterValue(url, 'subtitleMethod');
-        url = removeQueryParameterValue(url, 'SubtitleCodec');
-        url = removeQueryParameterValue(url, 'subtitleCodec');
-        return url;
-    }
-
-    function isTruthyQueryParameterValue(value) {
-        if (value === true) {
-            return true;
-        }
-        if (value === false || value === null || value === undefined || value === '') {
-            return false;
-        }
-
-        return isTruthyNormalizedString(value.toString().toLowerCase());
-    }
-
-    function shouldPatchComplexSubtitleDeliveryForMediaSource(mediaSource) {
-        if (!mediaSource || typeof mediaSource !== 'object') {
-            return false;
-        }
-
-        var playMethod = getProfileTypeName(mediaSource.PlayMethod || mediaSource.playMethod);
-        if (playMethod === 'directstream') {
-            return true;
-        }
-
-        var transcodingUrl = mediaSource.TranscodingUrl || mediaSource.transcodingUrl;
-        if (!transcodingUrl) {
-            return false;
-        }
-
-        if (isTruthyQueryParameterValue(getQueryParameterValue(transcodingUrl, 'Static'))
-            || isTruthyQueryParameterValue(getQueryParameterValue(transcodingUrl, 'static'))) {
-            return true;
-        }
-
-        // BDMV/M2TS: container remuxed but video stream copied.
-        // VideoCodec=copy means video is not being re-encoded, so
-        // client-side subtitle rendering is safe to enable.
-        var videoCodec = (getQueryParameterValue(transcodingUrl, 'VideoCodec')
-            || getQueryParameterValue(transcodingUrl, 'videoCodec')
-            || getQueryParameterValue(transcodingUrl, 'videocodec') || '');
-        return videoCodec.toLowerCase() === 'copy';
-    }
-
-    function patchMediaSourceComplexSubtitleDelivery(mediaSource, itemId) {
-        if (!mediaSource || typeof mediaSource !== 'object') {
-            return false;
-        }
-
-        var mediaSourceId = getObjectMediaSourceId(mediaSource);
-        if (!mediaSourceId) {
-            return false;
-        }
-
-        if (!shouldPatchComplexSubtitleDeliveryForMediaSource(mediaSource)) {
-            return false;
-        }
-
-        var changed = false;
-        var subtitleIndexes = {};
-        var streams = toArray(mediaSource.MediaStreams || mediaSource.mediaStreams);
-        for (var i = 0; i < streams.length; i++) {
-            var stream = streams[i];
-            if (!isSubtitleMediaStream(stream)) {
-                continue;
-            }
-
-            var format = getClientRenderableSubtitleFormat(stream);
-            var streamIndex = getStreamIndex(stream);
-            if (!format || streamIndex === null) {
-                continue;
-            }
-
-            subtitleIndexes[streamIndex] = true;
-            var deliveryUrl = buildSubtitleDeliveryUrl(itemId, mediaSourceId, streamIndex, format);
-            if (!deliveryUrl) {
-                continue;
-            }
-
-            if (stream.DeliveryMethod !== 'External') {
-                stream.DeliveryMethod = 'External';
-                changed = true;
-            }
-            if (stream.deliveryMethod !== undefined && stream.deliveryMethod !== 'External') {
-                stream.deliveryMethod = 'External';
-                changed = true;
-            }
-            if (stream.DeliveryUrl !== deliveryUrl) {
-                stream.DeliveryUrl = deliveryUrl;
-                changed = true;
-            }
-            if (stream.deliveryUrl !== undefined && stream.deliveryUrl !== deliveryUrl) {
-                stream.deliveryUrl = deliveryUrl;
-                changed = true;
-            }
-            if (stream.IsExternalUrl !== false) {
-                stream.IsExternalUrl = false;
-                changed = true;
-            }
-            if (stream.isExternalUrl !== undefined && stream.isExternalUrl !== false) {
-                stream.isExternalUrl = false;
-                changed = true;
-            }
-            if (format === 'pgssub' && stream.Codec !== 'pgssub') {
-                stream.Codec = 'pgssub';
-                changed = true;
-            }
-        }
-
-        var transcodingUrl = mediaSource.TranscodingUrl || mediaSource.transcodingUrl;
-        if (transcodingUrl) {
-            var selectedSubtitleIndex = getQueryParameterValue(transcodingUrl, 'SubtitleStreamIndex')
-                || getQueryParameterValue(transcodingUrl, 'subtitleStreamIndex');
-            if (selectedSubtitleIndex && subtitleIndexes[selectedSubtitleIndex.toString()]) {
-                var patchedUrl = removeSubtitleBurnInParameters(transcodingUrl);
-                if (patchedUrl !== transcodingUrl) {
-                    if (mediaSource.TranscodingUrl) {
-                        mediaSource.TranscodingUrl = patchedUrl;
-                    }
-                    if (mediaSource.transcodingUrl) {
-                        mediaSource.transcodingUrl = patchedUrl;
-                    }
-                    changed = true;
-                }
-            }
-        }
-
-        return changed;
-    }
-
-    function patchPlaybackInfoSubtitleDeliveryPayload(payload, sourceUrl) {
-        if (!payload || typeof payload !== 'object') {
-            return false;
-        }
-
-        var itemId = extractItemIdFromPlaybackInfoUrl(sourceUrl)
-            || (payload.Item && (payload.Item.Id || payload.Item.id))
-            || (payload.NowPlayingItem && (payload.NowPlayingItem.Id || payload.NowPlayingItem.id))
-            || payload.ItemId
-            || payload.itemId;
-        if (!itemId) {
-            return false;
-        }
-
-        var changed = false;
-        var sourceGroups = [
-            payload,
-            payload.Item,
-            payload.NowPlayingItem
-        ];
-        for (var i = 0; i < sourceGroups.length; i++) {
-            var group = sourceGroups[i];
-            if (!group || typeof group !== 'object') {
-                continue;
-            }
-
-            var mediaSources = toArray(group.MediaSources || group.mediaSources);
-            for (var j = 0; j < mediaSources.length; j++) {
-                if (patchMediaSourceComplexSubtitleDelivery(mediaSources[j], itemId)) {
-                    changed = true;
-                }
-            }
-        }
-
-        if (changed) {
-            debugLog('Patched PlaybackInfo complex subtitle delivery for client rendering');
-        }
-        return changed;
-    }
-
-    function createJsonFetchResponse(originalResponse, payload) {
-        if (!window.Response || !window.Headers || !originalResponse) {
-            return originalResponse;
-        }
-
-        try {
-            var headers = new window.Headers(originalResponse.headers || {});
-            headers.delete('content-length');
-            headers.set('content-type', 'application/json; charset=utf-8');
-
-            return new window.Response(JSON.stringify(payload), {
-                status: originalResponse.status,
-                statusText: originalResponse.statusText,
-                headers: headers
-            });
-        } catch (error) {
-            debugLog('Failed to create patched PlaybackInfo response:', error);
-        }
-
-        return originalResponse;
-    }
-
     function applyPendingPlaybackInfoHint() {
         // The PlaybackInfo response often arrives before playbackState reaches
         // PLAYING (Jellyfin Web typically fetches PlaybackInfo, then calls
@@ -5374,12 +5269,10 @@
             if (!stream) {
                 continue;
             }
-            var streamType = (stream.Type || stream.type || '').toString().toLowerCase();
-            if (streamType !== 'subtitle') {
+            if (!isSubtitleMediaStream(stream)) {
                 continue;
             }
-            var codec = (stream.Codec || stream.codec || '').toString().toLowerCase();
-            if (codec.indexOf('pgs') === -1) {
+            if (getClientRenderableSubtitleFormat(stream) !== 'pgssub') {
                 continue;
             }
 
@@ -5417,20 +5310,22 @@
         var itemId = extractItemIdFromPlaybackInfoUrl(sourceUrl);
         var mediaSourceId = getSelectedMediaSourceId(payload) || currentPlaybackMediaSourceId;
         var hint = getDynamicRangeHintFromPlaybackInfoPayload(payload, mediaSourceId);
+        var pgsDeliveryDiagnostic = getPgsSubtitleDeliveryDiagnostic(payload, mediaSourceId);
         hdrDetectionPlaybackInfoLastHint = hint;
         hdrDetectionPlaybackInfoCount++;
         cachePlaybackInfoDynamicRangeHint(itemId, mediaSourceId, hint);
-        pgsSubtitleDeliveryDiagnostic = getPgsSubtitleDeliveryDiagnostic(payload, mediaSourceId);
         if (playbackState !== PlaybackState.PLAYING) {
             if (playbackState !== PlaybackState.IDLE) {
                 return;
             }
+            pgsSubtitleDeliveryDiagnostic = pgsDeliveryDiagnostic;
             rememberPendingPlaybackInfoDynamicRange(itemId, mediaSourceId, hint, context, reason);
             return;
         }
         if (!shouldApplyPlaybackInfoResponse(itemId, mediaSourceId, context)) {
             return;
         }
+        pgsSubtitleDeliveryDiagnostic = pgsDeliveryDiagnostic;
 
         if (itemId) {
             setCurrentPlaybackItemId(itemId, mediaSourceId, 'item-changed-playbackinfo');
@@ -5556,9 +5451,6 @@
                 if (response && typeof response.clone === 'function') {
                     return response.clone().json().then(function (payload) {
                         applyDynamicRangeFromPlaybackInfo(payload, url, 'playbackinfo-fetch', context);
-                        if (patchPlaybackInfoSubtitleDeliveryPayload(payload, url)) {
-                            return createJsonFetchResponse(response, payload);
-                        }
                         return response;
                     }, function () {
                         // Ignore payload parse errors.
@@ -5596,7 +5488,6 @@
                 payload = JSON.parse(responseText);
             }
 
-            patchPlaybackInfoSubtitleDeliveryPayload(payload, xhr.__webOsPlaybackInfoUrl);
             applyDynamicRangeFromPlaybackInfo(payload, xhr.__webOsPlaybackInfoUrl, 'playbackinfo-xhr', xhr.__webOsPlaybackInfoContext);
         } catch (error) {
             // Ignore JSON parse errors.
@@ -6260,56 +6151,6 @@
         }
     }
 
-    function patchSubtitleProfilesForBitmapPgs(profile) {
-        if (!profile) {
-            return;
-        }
-
-        if (!profile.SubtitleProfiles) {
-            profile.SubtitleProfiles = [];
-        }
-
-        if (Object.prototype.toString.call(profile.SubtitleProfiles) !== '[object Array]') {
-            return;
-        }
-
-        // When audio-only transcode is in play (DTS+HEVC via the transcoding
-        // copy path enabled by patchVideoTranscodingProfilesForAudioOnlyTranscode),
-        // the server cannot burn PGS into the video stream (Encode requires a
-        // video re-encode) and HLS/fmp4 segments do not embed PGS. Force PGS
-        // to External so the server extracts the stream into a .sup file and
-        // exposes a DeliveryUrl that libpgs can fetch. Direct-play does not
-        // consult SubtitleProfiles, so this only affects the transcode path.
-        var pgsFormat = 'pgssub';
-        var existingIndex = -1;
-        for (var i = 0; i < profile.SubtitleProfiles.length; i++) {
-            var entry = profile.SubtitleProfiles[i];
-            if (!entry || !entry.Format) {
-                continue;
-            }
-            if (entry.Format.toString().toLowerCase() === pgsFormat) {
-                existingIndex = i;
-                break;
-            }
-        }
-
-        if (existingIndex === -1) {
-            profile.SubtitleProfiles.push({
-                Format: pgsFormat,
-                Method: 'External'
-            });
-            debugLog('Added External SubtitleProfile for PGS');
-            return;
-        }
-
-        var existing = profile.SubtitleProfiles[existingIndex];
-        if (existing.Method !== 'External') {
-            var previousMethod = existing.Method;
-            existing.Method = 'External';
-            debugLog('Forced External SubtitleProfile method for PGS (was: ' + previousMethod + ')');
-        }
-    }
-
     function applyPlaybackCompatibilityProfilePatches(profile) {
         if (!profile || typeof profile !== 'object') {
             return profile;
@@ -6318,7 +6159,6 @@
         patchDirectPlayProfilesForProblematicFormats(profile);
         patchH264InterlaceSupport(profile);
         patchVideoTranscodingProfilesForAudioOnlyTranscode(profile);
-        patchSubtitleProfilesForBitmapPgs(profile);
         patchExternalSubtitleProfiles(profile);
         patchHlsSubtitleManifestSupport(profile);
         patchPlaybackProfileBitrateLimits(profile);
