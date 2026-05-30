@@ -5128,8 +5128,18 @@
             return false;
         }
 
-        return isTruthyQueryParameterValue(getQueryParameterValue(transcodingUrl, 'Static'))
-            || isTruthyQueryParameterValue(getQueryParameterValue(transcodingUrl, 'static'));
+        if (isTruthyQueryParameterValue(getQueryParameterValue(transcodingUrl, 'Static'))
+            || isTruthyQueryParameterValue(getQueryParameterValue(transcodingUrl, 'static'))) {
+            return true;
+        }
+
+        // BDMV/M2TS: container remuxed but video stream copied.
+        // VideoCodec=copy means video is not being re-encoded, so
+        // client-side subtitle rendering is safe to enable.
+        var videoCodec = (getQueryParameterValue(transcodingUrl, 'VideoCodec')
+            || getQueryParameterValue(transcodingUrl, 'videoCodec')
+            || getQueryParameterValue(transcodingUrl, 'videocodec') || '');
+        return videoCodec.toLowerCase() === 'copy';
     }
 
     function patchMediaSourceComplexSubtitleDelivery(mediaSource, itemId) {
