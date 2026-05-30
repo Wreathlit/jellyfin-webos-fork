@@ -41,15 +41,20 @@ high-bitrate entries.
 Cause: real-device traces showed that Jellyfin Web can issue PlaybackInfo
 requests and create quality action sheets before the webOS adapter reaches the
 normal `PLAYING` / media-session state. Upstream UI changes also made the old
-menu injection too dependent on one action-sheet DOM shape.
+menu injection too dependent on one action-sheet DOM shape. High-bitrate HDR
+files can also hit the upstream device profile's static-playback bitrate limit
+even when the PlaybackInfo request bitrate was raised.
 
 Approach:
 
-- add extra high bitrate menu entries: `120 Mbps`, `100 Mbps`, and `80 Mbps`;
+- add extra high bitrate menu entries: `120 Mbps`, `100 Mbps`, `95 Mbps`, and `80 Mbps`;
 - force PlaybackInfo `MaxStreamingBitrate` / `maxStreamingBitrate` in both URL
-  query strings and request bodies during a short playback-start window;
+  query strings and request bodies for every PlaybackInfo request;
+- raise device profile `MaxStreamingBitrate` and `MaxStaticBitrate` to the
+  highest local bitrate option so direct play is not rejected by the profile's
+  static bitrate cap;
 - arm that force window from explicit playback-start signals and from new
-  PlaybackInfo item ids;
+  PlaybackInfo item ids for diagnostics and compatibility with older traces;
 - patch only bitrate-shaped menu items inside the action-sheet scroller to avoid
   false positives;
 - keep the quality-menu observer active so late-created action sheets are still
@@ -58,6 +63,43 @@ Approach:
 Status: active workaround. Do not narrow this back to `PLAYING` state only; that
 reintroduces the startup race where a newly opened video can keep the upstream
 `60 Mbps` cap until the user manually changes quality.
+
+### Audio-only transcode with client-rendered subtitles
+
+Problem: when unsupported audio triggers audio transcoding while video is copied,
+ASS and PGS subtitles can disappear even though they render in direct playback.
+
+Cause: the server can put audio-only transcode into a video direct-stream
+pipeline where the video is copied (`PlayMethod=DirectStream` or
+`TranscodingUrl` with `Static=true`). In that mode Jellyfin's subtitle selection
+is driven by the client device profile. If the profile does not explicitly
+advertise external ASS/PGS support, or if HLS text subtitles are not allowed in
+the manifest, the video-copy/audio-transcode path can lose the subtitle delivery
+declaration. Server-side subtitle extraction settings can also make
+`StreamBuilder` fall back to `Encode` for internal ASS/PGS during a transcode
+path even though the subtitle API can still serve the raw subtitle stream for
+client rendering.
+
+Approach:
+
+- keep the HEVC/H265 video-copy patch for audio-only transcode;
+- explicitly advertise external `ass`, `ssa`, `pgssub`, and `pgs` subtitle
+  profiles for Jellyfin Web's client-side renderers;
+- enable subtitles in HLS video transcoding manifests so text subtitle tracks
+  remain visible when the server chooses an HLS direct-stream path;
+- patch PlaybackInfo responses only for video-copy/direct-stream media sources
+  (`PlayMethod=DirectStream` or `Static=true`) when client-renderable ASS/PGS
+  streams still come back as `Encode`/`Embed` or without `DeliveryUrl`, replacing
+  them with an external `/Videos/.../Subtitles/.../Stream.*` URL and removing
+  matching subtitle burn-in parameters from the transcode URL;
+- keep the last PlaybackInfo payload available for the playback-start fallback
+  window so subtitle-delivery normalization can be re-run without adding more
+  media-source heuristics.
+
+Status: active workaround. This is intentionally separate from subtitle burn-in:
+normal video transcoding keeps Jellyfin's original subtitle handling, while
+video-copy paths keep HDR-preserving video copy and deliver complex subtitles to
+the web client.
 
 ### Startup handoff and iframe focus
 
@@ -150,14 +192,27 @@ consistent subtitle opacity control.
 
 Cause: the video plane and Web UI plane are handled differently by the TV. The
 server cannot reliably tone-map Jellyfin Web overlays, canvas subtitles, and
-image subtitles after they reach the webOS WebView.
+image subtitles after they reach the webOS WebView. Jellyfin metadata can also
+arrive through several paths: newer responses expose `VideoRange` /
+`VideoRangeType` string enums, while some payloads still expose numeric
+`MediaStream.Type` values. Some playback starts expose the decisive HDR signal
+slightly after the adapter enters fullscreen, so applying the first unknown
+result too eagerly can leave dimming disabled until the Playback Info panel text
+appears and the UI-text fallback sees `HDR`.
 
 Approach:
 
 - add an HDR/DV UI brightness slider backed by CSS variables;
-- apply dimming to OSD/dialog/action-sheet UI without touching the video pixels;
+- apply dimming to OSD/dialog/action-sheet/Playback Info UI without touching the
+  video pixels;
 - derive ASS and PGS subtitle brightness from the same UI brightness setting;
-- add one shared subtitle opacity slider for ASS and PGS overlays.
+- add one shared subtitle opacity slider for ASS and PGS overlays;
+- accept both string and legacy numeric video stream types during HDR detection;
+- inspect `VideoRange`, `VideoRangeType`, Dolby Vision, HDR10+, color-transfer,
+  display-title, and Playback Info/player-stats text as fallback HDR signals;
+- after entering playback, run a short delayed fallback window that reapplies
+  cached PlaybackInfo hints, refreshes item metadata detection, and scans visible
+  playback UI text again.
 
 Status: active feature. ASS and PGS intentionally share
 `--webos-hdr-subtitle-opacity`; keeping a separate PGS opacity variable made the

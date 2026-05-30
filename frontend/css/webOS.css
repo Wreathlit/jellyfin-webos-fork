@@ -24,9 +24,15 @@
 
 /* Reduce UI luminance during HDR/Dolby Vision playback without touching video pixels. */
 .layout-tv body.webos-hdr-ui-dim .videoOsdBottom,
+.layout-tv body.webos-hdr-ui-dim .videoOsdTop,
 .layout-tv body.webos-hdr-ui-dim .skinHeader.osdHeader,
+.layout-tv body.webos-hdr-ui-dim .osdHeader,
 .layout-tv body.webos-hdr-ui-dim .upNextContainer,
+.layout-tv body.webos-hdr-ui-dim .playerStats,
 .layout-tv body.webos-hdr-ui-dim .actionSheet,
+.layout-tv body.webos-hdr-ui-dim .formDialog,
+.layout-tv body.webos-hdr-ui-dim .promptDialog,
+.layout-tv body.webos-hdr-ui-dim .toast,
 .layout-tv body.webos-hdr-ui-dim .dialog {
     filter: brightness(var(--webos-hdr-ui-brightness, 0.3)) saturate(0.92) !important;
 }
