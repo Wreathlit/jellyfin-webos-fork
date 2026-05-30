@@ -178,6 +178,7 @@
     var pendingPlaybackInfoDynamicRange = null;
     var playbackStartFallbackTimers = [];
     var playbackStartFallbackGeneration = 0;
+    var pgsSubtitleDeliveryDiagnostic = 'none';
     var playbackDiagnosticsOverlay = null;
     var playbackDiagnosticsRafId = null;
     var playbackDiagnosticsLastRafTs = 0;
@@ -576,6 +577,7 @@
             latestPlaybackInfoRequestSequence = playbackInfoRequestSequence;
             latestPlaybackInfoRequestItemId = null;
             pendingPlaybackInfoDynamicRange = null;
+            pgsSubtitleDeliveryDiagnostic = 'none';
             resetSubtitleTimingState('playback-idle');
         }
 
@@ -857,7 +859,8 @@
             'HDR via=' + (playbackDynamicRangeReason || '-') + ' ms=' + formatHdrDetectionHint(hdrDetectionMediaSessionLastHint) + ' pi=' + formatHdrDetectionHint(hdrDetectionPlaybackInfoLastHint) + '/' + hdrDetectionPlaybackInfoCount + ' pend=' + (pendingPlaybackInfoDynamicRange ? formatHdrDetectionHint(pendingPlaybackInfoDynamicRange.hint) : '-') + ' im=' + formatHdrDetectionHint(hdrDetectionItemMetadataLastHint) + ' ui=' + formatHdrDetectionHint(hdrDetectionPlaybackUiLastHint),
             'long=' + formatPlaybackDiagnosticsLongTaskInfo(now) + ' video=' + dimensions + ' t=' + currentTime + ' drop=' + formatPlaybackDiagnosticsNumber(dropped) + '/' + formatPlaybackDiagnosticsNumber(total),
             'ASS canvas=' + getPlaybackDiagnosticsAssCanvasInfo() + ' worker=' + getPlaybackDiagnosticsAssWorkerInfo(),
-            'PGS ' + getPlaybackDiagnosticsPgsInfo()
+            'PGS ' + getPlaybackDiagnosticsPgsInfo(),
+            'subs pgs=' + pgsSubtitleDeliveryDiagnostic
         ].join('\n');
 
         playbackDiagnosticsLastUpdateTs = now;
@@ -5338,6 +5341,72 @@
         setPlaybackDynamicRange(pendingHint, 'playbackinfo-pending');
     }
 
+    function getPgsSubtitleDeliveryDiagnostic(payload, mediaSourceId) {
+        if (!payload || typeof payload !== 'object') {
+            return 'none';
+        }
+
+        var mediaSources = toArray(payload.MediaSources || payload.mediaSources);
+        if (!mediaSources.length) {
+            return 'none';
+        }
+
+        var normalizedMediaSourceId = mediaSourceId ? mediaSourceId.toString() : null;
+        var selectedSource = null;
+        for (var i = 0; i < mediaSources.length; i++) {
+            var candidateId = getObjectMediaSourceId(mediaSources[i]);
+            if (normalizedMediaSourceId && candidateId && candidateId === normalizedMediaSourceId) {
+                selectedSource = mediaSources[i];
+                break;
+            }
+        }
+        if (!selectedSource) {
+            selectedSource = mediaSources[0];
+        }
+
+        var streams = toArray(selectedSource.MediaStreams || selectedSource.mediaStreams);
+        var pgsCount = 0;
+        var summary = 'no-pgs';
+        for (var j = 0; j < streams.length; j++) {
+            var stream = streams[j];
+            if (!stream) {
+                continue;
+            }
+            var streamType = (stream.Type || stream.type || '').toString().toLowerCase();
+            if (streamType !== 'subtitle') {
+                continue;
+            }
+            var codec = (stream.Codec || stream.codec || '').toString().toLowerCase();
+            if (codec.indexOf('pgs') === -1) {
+                continue;
+            }
+
+            pgsCount++;
+            if (pgsCount > 1) {
+                continue;
+            }
+
+            var method = (stream.DeliveryMethod || stream.deliveryMethod || '?').toString();
+            var flags = [];
+            if (stream.DeliveryUrl || stream.deliveryUrl) {
+                flags.push('u');
+            }
+            if (stream.SupportsExternalStream || stream.supportsExternalStream) {
+                flags.push('x');
+            }
+            if (stream.IsExternal || stream.isExternal) {
+                flags.push('e');
+            }
+            summary = method + (flags.length ? '/' + flags.join('') : '');
+        }
+
+        if (pgsCount > 1) {
+            summary += ' x' + pgsCount.toString();
+        }
+
+        return summary;
+    }
+
     function applyDynamicRangeFromPlaybackInfo(payload, sourceUrl, reason, context) {
         if (!isPlaybackInfoUrl(sourceUrl)) {
             return;
@@ -5349,6 +5418,7 @@
         hdrDetectionPlaybackInfoLastHint = hint;
         hdrDetectionPlaybackInfoCount++;
         cachePlaybackInfoDynamicRangeHint(itemId, mediaSourceId, hint);
+        pgsSubtitleDeliveryDiagnostic = getPgsSubtitleDeliveryDiagnostic(payload, mediaSourceId);
         if (playbackState !== PlaybackState.PLAYING) {
             if (playbackState !== PlaybackState.IDLE) {
                 return;
