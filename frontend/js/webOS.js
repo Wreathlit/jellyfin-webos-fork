@@ -5448,16 +5448,19 @@
         return url.toLowerCase().indexOf('/subtitles/') !== -1;
     }
 
-    function recordSubtitleFetchDiagnostic(url, status, bytes) {
-        var index = '?';
-        var ext = '?';
-        var indexMatch = /\/subtitles\/(\d+)\//i.exec(url || '');
-        if (indexMatch && indexMatch[1]) {
-            index = indexMatch[1];
+    function recordSubtitleFetchDiagnostic(url, status, bytes, body) {
+        // Full path from /Videos/ onward (query/api_key stripped) so the exact
+        // itemId/mediaSourceId/index/format is visible for comparing a working
+        // vs failing subtitle fetch. On error, append a short response-body
+        // snippet — the server usually states why (e.g. source/stream not found).
+        var path = (url || '').toString();
+        var videosPos = path.toLowerCase().indexOf('/videos/');
+        if (videosPos !== -1) {
+            path = path.substring(videosPos);
         }
-        var extMatch = /\.([a-z0-9]+)(?:\?|$)/i.exec(url || '');
-        if (extMatch && extMatch[1]) {
-            ext = extMatch[1].toLowerCase();
+        var queryPos = path.indexOf('?');
+        if (queryPos !== -1) {
+            path = path.substring(0, queryPos);
         }
 
         var parts = [];
@@ -5465,7 +5468,13 @@
         if (typeof bytes === 'number' && bytes >= 0) {
             parts.push(bytes.toString() + 'b');
         }
-        parts.push(ext + ' i' + index);
+        parts.push(path);
+        if (body) {
+            var snippet = body.toString().replace(/\s+/g, ' ').substring(0, 80);
+            if (snippet) {
+                parts.push('| ' + snippet);
+            }
+        }
         pgsSubtitleFetchDiagnostic = parts.join(' ');
     }
 
@@ -5487,13 +5496,24 @@
                         }
                     }
                 }
-                recordSubtitleFetchDiagnostic(url, status, bytes);
+                recordSubtitleFetchDiagnostic(url, status, bytes, null);
+                if (status >= 400 && response && typeof response.clone === 'function') {
+                    try {
+                        response.clone().text().then(function (text) {
+                            recordSubtitleFetchDiagnostic(url, status, bytes, text);
+                        }, function () {
+                            // Ignore body read errors.
+                        });
+                    } catch (cloneError) {
+                        // Ignore clone failures.
+                    }
+                }
             } catch (error) {
                 debugLog('Failed to inspect subtitle fetch response:', error);
             }
             return response;
         }, function (error) {
-            recordSubtitleFetchDiagnostic(url, 0, -1);
+            recordSubtitleFetchDiagnostic(url, 0, -1, null);
             throw error;
         });
     }
@@ -5505,6 +5525,7 @@
             }
             var status = xhr.status || 0;
             var bytes = -1;
+            var body = null;
             try {
                 if (xhr.response && typeof xhr.response.byteLength === 'number') {
                     bytes = xhr.response.byteLength;
@@ -5513,10 +5534,13 @@
                 } else if (typeof xhr.responseText === 'string') {
                     bytes = xhr.responseText.length;
                 }
+                if (status >= 400 && typeof xhr.responseText === 'string') {
+                    body = xhr.responseText;
+                }
             } catch (responseError) {
                 bytes = -1;
             }
-            recordSubtitleFetchDiagnostic(xhr.__webOsSubtitleUrl, status, bytes);
+            recordSubtitleFetchDiagnostic(xhr.__webOsSubtitleUrl, status, bytes, body);
         } catch (error) {
             // Ignore subtitle diagnostic read errors.
         }
