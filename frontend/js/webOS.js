@@ -5337,6 +5337,56 @@
         }
     }
 
+    function patchSubtitleProfilesForBitmapPgs(profile) {
+        if (!profile) {
+            return;
+        }
+
+        if (!profile.SubtitleProfiles) {
+            profile.SubtitleProfiles = [];
+        }
+
+        if (Object.prototype.toString.call(profile.SubtitleProfiles) !== '[object Array]') {
+            return;
+        }
+
+        // When audio-only transcode is in play (DTS+HEVC via the transcoding
+        // copy path enabled by patchVideoTranscodingProfilesForAudioOnlyTranscode),
+        // the server cannot burn PGS into the video stream (Encode requires a
+        // video re-encode) and HLS/fmp4 segments do not embed PGS. Force PGS
+        // to External so the server extracts the stream into a .sup file and
+        // exposes a DeliveryUrl that libpgs can fetch. Direct-play does not
+        // consult SubtitleProfiles, so this only affects the transcode path.
+        var pgsFormat = 'pgssub';
+        var existingIndex = -1;
+        for (var i = 0; i < profile.SubtitleProfiles.length; i++) {
+            var entry = profile.SubtitleProfiles[i];
+            if (!entry || !entry.Format) {
+                continue;
+            }
+            if (entry.Format.toString().toLowerCase() === pgsFormat) {
+                existingIndex = i;
+                break;
+            }
+        }
+
+        if (existingIndex === -1) {
+            profile.SubtitleProfiles.push({
+                Format: pgsFormat,
+                Method: 'External'
+            });
+            debugLog('Added External SubtitleProfile for PGS');
+            return;
+        }
+
+        var existing = profile.SubtitleProfiles[existingIndex];
+        if (existing.Method !== 'External') {
+            var previousMethod = existing.Method;
+            existing.Method = 'External';
+            debugLog('Forced External SubtitleProfile method for PGS (was: ' + previousMethod + ')');
+        }
+    }
+
     function applyPlaybackCompatibilityProfilePatches(profile) {
         if (!profile || typeof profile !== 'object') {
             return profile;
@@ -5345,6 +5395,7 @@
         patchDirectPlayProfilesForProblematicFormats(profile);
         patchH264InterlaceSupport(profile);
         patchVideoTranscodingProfilesForAudioOnlyTranscode(profile);
+        patchSubtitleProfilesForBitmapPgs(profile);
         return profile;
     }
 
