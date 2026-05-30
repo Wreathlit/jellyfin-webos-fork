@@ -449,6 +449,7 @@
         if (nextState === PlaybackState.PLAYING && previousState !== PlaybackState.PLAYING) {
             startPlaybackStartMaxBitrateForce('playback-start');
             armHdrUiInfoCorrectionWindow('playback-start');
+            applyPendingPlaybackInfoHint();
         }
         if (nextState !== PlaybackState.PLAYING) {
             clearPlaybackStartMaxBitrateForce('playback-state-change');
@@ -4522,6 +4523,54 @@
         }
 
         return getDynamicRangeHintFromItem(payload, selectedMediaSourceId);
+    }
+
+    function applyPendingPlaybackInfoHint() {
+        // The PlaybackInfo response often arrives before playbackState reaches
+        // PLAYING (Jellyfin Web typically fetches PlaybackInfo, then calls
+        // enableFullscreen). The XHR/fetch hook caches the hint but
+        // shouldApplyPlaybackInfoResponse blocks the immediate apply on
+        // playbackState !== PLAYING, and updateMediaSession — the only other
+        // consumer of the cache — is not guaranteed to fire. So when we
+        // finally enter PLAYING, pull the cached hint for the latest known
+        // PlaybackInfo item ourselves.
+        if (playbackState !== PlaybackState.PLAYING) {
+            return;
+        }
+        if (playbackDynamicRange !== 'unknown') {
+            return;
+        }
+        if (!latestPlaybackInfoRequestItemId) {
+            return;
+        }
+
+        var prefix = latestPlaybackInfoRequestItemId.toString() + '|';
+        var pendingHint = 'unknown';
+        for (var key in playbackInfoDynamicRangeHints) {
+            if (!Object.prototype.hasOwnProperty.call(playbackInfoDynamicRangeHints, key)) {
+                continue;
+            }
+            if (key.indexOf(prefix) !== 0) {
+                continue;
+            }
+            var entryHint = playbackInfoDynamicRangeHints[key];
+            if (entryHint === 'hdr') {
+                pendingHint = 'hdr';
+                break;
+            }
+            if (entryHint === 'sdr') {
+                pendingHint = 'sdr';
+            }
+        }
+
+        if (pendingHint === 'unknown') {
+            return;
+        }
+
+        if (!currentMediaSessionItemId) {
+            setCurrentPlaybackItemId(latestPlaybackInfoRequestItemId, currentPlaybackMediaSourceId, 'pending-playbackinfo');
+        }
+        setPlaybackDynamicRange(pendingHint, 'playbackinfo-pending');
     }
 
     function applyDynamicRangeFromPlaybackInfo(payload, sourceUrl, reason, context) {
