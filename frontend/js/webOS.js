@@ -699,7 +699,7 @@
                 var entries = list.getEntries ? list.getEntries() : [];
                 for (var i = 0; i < entries.length; i++) {
                     var duration = typeof entries[i].duration === 'number' ? entries[i].duration : 0;
-                    playbackDiagnosticsLongTaskWindowCount++;
+                    longTaskCountTracker.increment();
                     playbackDiagnosticsLongTaskWindowDuration += duration;
                     playbackDiagnosticsLongTaskWindowMax = Math.max(playbackDiagnosticsLongTaskWindowMax, duration);
                 }
