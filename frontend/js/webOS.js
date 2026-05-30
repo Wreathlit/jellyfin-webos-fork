@@ -95,7 +95,7 @@
     var HDR_SUBTITLE_DEFAULT_OPACITY_PERCENT = Math.round(HDR_SUBTITLE_DEFAULT_OPACITY * 100);
     var HDR_UI_INFO_CORRECTION_WINDOW_MS = 8000;
     var HDR_UI_INFO_FALLBACK_SCAN_INTERVAL = 500;
-    var PLAYBACK_START_FALLBACK_DELAYS = [1200, 3000, 6000];
+    var PLAYBACK_START_FALLBACK_DELAY_MS = 3000;
     var POINTER_FIRST_CLICK_FOCUS_RESTORE_DELAYS = [0, 40, 120];
     var POINTER_FIRST_CLICK_SUPPRESS_NATIVE_CLICK_MS = 700;
     var POINTER_FIRST_CLICK_MAX_MOVE_PX = 14;
@@ -154,9 +154,6 @@
     var latestPlaybackInfoRequestSequence = 0;
     var latestPlaybackInfoRequestItemId = null;
     var pendingPlaybackInfoDynamicRange = null;
-    var playbackInfoFallbackPayload = null;
-    var playbackInfoFallbackUrl = null;
-    var playbackInfoFallbackContext = null;
     var playbackStartFallbackTimers = [];
     var playbackStartFallbackGeneration = 0;
     var playbackDiagnosticsOverlay = null;
@@ -472,9 +469,6 @@
             latestPlaybackInfoRequestSequence = playbackInfoRequestSequence;
             latestPlaybackInfoRequestItemId = null;
             pendingPlaybackInfoDynamicRange = null;
-            playbackInfoFallbackPayload = null;
-            playbackInfoFallbackUrl = null;
-            playbackInfoFallbackContext = null;
             resetSubtitleTimingState('playback-idle');
         }
 
@@ -3631,15 +3625,6 @@
             return;
         }
 
-        if (playbackInfoFallbackPayload && playbackInfoFallbackUrl) {
-            patchPlaybackInfoSubtitleDeliveryPayload(playbackInfoFallbackPayload, playbackInfoFallbackUrl);
-            applyDynamicRangeFromPlaybackInfo(playbackInfoFallbackPayload, playbackInfoFallbackUrl, reason + '-playbackinfo', playbackInfoFallbackContext);
-        }
-
-        if (!applyPendingPlaybackInfoDynamicRange(reason + '-pending')) {
-            applyPendingPlaybackInfoHint();
-        }
-
         var itemId = currentMediaSessionItemId || latestPlaybackInfoRequestItemId;
         var mediaSourceId = currentPlaybackMediaSourceId;
         if (itemId && playbackDynamicRange === 'unknown') {
@@ -3673,7 +3658,6 @@
         if (uiHint === 'hdr' || playbackDynamicRange === 'unknown' && uiHint === 'sdr') {
             setPlaybackDynamicRange(uiHint, reason + '-playback-ui');
         } else {
-            scheduleHdrUiInfoScan(0);
             refreshHdrUiDimming(reason);
         }
     }
@@ -3681,13 +3665,9 @@
     function schedulePlaybackStartFallbackChecks(reason) {
         clearPlaybackStartFallbackTimers();
         var generation = playbackStartFallbackGeneration;
-        for (var i = 0; i < PLAYBACK_START_FALLBACK_DELAYS.length; i++) {
-            (function (delay) {
-                playbackStartFallbackTimers.push(setTimeout(function () {
-                    runPlaybackStartFallbackCheck(reason || 'playback-start-fallback', generation);
-                }, delay));
-            })(PLAYBACK_START_FALLBACK_DELAYS[i]);
-        }
+        playbackStartFallbackTimers.push(setTimeout(function () {
+            runPlaybackStartFallbackCheck(reason || 'playback-start-fallback', generation);
+        }, PLAYBACK_START_FALLBACK_DELAY_MS));
     }
 
     function clearHdrUiInfoCorrectionWindow() {
@@ -3770,8 +3750,7 @@
             return false;
         }
 
-        return normalized.indexOf('hdr10+') !== -1
-            || normalized.indexOf('hdr10') !== -1
+        return normalized.indexOf('hdr10') !== -1
             || /(^|[^a-z0-9])hdr([^a-z0-9]|$)/i.test(normalized)
             || normalized.indexOf('dolby vision') !== -1
             || normalized.indexOf('dolbyvision') !== -1
@@ -3834,14 +3813,17 @@
         return 'unknown';
     }
 
+    function isTruthyNormalizedString(value) {
+        return value === 'true' || value === '1' || value === 'yes';
+    }
+
     function isTruthyMetadataFlag(value) {
         if (value === true) {
             return true;
         }
 
         if (typeof value === 'string') {
-            var normalized = value.toLowerCase();
-            return normalized === 'true' || normalized === '1' || normalized === 'yes';
+            return isTruthyNormalizedString(value.toLowerCase());
         }
 
         return isPositiveNumberValue(value);
@@ -4096,14 +4078,14 @@
             return fieldHint;
         }
 
-        if (isHdrDoviProfileOrLevel(videoStream.VideoDoViProfile)
-            || isHdrDoviProfileOrLevel(videoStream.videoDoViProfile)
-            || isHdrDoviProfileOrLevel(videoStream.DvProfile)
-            || isHdrDoviProfileOrLevel(videoStream.dvProfile)
-            || isHdrDoviProfileOrLevel(videoStream.VideoDoViLevel)
-            || isHdrDoviProfileOrLevel(videoStream.videoDoViLevel)
-            || isHdrDoviProfileOrLevel(videoStream.DvLevel)
-            || isHdrDoviProfileOrLevel(videoStream.dvLevel)) {
+        if (isHdrDynamicRangeText(videoStream.VideoDoViProfile)
+            || isHdrDynamicRangeText(videoStream.videoDoViProfile)
+            || isHdrDynamicRangeText(videoStream.DvProfile)
+            || isHdrDynamicRangeText(videoStream.dvProfile)
+            || isHdrDynamicRangeText(videoStream.VideoDoViLevel)
+            || isHdrDynamicRangeText(videoStream.videoDoViLevel)
+            || isHdrDynamicRangeText(videoStream.DvLevel)
+            || isHdrDynamicRangeText(videoStream.dvLevel)) {
             return 'hdr';
         }
 
@@ -4307,14 +4289,14 @@
             sawSdr = true;
         }
 
-        if (isHdrDoviProfileOrLevel(item.VideoDoViProfile)
-            || isHdrDoviProfileOrLevel(item.videoDoViProfile)
-            || isHdrDoviProfileOrLevel(item.DvProfile)
-            || isHdrDoviProfileOrLevel(item.dvProfile)
-            || isHdrDoviProfileOrLevel(item.VideoDoViLevel)
-            || isHdrDoviProfileOrLevel(item.videoDoViLevel)
-            || isHdrDoviProfileOrLevel(item.DvLevel)
-            || isHdrDoviProfileOrLevel(item.dvLevel)) {
+        if (isHdrDynamicRangeText(item.VideoDoViProfile)
+            || isHdrDynamicRangeText(item.videoDoViProfile)
+            || isHdrDynamicRangeText(item.DvProfile)
+            || isHdrDynamicRangeText(item.dvProfile)
+            || isHdrDynamicRangeText(item.VideoDoViLevel)
+            || isHdrDynamicRangeText(item.videoDoViLevel)
+            || isHdrDynamicRangeText(item.DvLevel)
+            || isHdrDynamicRangeText(item.dvLevel)) {
             return 'hdr';
         }
 
@@ -4677,7 +4659,6 @@
         }
 
         var updatedUrl = setQueryParameterValue(url, PLAYBACK_INFO_MAX_BITRATE_PARAM, targetBitrate);
-        updatedUrl = setQueryParameterValue(updatedUrl, 'maxStreamingBitrate', targetBitrate);
         if (shouldForcePlaybackStartMaxBitrate()) {
             markPlaybackStartMaxBitrateForced(source, targetBitrate);
         }
@@ -5070,8 +5051,7 @@
             return false;
         }
 
-        var normalized = value.toString().toLowerCase();
-        return normalized === 'true' || normalized === '1' || normalized === 'yes';
+        return isTruthyNormalizedString(value.toString().toLowerCase());
     }
 
     function shouldPatchComplexSubtitleDeliveryForMediaSource(mediaSource) {
@@ -5241,16 +5221,6 @@
         return originalResponse;
     }
 
-    function rememberPlaybackInfoFallbackPayload(payload, sourceUrl, context) {
-        if (!payload || typeof payload !== 'object' || !isPlaybackInfoUrl(sourceUrl)) {
-            return;
-        }
-
-        playbackInfoFallbackPayload = payload;
-        playbackInfoFallbackUrl = sourceUrl;
-        playbackInfoFallbackContext = context || null;
-    }
-
     function applyPendingPlaybackInfoHint() {
         // The PlaybackInfo response often arrives before playbackState reaches
         // PLAYING (Jellyfin Web typically fetches PlaybackInfo, then calls
@@ -5339,7 +5309,6 @@
             try {
                 if (response && typeof response.clone === 'function') {
                     return response.clone().json().then(function (payload) {
-                        rememberPlaybackInfoFallbackPayload(payload, url, context);
                         applyDynamicRangeFromPlaybackInfo(payload, url, 'playbackinfo-fetch', context);
                         if (patchPlaybackInfoSubtitleDeliveryPayload(payload, url)) {
                             return createJsonFetchResponse(response, payload);
@@ -5381,7 +5350,6 @@
                 payload = JSON.parse(responseText);
             }
 
-            rememberPlaybackInfoFallbackPayload(payload, xhr.__webOsPlaybackInfoUrl, xhr.__webOsPlaybackInfoContext);
             patchPlaybackInfoSubtitleDeliveryPayload(payload, xhr.__webOsPlaybackInfoUrl);
             applyDynamicRangeFromPlaybackInfo(payload, xhr.__webOsPlaybackInfoUrl, 'playbackinfo-xhr', xhr.__webOsPlaybackInfoContext);
         } catch (error) {
