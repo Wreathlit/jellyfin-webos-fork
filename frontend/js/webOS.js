@@ -179,6 +179,7 @@
     var playbackStartFallbackTimers = [];
     var playbackStartFallbackGeneration = 0;
     var pgsSubtitleDeliveryDiagnostic = 'none';
+    var pgsSubtitleFetchDiagnostic = 'none';
     var playbackDiagnosticsOverlay = null;
     var playbackDiagnosticsRafId = null;
     var playbackDiagnosticsLastRafTs = 0;
@@ -578,6 +579,7 @@
             latestPlaybackInfoRequestItemId = null;
             pendingPlaybackInfoDynamicRange = null;
             pgsSubtitleDeliveryDiagnostic = 'none';
+            pgsSubtitleFetchDiagnostic = 'none';
             resetSubtitleTimingState('playback-idle');
         }
 
@@ -860,7 +862,7 @@
             'long=' + formatPlaybackDiagnosticsLongTaskInfo(now) + ' video=' + dimensions + ' t=' + currentTime + ' drop=' + formatPlaybackDiagnosticsNumber(dropped) + '/' + formatPlaybackDiagnosticsNumber(total),
             'ASS canvas=' + getPlaybackDiagnosticsAssCanvasInfo() + ' worker=' + getPlaybackDiagnosticsAssWorkerInfo(),
             'PGS ' + getPlaybackDiagnosticsPgsInfo(),
-            'subs pgs=' + pgsSubtitleDeliveryDiagnostic
+            'subs pgs=' + pgsSubtitleDeliveryDiagnostic + ' sup=' + pgsSubtitleFetchDiagnostic
         ].join('\n');
 
         playbackDiagnosticsLastUpdateTs = now;
@@ -5439,6 +5441,87 @@
         }
     }
 
+    function isSubtitleDeliveryUrl(url) {
+        if (!url || typeof url !== 'string') {
+            return false;
+        }
+        return url.toLowerCase().indexOf('/subtitles/') !== -1;
+    }
+
+    function recordSubtitleFetchDiagnostic(url, status, bytes) {
+        var index = '?';
+        var ext = '?';
+        var indexMatch = /\/subtitles\/(\d+)\//i.exec(url || '');
+        if (indexMatch && indexMatch[1]) {
+            index = indexMatch[1];
+        }
+        var extMatch = /\.([a-z0-9]+)(?:\?|$)/i.exec(url || '');
+        if (extMatch && extMatch[1]) {
+            ext = extMatch[1].toLowerCase();
+        }
+
+        var parts = [];
+        parts.push(status ? status.toString() : 'err');
+        if (typeof bytes === 'number' && bytes >= 0) {
+            parts.push(bytes.toString() + 'b');
+        }
+        parts.push(ext + ' i' + index);
+        pgsSubtitleFetchDiagnostic = parts.join(' ');
+    }
+
+    function inspectSubtitleFetchResult(fetchResult, url) {
+        if (!fetchResult || typeof fetchResult.then !== 'function') {
+            return fetchResult;
+        }
+
+        return fetchResult.then(function (response) {
+            try {
+                var status = response && typeof response.status === 'number' ? response.status : 0;
+                var bytes = -1;
+                if (response && response.headers && typeof response.headers.get === 'function') {
+                    var lengthHeader = response.headers.get('Content-Length');
+                    if (lengthHeader) {
+                        var parsedLength = parseInt(lengthHeader, 10);
+                        if (!isNaN(parsedLength)) {
+                            bytes = parsedLength;
+                        }
+                    }
+                }
+                recordSubtitleFetchDiagnostic(url, status, bytes);
+            } catch (error) {
+                debugLog('Failed to inspect subtitle fetch response:', error);
+            }
+            return response;
+        }, function (error) {
+            recordSubtitleFetchDiagnostic(url, 0, -1);
+            throw error;
+        });
+    }
+
+    function inspectSubtitleXhrResponse(xhr) {
+        try {
+            if (!xhr || !isSubtitleDeliveryUrl(xhr.__webOsSubtitleUrl)) {
+                return;
+            }
+            var status = xhr.status || 0;
+            var bytes = -1;
+            try {
+                if (xhr.response && typeof xhr.response.byteLength === 'number') {
+                    bytes = xhr.response.byteLength;
+                } else if (xhr.response && typeof xhr.response.size === 'number') {
+                    bytes = xhr.response.size;
+                } else if (typeof xhr.responseText === 'string') {
+                    bytes = xhr.responseText.length;
+                }
+            } catch (responseError) {
+                bytes = -1;
+            }
+            recordSubtitleFetchDiagnostic(xhr.__webOsSubtitleUrl, status, bytes);
+        } catch (error) {
+            // Ignore subtitle diagnostic read errors.
+        }
+    }
+
     function inspectPlaybackInfoFetchResult(fetchResult, url, context) {
         if (!isPlaybackInfoUrl(url) || !fetchResult || typeof fetchResult.then !== 'function') {
             return fetchResult;
@@ -5594,6 +5677,10 @@
                     url = '';
                 }
 
+                if (isSubtitleDeliveryUrl(url)) {
+                    return inspectSubtitleFetchResult(originalFetch.apply(fetchThis, arguments), url);
+                }
+
                 var requestArgs = arguments;
                 if (isPlaybackInfoUrl(url)) {
                     var enforcedFetchBitrate = enforcePlaybackInfoMaxBitrateUrl(url, 'fetch');
@@ -5701,6 +5788,7 @@
                     }
 
                     this.__webOsPlaybackInfoUrl = requestUrl;
+                    this.__webOsSubtitleUrl = isSubtitleDeliveryUrl(requestUrl) ? requestUrl : null;
                     return originalXhrOpen.apply(this, openArgs);
                 };
 
@@ -5721,6 +5809,15 @@
                         this.__webOsPlaybackInfoLoadendHooked = true;
                         this.addEventListener('loadend', function () {
                             inspectPlaybackInfoXhrResponse(this);
+                        });
+                    }
+
+                    if (this.__webOsSubtitleUrl
+                        && !this.__webOsSubtitleLoadendHooked
+                        && this.addEventListener) {
+                        this.__webOsSubtitleLoadendHooked = true;
+                        this.addEventListener('loadend', function () {
+                            inspectSubtitleXhrResponse(this);
                         });
                     }
 
