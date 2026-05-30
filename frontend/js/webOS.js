@@ -126,6 +126,12 @@
     var hdrSubtitleOpacity = HDR_SUBTITLE_DEFAULT_OPACITY;
     var HDR_UI_DIM_CLASS = 'webos-hdr-ui-dim';
     var playbackDynamicRange = 'unknown';
+    var playbackDynamicRangeReason = null;
+    var hdrDetectionMediaSessionLastHint = 'unknown';
+    var hdrDetectionPlaybackInfoLastHint = 'unknown';
+    var hdrDetectionItemMetadataLastHint = 'unknown';
+    var hdrDetectionPlaybackUiLastHint = 'unknown';
+    var hdrDetectionPlaybackInfoCount = 0;
     var hdrUiInfoObserver = null;
     var hdrUiInfoObserverActive = false;
     var hdrUiInfoScanTimer = null;
@@ -672,6 +678,16 @@
         return canvases.length.toString() + ' ' + size + '/' + cssSize;
     }
 
+    function formatHdrDetectionHint(hint) {
+        if (hint === 'hdr') {
+            return 'h';
+        }
+        if (hint === 'sdr') {
+            return 's';
+        }
+        return '?';
+    }
+
     function getPlaybackDiagnosticsAssWorkerInfo() {
         return 'patch=' + assScriptPatchCount.toString()
             + '/' + assWorkerVideoMessagePatchCount.toString()
@@ -735,6 +751,7 @@
         overlay.textContent = [
             'webOS diagnostics',
             'state=' + playbackState + ' range=' + playbackDynamicRange + ' rAF=' + playbackDiagnosticsRafFps + ' rVFC=' + (rVfcSupported ? playbackDiagnosticsVideoFrameFps : 'n/a') + ' delta=' + (rVfcSupported ? playbackDiagnosticsVideoFrameDelta + 'ms' : 'n/a'),
+            'HDR via=' + (playbackDynamicRangeReason || '-') + ' ms=' + formatHdrDetectionHint(hdrDetectionMediaSessionLastHint) + ' pi=' + formatHdrDetectionHint(hdrDetectionPlaybackInfoLastHint) + '/' + hdrDetectionPlaybackInfoCount + ' im=' + formatHdrDetectionHint(hdrDetectionItemMetadataLastHint) + ' ui=' + formatHdrDetectionHint(hdrDetectionPlaybackUiLastHint),
             'long=' + formatPlaybackDiagnosticsLongTaskInfo(now) + ' video=' + dimensions + ' t=' + currentTime + ' drop=' + formatPlaybackDiagnosticsNumber(dropped) + '/' + formatPlaybackDiagnosticsNumber(total),
             'ASS canvas=' + getPlaybackDiagnosticsAssCanvasInfo() + ' worker=' + getPlaybackDiagnosticsAssWorkerInfo(),
             'PGS ' + getPlaybackDiagnosticsPgsInfo()
@@ -3627,6 +3644,7 @@
             }
 
             var hint = getDynamicRangeHintFromPlaybackUi();
+            hdrDetectionPlaybackUiLastHint = hint;
             if (hint === 'hdr' || playbackDynamicRange === 'unknown' && hint === 'sdr') {
                 setPlaybackDynamicRange(hint, 'playback-ui');
             } else {
@@ -4502,6 +4520,8 @@
         var itemId = extractItemIdFromPlaybackInfoUrl(sourceUrl);
         var mediaSourceId = getSelectedMediaSourceId(payload) || currentPlaybackMediaSourceId;
         var hint = getDynamicRangeHintFromPlaybackInfoPayload(payload, mediaSourceId);
+        hdrDetectionPlaybackInfoLastHint = hint;
+        hdrDetectionPlaybackInfoCount++;
         cachePlaybackInfoDynamicRangeHint(itemId, mediaSourceId, hint);
         if (!shouldApplyPlaybackInfoResponse(itemId, mediaSourceId, context)) {
             return;
@@ -4857,6 +4877,7 @@
 
         var previousRange = playbackDynamicRange;
         playbackDynamicRange = nextRange;
+        playbackDynamicRangeReason = reason || null;
         debugLog('Playback dynamic range: ' + previousRange + ' -> ' + nextRange + ' (' + reason + ')');
         refreshHdrUiDimming('dynamic-range');
         setHdrUiInfoObserverEnabled(shouldUseHdrUiInfoObserver());
@@ -5256,6 +5277,7 @@
             setCurrentPlaybackItemId(itemId, mediaSourceId, 'item-changed');
 
             var dynamicRangeHint = getDynamicRangeHintFromMediaInfo(mediaInfo);
+            hdrDetectionMediaSessionLastHint = dynamicRangeHint;
             if (dynamicRangeHint !== 'unknown') {
                 setPlaybackDynamicRange(dynamicRangeHint, 'media-session');
             }
@@ -5273,6 +5295,7 @@
                         return;
                     }
 
+                    hdrDetectionItemMetadataLastHint = itemHint;
                     if (itemHint !== 'unknown') {
                         setPlaybackDynamicRange(itemHint, 'item-metadata');
                     }
