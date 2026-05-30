@@ -133,8 +133,6 @@
     var hdrDetectionItemMetadataLastHint = 'unknown';
     var hdrDetectionPlaybackUiLastHint = 'unknown';
     var hdrDetectionPlaybackInfoCount = 0;
-    var hdrUiInfoObserver = null;
-    var hdrUiInfoObserverActive = false;
     var hdrUiInfoScanTimer = null;
     var hdrUiInfoFallbackScanTimer = null;
     var hdrUiInfoCorrectionUntil = 0;
@@ -142,6 +140,30 @@
     var hdrUiInfoCorrectedHdrUntil = 0;
     var hdrUiInfoCorrectedHdrReason = null;
     var hdrUiInfoInitialScanTimer = null;
+    var hdrUiInfoObserver = createManagedObserver({
+        handler: function () {
+            scheduleHdrUiInfoScan(120);
+        },
+        onEnabled: function () {
+            scheduleHdrUiInfoScan(0);
+            if (hdrUiInfoInitialScanTimer) {
+                clearTimeout(hdrUiInfoInitialScanTimer);
+            }
+            hdrUiInfoInitialScanTimer = setTimeout(function () {
+                hdrUiInfoInitialScanTimer = null;
+                scheduleHdrUiInfoScan(0);
+            }, 400);
+            scheduleHdrUiInfoFallbackScan();
+        },
+        onDisabled: function () {
+            if (hdrUiInfoInitialScanTimer) {
+                clearTimeout(hdrUiInfoInitialScanTimer);
+                hdrUiInfoInitialScanTimer = null;
+            }
+            clearHdrUiInfoScanTimer();
+            clearHdrUiInfoFallbackScanTimer();
+        }
+    });
     var currentMediaSessionItemId = null;
     var currentPlaybackMediaSourceId = null;
     var mediaItemDynamicRangeCache = {};
@@ -261,6 +283,54 @@
                 windowStartTs = 0;
                 count = 0;
             }
+        };
+    }
+    function createManagedObserver(config) {
+        var observer = null;
+        var active = false;
+
+        function ensureCreated() {
+            if (observer) return true;
+            if (!window.MutationObserver) return false;
+            if (!config.handler) return false;
+            observer = new MutationObserver(config.handler);
+            return !!observer;
+        }
+
+        function getTargets() {
+            var result = config.getTargets ? config.getTargets() : null;
+            if (!result) {
+                var body = document.body || document.documentElement;
+                if (body) return [{ target: body, config: { childList: true, subtree: true } }];
+                return [];
+            }
+            return Array.isArray(result) ? result : [result];
+        }
+
+        return {
+            setEnabled: function (enabled) {
+                if (!window.MutationObserver) return;
+                if (!enabled) {
+                    if (observer && active) { observer.disconnect(); active = false; }
+                    if (config.onDisabled) config.onDisabled();
+                    return;
+                }
+                if (!observer && !ensureCreated()) return;
+                if (config.alwaysReconnect || !active) {
+                    if (active) { observer.disconnect(); active = false; }
+                    var targets = getTargets();
+                    for (var i = 0; i < targets.length; i++) {
+                        if (targets[i] && targets[i].target) {
+                            observer.observe(targets[i].target, targets[i].config);
+                        }
+                    }
+                    active = targets.length > 0;
+                }
+                if (config.onEnabled) config.onEnabled();
+            },
+            create: function () { ensureCreated(); },
+            getObserver: function () { return observer; },
+            isActive: function () { return active; }
         };
     }
 
@@ -486,7 +556,7 @@
 
         setHeaderPinningEnabled(nextState !== PlaybackState.PLAYING);
         setQualityMenuObserverEnabled(true);
-        setHdrUiInfoObserverEnabled(nextState === PlaybackState.PLAYING && playbackDynamicRange === 'unknown');
+        hdrUiInfoObserver.setEnabled(nextState === PlaybackState.PLAYING && playbackDynamicRange === 'unknown');
         if (nextState === PlaybackState.PLAYING && previousState !== PlaybackState.PLAYING) {
             startPlaybackStartMaxBitrateForce('playback-start');
             armHdrUiInfoCorrectionWindow('playback-start');
@@ -3676,11 +3746,11 @@
             hdrUiInfoCorrectionUntil = 0;
             hdrUiInfoCorrectedHdrUntil = 0;
             hdrUiInfoCorrectedHdrReason = null;
-            setHdrUiInfoObserverEnabled(shouldUseHdrUiInfoObserver());
+            hdrUiInfoObserver.setEnabled(shouldUseHdrUiInfoObserver());
         }, HDR_UI_INFO_CORRECTION_WINDOW_MS);
 
         debugLog('HDR UI info correction window armed (' + reason + ')');
-        setHdrUiInfoObserverEnabled(shouldUseHdrUiInfoObserver());
+        hdrUiInfoObserver.setEnabled(shouldUseHdrUiInfoObserver());
     }
 
     function shouldUseHdrUiInfoObserver() {
@@ -5615,7 +5685,7 @@
                 clearHdrUiInfoCorrectionWindow();
             } else {
                 debugLog('Ignored SDR dynamic range during HDR correction window (' + reason + ')');
-                setHdrUiInfoObserverEnabled(shouldUseHdrUiInfoObserver());
+                hdrUiInfoObserver.setEnabled(shouldUseHdrUiInfoObserver());
                 return;
             }
         }
@@ -5630,7 +5700,7 @@
         }
 
         if (playbackDynamicRange === nextRange) {
-            setHdrUiInfoObserverEnabled(shouldUseHdrUiInfoObserver());
+            hdrUiInfoObserver.setEnabled(shouldUseHdrUiInfoObserver());
             return;
         }
 
@@ -5639,71 +5709,10 @@
         playbackDynamicRangeReason = reason || null;
         debugLog('Playback dynamic range: ' + previousRange + ' -> ' + nextRange + ' (' + reason + ')');
         refreshHdrUiDimming('dynamic-range');
-        setHdrUiInfoObserverEnabled(shouldUseHdrUiInfoObserver());
+        hdrUiInfoObserver.setEnabled(shouldUseHdrUiInfoObserver());
     }
 
-    function initHdrUiInfoObserver() {
-        if (hdrUiInfoObserver || !window.MutationObserver) {
-            return;
-        }
 
-        hdrUiInfoObserver = new MutationObserver(function () {
-            scheduleHdrUiInfoScan(120);
-        });
-    }
-
-    function setHdrUiInfoObserverEnabled(enabled) {
-        if (!window.MutationObserver) {
-            return;
-        }
-
-        if (!hdrUiInfoObserver) {
-            initHdrUiInfoObserver();
-        }
-
-        if (!hdrUiInfoObserver) {
-            return;
-        }
-
-        if (enabled) {
-            if (!hdrUiInfoObserverActive) {
-                var targetNode = document.body || document.documentElement;
-                if (targetNode) {
-                    // Use childList for OSD media-info nodes appearing. A low-rate
-                    // fallback scan below catches text-only HDR/DV updates without
-                    // firing on every subtitle/clock characterData mutation.
-                    hdrUiInfoObserver.observe(targetNode, {
-                        childList: true,
-                        subtree: true
-                    });
-                    hdrUiInfoObserverActive = true;
-                }
-            }
-
-            scheduleHdrUiInfoScan(0);
-            if (hdrUiInfoInitialScanTimer) {
-                clearTimeout(hdrUiInfoInitialScanTimer);
-            }
-            hdrUiInfoInitialScanTimer = setTimeout(function () {
-                hdrUiInfoInitialScanTimer = null;
-                scheduleHdrUiInfoScan(0);
-            }, 400);
-            scheduleHdrUiInfoFallbackScan();
-            return;
-        }
-
-        if (hdrUiInfoObserverActive) {
-            hdrUiInfoObserver.disconnect();
-            hdrUiInfoObserverActive = false;
-        }
-
-        if (hdrUiInfoInitialScanTimer) {
-            clearTimeout(hdrUiInfoInitialScanTimer);
-            hdrUiInfoInitialScanTimer = null;
-        }
-        clearHdrUiInfoScanTimer();
-        clearHdrUiInfoFallbackScanTimer();
-    }
 
     function parseCommaSeparatedList(value) {
         if (!value || typeof value !== 'string') {
@@ -6317,7 +6326,7 @@
     setQualityMenuObserverEnabled(true);
     initPlaybackInfoInterception();
     initHdrUiInfoObserver();
-    setHdrUiInfoObserverEnabled(false);
+    hdrUiInfoObserver.setEnabled(false);
     updatePlaybackDiagnosticsOverlay();
     refreshHdrUiDimming('init');
 })(window.AppInfo, window.DeviceInfo, window.WebOSFeatureOverrides);
