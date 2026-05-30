@@ -152,6 +152,7 @@
     var playbackInfoRequestSequence = 0;
     var latestPlaybackInfoRequestSequence = 0;
     var latestPlaybackInfoRequestItemId = null;
+    var pendingPlaybackInfoDynamicRange = null;
     var playbackDiagnosticsOverlay = null;
     var playbackDiagnosticsRafId = null;
     var playbackDiagnosticsLastRafTs = 0;
@@ -449,7 +450,9 @@
         if (nextState === PlaybackState.PLAYING && previousState !== PlaybackState.PLAYING) {
             startPlaybackStartMaxBitrateForce('playback-start');
             armHdrUiInfoCorrectionWindow('playback-start');
-            applyPendingPlaybackInfoHint();
+            if (!applyPendingPlaybackInfoDynamicRange('playback-start-pending')) {
+                applyPendingPlaybackInfoHint();
+            }
         }
         if (nextState !== PlaybackState.PLAYING) {
             clearPlaybackStartMaxBitrateForce('playback-state-change');
@@ -460,6 +463,7 @@
             playbackInfoPlaybackEpoch++;
             latestPlaybackInfoRequestSequence = playbackInfoRequestSequence;
             latestPlaybackInfoRequestItemId = null;
+            pendingPlaybackInfoDynamicRange = null;
             resetSubtitleTimingState('playback-idle');
         }
 
@@ -752,7 +756,7 @@
         overlay.textContent = [
             'webOS diagnostics',
             'state=' + playbackState + ' range=' + playbackDynamicRange + ' rAF=' + playbackDiagnosticsRafFps + ' rVFC=' + (rVfcSupported ? playbackDiagnosticsVideoFrameFps : 'n/a') + ' delta=' + (rVfcSupported ? playbackDiagnosticsVideoFrameDelta + 'ms' : 'n/a'),
-            'HDR via=' + (playbackDynamicRangeReason || '-') + ' ms=' + formatHdrDetectionHint(hdrDetectionMediaSessionLastHint) + ' pi=' + formatHdrDetectionHint(hdrDetectionPlaybackInfoLastHint) + '/' + hdrDetectionPlaybackInfoCount + ' im=' + formatHdrDetectionHint(hdrDetectionItemMetadataLastHint) + ' ui=' + formatHdrDetectionHint(hdrDetectionPlaybackUiLastHint),
+            'HDR via=' + (playbackDynamicRangeReason || '-') + ' ms=' + formatHdrDetectionHint(hdrDetectionMediaSessionLastHint) + ' pi=' + formatHdrDetectionHint(hdrDetectionPlaybackInfoLastHint) + '/' + hdrDetectionPlaybackInfoCount + ' pend=' + (pendingPlaybackInfoDynamicRange ? formatHdrDetectionHint(pendingPlaybackInfoDynamicRange.hint) : '-') + ' im=' + formatHdrDetectionHint(hdrDetectionItemMetadataLastHint) + ' ui=' + formatHdrDetectionHint(hdrDetectionPlaybackUiLastHint),
             'long=' + formatPlaybackDiagnosticsLongTaskInfo(now) + ' video=' + dimensions + ' t=' + currentTime + ' drop=' + formatPlaybackDiagnosticsNumber(dropped) + '/' + formatPlaybackDiagnosticsNumber(total),
             'ASS canvas=' + getPlaybackDiagnosticsAssCanvasInfo() + ' worker=' + getPlaybackDiagnosticsAssWorkerInfo(),
             'PGS ' + getPlaybackDiagnosticsPgsInfo()
@@ -4490,6 +4494,61 @@
         return true;
     }
 
+    function rememberPendingPlaybackInfoDynamicRange(itemId, mediaSourceId, hint, context, reason) {
+        if (hint !== 'hdr' && hint !== 'sdr') {
+            return;
+        }
+
+        var contextEpoch = context && typeof context.epoch === 'number' ? context.epoch : playbackInfoPlaybackEpoch;
+        var contextSequence = context && typeof context.sequence === 'number' ? context.sequence : 0;
+        if (contextEpoch !== playbackInfoPlaybackEpoch) {
+            return;
+        }
+
+        pendingPlaybackInfoDynamicRange = {
+            epoch: contextEpoch,
+            sequence: contextSequence,
+            itemId: itemId ? itemId.toString() : null,
+            mediaSourceId: mediaSourceId ? mediaSourceId.toString() : null,
+            hint: hint,
+            reason: reason || 'playbackinfo-pending'
+        };
+        debugLog('Pending PlaybackInfo dynamic range stored:', pendingPlaybackInfoDynamicRange);
+    }
+
+    function applyPendingPlaybackInfoDynamicRange(reason) {
+        var pending = pendingPlaybackInfoDynamicRange;
+        if (!pending) {
+            return false;
+        }
+
+        if (pending.epoch !== playbackInfoPlaybackEpoch) {
+            pendingPlaybackInfoDynamicRange = null;
+            return false;
+        }
+
+        if (pending.sequence
+            && latestPlaybackInfoRequestSequence
+            && pending.sequence < latestPlaybackInfoRequestSequence
+            && latestPlaybackInfoRequestItemId
+            && latestPlaybackInfoRequestItemId !== pending.itemId) {
+            pendingPlaybackInfoDynamicRange = null;
+            return false;
+        }
+
+        if (currentMediaSessionItemId && pending.itemId && currentMediaSessionItemId !== pending.itemId) {
+            pendingPlaybackInfoDynamicRange = null;
+            return false;
+        }
+
+        pendingPlaybackInfoDynamicRange = null;
+        if (pending.itemId) {
+            setCurrentPlaybackItemId(pending.itemId, pending.mediaSourceId, 'item-changed-playbackinfo-pending');
+        }
+        setPlaybackDynamicRange(pending.hint, reason || pending.reason);
+        return true;
+    }
+
     function getDynamicRangeHintFromPlaybackInfoPayload(payload, mediaSourceId) {
         if (!payload || typeof payload !== 'object') {
             return 'unknown';
@@ -4584,6 +4643,13 @@
         hdrDetectionPlaybackInfoLastHint = hint;
         hdrDetectionPlaybackInfoCount++;
         cachePlaybackInfoDynamicRangeHint(itemId, mediaSourceId, hint);
+        if (playbackState !== PlaybackState.PLAYING) {
+            if (playbackState !== PlaybackState.IDLE) {
+                return;
+            }
+            rememberPendingPlaybackInfoDynamicRange(itemId, mediaSourceId, hint, context, reason);
+            return;
+        }
         if (!shouldApplyPlaybackInfoResponse(itemId, mediaSourceId, context)) {
             return;
         }
@@ -5055,6 +5121,36 @@
         };
     }
 
+    function addValuesToList(listValue, valuesToAdd) {
+        var parsed = parseCommaSeparatedList(listValue);
+        var seen = {};
+        var changed = false;
+
+        for (var i = 0; i < parsed.length; i++) {
+            seen[parsed[i].toLowerCase()] = true;
+        }
+
+        for (var j = 0; j < valuesToAdd.length; j++) {
+            var value = valuesToAdd[j];
+            if (!value || seen[value.toLowerCase()]) {
+                continue;
+            }
+
+            parsed.push(value);
+            seen[value.toLowerCase()] = true;
+            changed = true;
+        }
+
+        return {
+            value: parsed.join(','),
+            changed: changed
+        };
+    }
+
+    function getProfileTypeName(value) {
+        return value ? value.toString().toLowerCase() : '';
+    }
+
     function hasH264Codec(codecValue) {
         var codecs = parseCommaSeparatedList(codecValue);
         for (var i = 0; i < codecs.length; i++) {
@@ -5064,6 +5160,27 @@
             }
         }
         return false;
+    }
+
+    function getDirectPlayVideoCodecMap(profile) {
+        var result = {};
+        if (!profile || !profile.DirectPlayProfiles) {
+            return result;
+        }
+
+        for (var i = 0; i < profile.DirectPlayProfiles.length; i++) {
+            var directPlayProfile = profile.DirectPlayProfiles[i];
+            if (!directPlayProfile || getProfileTypeName(directPlayProfile.Type) !== 'video') {
+                continue;
+            }
+
+            var codecs = parseCommaSeparatedList(directPlayProfile.VideoCodec);
+            for (var j = 0; j < codecs.length; j++) {
+                result[codecs[j].toLowerCase()] = true;
+            }
+        }
+
+        return result;
     }
 
     function hasIsInterlacedCondition(conditions) {
@@ -5182,6 +5299,44 @@
         }
     }
 
+    function patchVideoTranscodingProfilesForAudioOnlyTranscode(profile) {
+        if (!profile || !profile.TranscodingProfiles || !profile.TranscodingProfiles.length) {
+            return;
+        }
+
+        var directPlayVideoCodecs = getDirectPlayVideoCodecMap(profile);
+        var copyVideoCodecs = [];
+        var candidates = ['hevc', 'h265'];
+        for (var i = 0; i < candidates.length; i++) {
+            var candidate = candidates[i];
+            if (directPlayVideoCodecs[candidate]) {
+                copyVideoCodecs.push(candidate);
+            }
+        }
+
+        if (!copyVideoCodecs.length) {
+            return;
+        }
+
+        var patchedProfiles = 0;
+        for (var j = 0; j < profile.TranscodingProfiles.length; j++) {
+            var transcodingProfile = profile.TranscodingProfiles[j];
+            if (!transcodingProfile || getProfileTypeName(transcodingProfile.Type) !== 'video') {
+                continue;
+            }
+
+            var result = addValuesToList(transcodingProfile.VideoCodec, copyVideoCodecs);
+            if (result.changed) {
+                transcodingProfile.VideoCodec = result.value;
+                patchedProfiles++;
+            }
+        }
+
+        if (patchedProfiles) {
+            debugLog('Allowed direct-stream video copy for audio-only transcode profile(s):', patchedProfiles);
+        }
+    }
+
     function applyPlaybackCompatibilityProfilePatches(profile) {
         if (!profile || typeof profile !== 'object') {
             return profile;
@@ -5189,6 +5344,7 @@
 
         patchDirectPlayProfilesForProblematicFormats(profile);
         patchH264InterlaceSupport(profile);
+        patchVideoTranscodingProfilesForAudioOnlyTranscode(profile);
         return profile;
     }
 
