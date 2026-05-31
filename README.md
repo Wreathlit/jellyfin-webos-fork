@@ -7,8 +7,15 @@ problems that are hard to solve from the server alone.
 The main local patch surface is:
 
 - `frontend/js/index.js`
+- `frontend/js/injected/`
 - `frontend/js/webOS.js`
 - `frontend/css/webOS.css`
+
+`frontend/js/injected/` is the behavior-preserving modular runtime used by the
+iframe injection path. Its current `core/features.js` registry owns boolean
+feature metadata such as storage keys, defaults, and settings text. HDR
+brightness and subtitle opacity sliders are still persisted separately because
+they are numeric display settings, not boolean feature flags.
 
 ## Why this fork exists
 

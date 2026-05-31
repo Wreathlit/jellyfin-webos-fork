@@ -23,6 +23,45 @@
         console.warn.apply(console, arguments);
     }
 
+    var webOSPatchRuntime = window.__JellyfinWebOSPatchRuntime || null;
+    var webOSFeatureRegistry = webOSPatchRuntime && webOSPatchRuntime.get
+        ? webOSPatchRuntime.get('core.features')
+        : null;
+
+    function getRegisteredFeatureStorageKey(key, fallback) {
+        return webOSFeatureRegistry && webOSFeatureRegistry.getStorageKey
+            ? webOSFeatureRegistry.getStorageKey(key, fallback)
+            : fallback;
+    }
+
+    function getRegisteredFeatureDefault(key, fallback) {
+        return webOSFeatureRegistry && webOSFeatureRegistry.getDefaultValue
+            ? webOSFeatureRegistry.getDefaultValue(key, fallback)
+            : !!fallback;
+    }
+
+    function getRegisteredInitialFeatureValue(key, fallback) {
+        return webOSFeatureRegistry && webOSFeatureRegistry.getInitialBooleanValue
+            ? webOSFeatureRegistry.getInitialBooleanValue(key, featureOverrides, fallback)
+            : featureOverrides && typeof featureOverrides[key] === 'boolean' ? featureOverrides[key] : !!fallback;
+    }
+
+    function getRegisteredBooleanFeatureDefinition(key) {
+        return webOSFeatureRegistry && webOSFeatureRegistry.getBooleanDefinition
+            ? webOSFeatureRegistry.getBooleanDefinition(key)
+            : null;
+    }
+
+    function getRegisteredFeatureTitle(key, fallback) {
+        var definition = getRegisteredBooleanFeatureDefinition(key);
+        return definition && definition.title ? definition.title : fallback;
+    }
+
+    function getRegisteredFeatureDescription(key, fallback) {
+        var definition = getRegisteredBooleanFeatureDefinition(key);
+        return definition && definition.description ? definition.description : fallback;
+    }
+
     debugLog('WebOS adapter');
     var PlaybackState = {
         IDLE: 'idle',
@@ -64,9 +103,9 @@
     var SETTINGS_INJECTION_MAX_RETRIES = 20;
     var SETTINGS_INJECTION_MUTATION_DELAY = 200;
     var HDR_SETTINGS_PERSIST_DELAY = 500;
-    var PLAYBACK_DIAGNOSTICS_KEY = 'webos_playback_diagnostics_overlay';
-    var DISABLE_ASS_RENDER_AHEAD_KEY = 'webos_disable_ass_render_ahead';
-    var ASS_TIME_SYNC_FIX_KEY = 'webos_ass_time_sync_fix';
+    var PLAYBACK_DIAGNOSTICS_KEY = getRegisteredFeatureStorageKey('playbackDiagnosticsEnabled', 'webos_playback_diagnostics_overlay');
+    var DISABLE_ASS_RENDER_AHEAD_KEY = getRegisteredFeatureStorageKey('disableAssRenderAhead', 'webos_disable_ass_render_ahead');
+    var ASS_TIME_SYNC_FIX_KEY = getRegisteredFeatureStorageKey('assTimeSyncFixEnabled', 'webos_ass_time_sync_fix');
     var ASS_RENDER_AHEAD_LIMIT_MIB = 0;
     var ASS_TIME_SYNC_BACKWARD_TOLERANCE_SECONDS = 0.03;
     var ASS_TIME_SYNC_SEEK_BACK_SECONDS = 0.75;
@@ -75,11 +114,11 @@
     var SCRIPT_PATCH_SPECULATIVE_FETCH_TIMEOUT_MS = 750;
     var SCRIPT_PATCH_EARLY_INSPECT_WINDOW_MS = 30000;
     var SCRIPT_PATCH_EARLY_INSPECT_LIMIT = 4;
-    var PGS_FORCE_MAIN_THREAD_KEY = 'webos_pgs_force_main_thread';
-    var PGS_PATCH_OBJECT_REUSE_KEY = 'webos_pgs_patch_object_reuse';
-    var LPCM_AUDIO_COPY_KEY = 'webos_lpcm_audio_copy';
-    var DEFAULT_PGS_FORCE_MAIN_THREAD = true;
-    var DEFAULT_PGS_PATCH_OBJECT_REUSE = true;
+    var PGS_FORCE_MAIN_THREAD_KEY = getRegisteredFeatureStorageKey('pgsForceMainThread', 'webos_pgs_force_main_thread');
+    var PGS_PATCH_OBJECT_REUSE_KEY = getRegisteredFeatureStorageKey('pgsPatchObjectReuse', 'webos_pgs_patch_object_reuse');
+    var LPCM_AUDIO_COPY_KEY = getRegisteredFeatureStorageKey('lpcmAudioCopyEnabled', 'webos_lpcm_audio_copy');
+    var DEFAULT_PGS_FORCE_MAIN_THREAD = getRegisteredFeatureDefault('pgsForceMainThread', true);
+    var DEFAULT_PGS_PATCH_OBJECT_REUSE = getRegisteredFeatureDefault('pgsPatchObjectReuse', true);
     var LPCM_AUDIO_COPY_CODECS = [
         'pcm_s16le',
         'pcm_s24le',
@@ -125,12 +164,12 @@
         '.itemAction',
         '.emby-button'
     ].join(',');
-    var playbackDiagnosticsEnabled = !!(featureOverrides && featureOverrides.playbackDiagnosticsEnabled);
-    var disableAssRenderAhead = featureOverrides && typeof featureOverrides.disableAssRenderAhead === 'boolean' ? featureOverrides.disableAssRenderAhead : true;
-    var assTimeSyncFixEnabled = featureOverrides && typeof featureOverrides.assTimeSyncFixEnabled === 'boolean' ? featureOverrides.assTimeSyncFixEnabled : true;
-    var pgsForceMainThread = featureOverrides && typeof featureOverrides.pgsForceMainThread === 'boolean' ? featureOverrides.pgsForceMainThread : DEFAULT_PGS_FORCE_MAIN_THREAD;
-    var pgsPatchObjectReuse = featureOverrides && typeof featureOverrides.pgsPatchObjectReuse === 'boolean' ? featureOverrides.pgsPatchObjectReuse : DEFAULT_PGS_PATCH_OBJECT_REUSE;
-    var lpcmAudioCopyEnabled = featureOverrides && typeof featureOverrides.lpcmAudioCopyEnabled === 'boolean' ? featureOverrides.lpcmAudioCopyEnabled : false;
+    var playbackDiagnosticsEnabled = getRegisteredInitialFeatureValue('playbackDiagnosticsEnabled', false);
+    var disableAssRenderAhead = getRegisteredInitialFeatureValue('disableAssRenderAhead', true);
+    var assTimeSyncFixEnabled = getRegisteredInitialFeatureValue('assTimeSyncFixEnabled', true);
+    var pgsForceMainThread = getRegisteredInitialFeatureValue('pgsForceMainThread', DEFAULT_PGS_FORCE_MAIN_THREAD);
+    var pgsPatchObjectReuse = getRegisteredInitialFeatureValue('pgsPatchObjectReuse', DEFAULT_PGS_PATCH_OBJECT_REUSE);
+    var lpcmAudioCopyEnabled = getRegisteredInitialFeatureValue('lpcmAudioCopyEnabled', false);
     var hdrUiDimBrightness = HDR_UI_DIM_DEFAULT_BRIGHTNESS;
     var hdrSubtitleOpacity = HDR_SUBTITLE_DEFAULT_OPACITY;
     var HDR_UI_DIM_CLASS = 'webos-hdr-ui-dim';
@@ -999,6 +1038,21 @@
         return fallback;
     }
 
+    function loadRegisteredBooleanFeature(key, storageKey, fallback) {
+        if (webOSFeatureRegistry && webOSFeatureRegistry.loadBooleanValue) {
+            return webOSFeatureRegistry.loadBooleanValue(key, localStorage, fallback);
+        }
+        return parseStoredBoolean(localStorage.getItem(storageKey), fallback);
+    }
+
+    function saveRegisteredBooleanFeature(key, storageKey, value) {
+        if (webOSFeatureRegistry && webOSFeatureRegistry.saveBooleanValue) {
+            webOSFeatureRegistry.saveBooleanValue(key, localStorage, value);
+            return;
+        }
+        localStorage.setItem(storageKey, value ? 'true' : 'false');
+    }
+
     function parseStoredNumber(value, fallback, min, max) {
         if (value === null || value === undefined || value === '') {
             return fallback;
@@ -1615,12 +1669,12 @@
             if (!window.localStorage) {
                 return;
             }
-            playbackDiagnosticsEnabled = parseStoredBoolean(localStorage.getItem(PLAYBACK_DIAGNOSTICS_KEY), playbackDiagnosticsEnabled);
-            disableAssRenderAhead = parseStoredBoolean(localStorage.getItem(DISABLE_ASS_RENDER_AHEAD_KEY), disableAssRenderAhead);
-            assTimeSyncFixEnabled = parseStoredBoolean(localStorage.getItem(ASS_TIME_SYNC_FIX_KEY), assTimeSyncFixEnabled);
-            pgsForceMainThread = parseStoredBoolean(localStorage.getItem(PGS_FORCE_MAIN_THREAD_KEY), pgsForceMainThread);
-            pgsPatchObjectReuse = parseStoredBoolean(localStorage.getItem(PGS_PATCH_OBJECT_REUSE_KEY), pgsPatchObjectReuse);
-            lpcmAudioCopyEnabled = parseStoredBoolean(localStorage.getItem(LPCM_AUDIO_COPY_KEY), lpcmAudioCopyEnabled);
+            playbackDiagnosticsEnabled = loadRegisteredBooleanFeature('playbackDiagnosticsEnabled', PLAYBACK_DIAGNOSTICS_KEY, playbackDiagnosticsEnabled);
+            disableAssRenderAhead = loadRegisteredBooleanFeature('disableAssRenderAhead', DISABLE_ASS_RENDER_AHEAD_KEY, disableAssRenderAhead);
+            assTimeSyncFixEnabled = loadRegisteredBooleanFeature('assTimeSyncFixEnabled', ASS_TIME_SYNC_FIX_KEY, assTimeSyncFixEnabled);
+            pgsForceMainThread = loadRegisteredBooleanFeature('pgsForceMainThread', PGS_FORCE_MAIN_THREAD_KEY, pgsForceMainThread);
+            pgsPatchObjectReuse = loadRegisteredBooleanFeature('pgsPatchObjectReuse', PGS_PATCH_OBJECT_REUSE_KEY, pgsPatchObjectReuse);
+            lpcmAudioCopyEnabled = loadRegisteredBooleanFeature('lpcmAudioCopyEnabled', LPCM_AUDIO_COPY_KEY, lpcmAudioCopyEnabled);
         } catch (error) {
             warnLog('Failed to load persisted webOS diagnostics settings:', error);
         }
@@ -1631,12 +1685,12 @@
             if (!window.localStorage) {
                 return;
             }
-            localStorage.setItem(PLAYBACK_DIAGNOSTICS_KEY, playbackDiagnosticsEnabled ? 'true' : 'false');
-            localStorage.setItem(DISABLE_ASS_RENDER_AHEAD_KEY, disableAssRenderAhead ? 'true' : 'false');
-            localStorage.setItem(ASS_TIME_SYNC_FIX_KEY, assTimeSyncFixEnabled ? 'true' : 'false');
-            localStorage.setItem(PGS_FORCE_MAIN_THREAD_KEY, pgsForceMainThread ? 'true' : 'false');
-            localStorage.setItem(PGS_PATCH_OBJECT_REUSE_KEY, pgsPatchObjectReuse ? 'true' : 'false');
-            localStorage.setItem(LPCM_AUDIO_COPY_KEY, lpcmAudioCopyEnabled ? 'true' : 'false');
+            saveRegisteredBooleanFeature('playbackDiagnosticsEnabled', PLAYBACK_DIAGNOSTICS_KEY, playbackDiagnosticsEnabled);
+            saveRegisteredBooleanFeature('disableAssRenderAhead', DISABLE_ASS_RENDER_AHEAD_KEY, disableAssRenderAhead);
+            saveRegisteredBooleanFeature('assTimeSyncFixEnabled', ASS_TIME_SYNC_FIX_KEY, assTimeSyncFixEnabled);
+            saveRegisteredBooleanFeature('pgsForceMainThread', PGS_FORCE_MAIN_THREAD_KEY, pgsForceMainThread);
+            saveRegisteredBooleanFeature('pgsPatchObjectReuse', PGS_PATCH_OBJECT_REUSE_KEY, pgsPatchObjectReuse);
+            saveRegisteredBooleanFeature('lpcmAudioCopyEnabled', LPCM_AUDIO_COPY_KEY, lpcmAudioCopyEnabled);
         } catch (error) {
             warnLog('Failed to save webOS diagnostics settings:', error);
         }
@@ -1715,14 +1769,17 @@
     }
 
     function emitFeatureOverridesChanged() {
-        postMessage('WebOS.featureOverrides', {
+        var values = {
             playbackDiagnosticsEnabled: !!playbackDiagnosticsEnabled,
             disableAssRenderAhead: !!disableAssRenderAhead,
             assTimeSyncFixEnabled: !!assTimeSyncFixEnabled,
             pgsForceMainThread: !!pgsForceMainThread,
             pgsPatchObjectReuse: !!pgsPatchObjectReuse,
             lpcmAudioCopyEnabled: !!lpcmAudioCopyEnabled
-        });
+        };
+        postMessage('WebOS.featureOverrides', webOSFeatureRegistry && webOSFeatureRegistry.createOverridePayload
+            ? webOSFeatureRegistry.createOverridePayload(values)
+            : values);
     }
 
     function syncAssRendererOptions() {
@@ -3055,8 +3112,8 @@
         if (!lpcmAudioCopyContainer) {
             lpcmAudioCopyContainer = createWebOSCheckboxControlContainer(
                 'chkWebOSLpcmAudioCopy',
-                'webOS: Allow LPCM/PCM audio copy',
-                'Experimental. Adds Blu-ray/DVD LPCM and common PCM codecs to video direct-play audio codec lists. Enable only when ARC/eARC and the receiver can handle multichannel PCM. Restart playback after changing.'
+                getRegisteredFeatureTitle('lpcmAudioCopyEnabled', 'webOS: Allow LPCM/PCM audio copy'),
+                getRegisteredFeatureDescription('lpcmAudioCopyEnabled', 'Experimental. Adds Blu-ray/DVD LPCM and common PCM codecs to video direct-play audio codec lists. Enable only when ARC/eARC and the receiver can handle multichannel PCM. Restart playback after changing.')
             );
         }
         appendControlToGroup(audioGroup, lpcmAudioCopyContainer);
@@ -3064,15 +3121,15 @@
         if (!assRenderAheadContainer) {
             assRenderAheadContainer = createWebOSCheckboxControlContainer(
                 'chkWebOSDisableAssRenderAhead',
-                'webOS: Disable ASS render-ahead',
-                'Disables Jellyfin/libass-wasm one-shot prerender cache on webOS. This avoids cached ASS animation frames being replayed out of sync. Restart playback after changing.'
+                getRegisteredFeatureTitle('disableAssRenderAhead', 'webOS: Disable ASS render-ahead'),
+                getRegisteredFeatureDescription('disableAssRenderAhead', 'Disables Jellyfin/libass-wasm one-shot prerender cache on webOS. This avoids cached ASS animation frames being replayed out of sync. Restart playback after changing.')
             );
         }
         if (!assTimeSyncContainer) {
             assTimeSyncContainer = createWebOSCheckboxControlContainer(
                 'chkWebOSAssTimeSyncFix',
-                'webOS: Fix ASS time rollback',
-                'Clamps small backward video-time samples sent to libass on webOS. Takes effect immediately for new worker messages; restart playback if unsure.'
+                getRegisteredFeatureTitle('assTimeSyncFixEnabled', 'webOS: Fix ASS time rollback'),
+                getRegisteredFeatureDescription('assTimeSyncFixEnabled', 'Clamps small backward video-time samples sent to libass on webOS. Takes effect immediately for new worker messages; restart playback if unsure.')
             );
         }
         appendControlToGroup(assGroup, assTimeSyncContainer);
@@ -3081,16 +3138,16 @@
         if (!diagnosticsContainer) {
             diagnosticsContainer = createWebOSCheckboxControlContainer(
                 'chkWebOSPlaybackDiagnostics',
-                'webOS: Playback diagnostics overlay',
-                'Shows rAF, video-frame callback, video quality, and timing data on top of playback.'
+                getRegisteredFeatureTitle('playbackDiagnosticsEnabled', 'webOS: Playback diagnostics overlay'),
+                getRegisteredFeatureDescription('playbackDiagnosticsEnabled', 'Shows rAF, video-frame callback, video quality, and timing data on top of playback.')
             );
         }
 
         if (!pgsForceMainThreadContainer) {
             pgsForceMainThreadContainer = createWebOSCheckboxControlContainer(
                 'chkWebOSPgsForceMainThread',
-                'webOS: Force PGS main-thread renderer',
-                'Diagnostic switch for PGS stale-text tests. Restart playback after changing; restart the app for a clean script-load test.'
+                getRegisteredFeatureTitle('pgsForceMainThread', 'webOS: Force PGS main-thread renderer'),
+                getRegisteredFeatureDescription('pgsForceMainThread', 'Diagnostic switch for PGS stale-text tests. Restart playback after changing; restart the app for a clean script-load test.')
             );
         }
         appendControlToGroup(pgsGroup, pgsForceMainThreadContainer);
@@ -3098,8 +3155,8 @@
         if (!pgsPatchObjectReuseContainer) {
             pgsPatchObjectReuseContainer = createWebOSCheckboxControlContainer(
                 'chkWebOSPgsPatchObjectReuse',
-                'webOS: Patch PGS object reuse',
-                'Diagnostic switch for reused PGS object ids. Uses the newest ODS sequence when enabled. Restart playback after changing.'
+                getRegisteredFeatureTitle('pgsPatchObjectReuse', 'webOS: Patch PGS object reuse'),
+                getRegisteredFeatureDescription('pgsPatchObjectReuse', 'Diagnostic switch for reused PGS object ids. Uses the newest ODS sequence when enabled. Restart playback after changing.')
             );
         }
         appendControlToGroup(pgsGroup, pgsPatchObjectReuseContainer);

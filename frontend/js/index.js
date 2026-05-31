@@ -568,18 +568,38 @@ function loadUrl(url, success, failure) {
 var injectBundleCache = null;
 var activeHandoffCleanup = null;
 var HANDOFF_INJECTION_TIMEOUT_MS = 45000;
+var injectedScriptUrls = [
+    'js/injected/core/runtime.js',
+    'js/injected/core/features.js',
+    'js/webOS.js'
+];
+var injectedStyleUrls = [
+    'css/webOS.css'
+];
 
 function getTextToInject(success, failure) {
     if (injectBundleCache) {
         // Local app assets never change at runtime; reuse the first load
-        // instead of re-fetching webOS.js/webOS.css on every (re)connect.
+        // instead of re-fetching injected JS/CSS on every (re)connect.
         success(injectBundleCache);
         return;
     }
 
     var bundle = {};
 
-    var urls = ['js/webOS.js', 'css/webOS.css'];
+    var urls = [];
+    for (var scriptIndex = 0; scriptIndex < injectedScriptUrls.length; scriptIndex++) {
+        urls.push({
+            url: injectedScriptUrls[scriptIndex],
+            type: 'js'
+        });
+    }
+    for (var styleIndex = 0; styleIndex < injectedStyleUrls.length; styleIndex++) {
+        urls.push({
+            url: injectedStyleUrls[styleIndex],
+            type: 'css'
+        });
+    }
 
     // imitate promises as they're borked in at least WebOS 2
     var looper = function (idx) {
@@ -587,10 +607,10 @@ function getTextToInject(success, failure) {
             injectBundleCache = bundle;
             success(bundle);
         } else {
-            var url = urls[idx];
-            var ext = url.split('.').pop();
-            loadUrl(url, function (data) {
-                bundle[ext] = (bundle[ext] || '') + data;
+            var asset = urls[idx];
+            loadUrl(asset.url, function (data) {
+                var separator = asset.type === 'js' ? '\n;\n' : '\n';
+                bundle[asset.type] = (bundle[asset.type] || '') + data + separator;
                 looper(idx + 1);
             }, failure);
         }

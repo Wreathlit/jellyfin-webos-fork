@@ -1,10 +1,11 @@
 # webOS Container Refactor Assessment
 
-This note records the current refactor idea and the current decision to defer
-large structural work until the requirements are clearer.
+This note records the now-started behavior-preserving module refactor and the
+current decision to keep deferring a full Jellyfin client rewrite.
 
-It is intentionally a planning document. It does not mean the refactor has been
-accepted for implementation.
+It is intentionally a planning and tracking document. The accepted work is the
+incremental injected-runtime split; it does not mean a new standalone client has
+been accepted for implementation.
 
 ## Current Shape
 
@@ -138,11 +139,22 @@ runtime patch layer.
 
 ## Current Decision
 
-Do not start the large refactor yet.
+The large client rewrite is still out of scope, but the behavior-preserving
+module refactor has started. The first accepted direction is to keep the hosted
+Jellyfin Web iframe and split the injected compatibility layer into ordered ES5
+runtime modules.
 
-Keep the current implementation, document the boundaries, and only perform a
-small bitrate-control migration if LAN direct-play failures continue after
-checking server logs and real-device traces.
+Current migration constraints:
+
+- preserve existing storage keys and feature defaults;
+- keep `frontend/js/webOS.js` behavior available while pure logic and registries
+  are extracted;
+- avoid changing ASS/PGS renderer behavior during early infrastructure stages;
+- add low-cost Node checks for injected asset manifests and pure decision
+  logic before moving larger runtime hooks.
+
+Continue to prefer narrow behavior-preserving changes. Only reconsider a full
+client rewrite if the iframe-based patch model itself becomes the blocker.
 
 Useful failure classification:
 
