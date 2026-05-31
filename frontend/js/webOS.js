@@ -77,8 +77,15 @@
     var SCRIPT_PATCH_EARLY_INSPECT_LIMIT = 4;
     var PGS_FORCE_MAIN_THREAD_KEY = 'webos_pgs_force_main_thread';
     var PGS_PATCH_OBJECT_REUSE_KEY = 'webos_pgs_patch_object_reuse';
+    var LPCM_AUDIO_COPY_KEY = 'webos_lpcm_audio_copy';
     var DEFAULT_PGS_FORCE_MAIN_THREAD = true;
     var DEFAULT_PGS_PATCH_OBJECT_REUSE = true;
+    var LPCM_AUDIO_COPY_CODECS = [
+        'pcm_s16le',
+        'pcm_s24le',
+        'pcm_bluray',
+        'pcm_dvd'
+    ];
     var HDR_UI_DIM_BRIGHTNESS_KEY = 'webos_hdr_ui_dim_brightness';
     var HDR_UI_DIM_DEFAULT_BRIGHTNESS = 0.3;
     var HDR_UI_DIM_MIN_BRIGHTNESS = 0.05;
@@ -123,11 +130,14 @@
     var assTimeSyncFixEnabled = featureOverrides && typeof featureOverrides.assTimeSyncFixEnabled === 'boolean' ? featureOverrides.assTimeSyncFixEnabled : true;
     var pgsForceMainThread = featureOverrides && typeof featureOverrides.pgsForceMainThread === 'boolean' ? featureOverrides.pgsForceMainThread : DEFAULT_PGS_FORCE_MAIN_THREAD;
     var pgsPatchObjectReuse = featureOverrides && typeof featureOverrides.pgsPatchObjectReuse === 'boolean' ? featureOverrides.pgsPatchObjectReuse : DEFAULT_PGS_PATCH_OBJECT_REUSE;
+    var lpcmAudioCopyEnabled = featureOverrides && typeof featureOverrides.lpcmAudioCopyEnabled === 'boolean' ? featureOverrides.lpcmAudioCopyEnabled : false;
     var hdrUiDimBrightness = HDR_UI_DIM_DEFAULT_BRIGHTNESS;
     var hdrSubtitleOpacity = HDR_SUBTITLE_DEFAULT_OPACITY;
     var HDR_UI_DIM_CLASS = 'webos-hdr-ui-dim';
     var playbackDynamicRange = 'unknown';
     var playbackDynamicRangeReason = null;
+    var playbackVideoDelivery = 'unknown';
+    var playbackVideoDeliveryReason = null;
     var hdrDetectionMediaSessionLastHint = 'unknown';
     var hdrDetectionPlaybackInfoLastHint = 'unknown';
     var hdrDetectionItemMetadataLastHint = 'unknown';
@@ -170,6 +180,7 @@
     var MEDIA_DYNAMIC_RANGE_CACHE_LIMIT = 64;
     var mediaItemDynamicRangeInFlight = {};
     var playbackInfoDynamicRangeHints = {};
+    var playbackInfoVideoDeliveryHints = {};
     var playbackInfoInterceptionInitialized = false;
     var playbackInfoPlaybackEpoch = 0;
     var playbackInfoRequestSequence = 0;
@@ -586,6 +597,7 @@
 
         if (nextState === PlaybackState.IDLE) {
             setCurrentPlaybackItemId(null, null);
+            setPlaybackVideoDelivery('unknown', 'playback-idle');
             setPlaybackDynamicRange('unknown', 'playback-idle');
         } else {
             refreshHdrUiDimming('playback-state');
@@ -874,7 +886,7 @@
 
         overlay.textContent = [
             'webOS diagnostics',
-            'state=' + playbackState + ' range=' + playbackDynamicRange + ' rAF=' + playbackDiagnosticsRafFps + ' rVFC=' + (rVfcSupported ? playbackDiagnosticsVideoFrameFps : 'n/a') + ' delta=' + (rVfcSupported ? playbackDiagnosticsVideoFrameDelta + 'ms' : 'n/a'),
+            'state=' + playbackState + ' range=' + playbackDynamicRange + ' video=' + playbackVideoDelivery + '(' + (playbackVideoDeliveryReason || '-') + ')' + ' rAF=' + playbackDiagnosticsRafFps + ' rVFC=' + (rVfcSupported ? playbackDiagnosticsVideoFrameFps : 'n/a') + ' delta=' + (rVfcSupported ? playbackDiagnosticsVideoFrameDelta + 'ms' : 'n/a'),
             'HDR via=' + (playbackDynamicRangeReason || '-') + ' ms=' + formatHdrDetectionHint(hdrDetectionMediaSessionLastHint) + ' pi=' + formatHdrDetectionHint(hdrDetectionPlaybackInfoLastHint) + '/' + hdrDetectionPlaybackInfoCount + ' pend=' + (pendingPlaybackInfoDynamicRange ? formatHdrDetectionHint(pendingPlaybackInfoDynamicRange.hint) : '-') + ' im=' + formatHdrDetectionHint(hdrDetectionItemMetadataLastHint) + ' ui=' + formatHdrDetectionHint(hdrDetectionPlaybackUiLastHint),
             'long=' + formatPlaybackDiagnosticsLongTaskInfo(now) + ' video=' + dimensions + ' t=' + currentTime + ' drop=' + formatPlaybackDiagnosticsNumber(dropped) + '/' + formatPlaybackDiagnosticsNumber(total),
             'ASS canvas=' + getPlaybackDiagnosticsAssCanvasInfo() + ' worker=' + getPlaybackDiagnosticsAssWorkerInfo(),
@@ -1608,6 +1620,7 @@
             assTimeSyncFixEnabled = parseStoredBoolean(localStorage.getItem(ASS_TIME_SYNC_FIX_KEY), assTimeSyncFixEnabled);
             pgsForceMainThread = parseStoredBoolean(localStorage.getItem(PGS_FORCE_MAIN_THREAD_KEY), pgsForceMainThread);
             pgsPatchObjectReuse = parseStoredBoolean(localStorage.getItem(PGS_PATCH_OBJECT_REUSE_KEY), pgsPatchObjectReuse);
+            lpcmAudioCopyEnabled = parseStoredBoolean(localStorage.getItem(LPCM_AUDIO_COPY_KEY), lpcmAudioCopyEnabled);
         } catch (error) {
             warnLog('Failed to load persisted webOS diagnostics settings:', error);
         }
@@ -1623,6 +1636,7 @@
             localStorage.setItem(ASS_TIME_SYNC_FIX_KEY, assTimeSyncFixEnabled ? 'true' : 'false');
             localStorage.setItem(PGS_FORCE_MAIN_THREAD_KEY, pgsForceMainThread ? 'true' : 'false');
             localStorage.setItem(PGS_PATCH_OBJECT_REUSE_KEY, pgsPatchObjectReuse ? 'true' : 'false');
+            localStorage.setItem(LPCM_AUDIO_COPY_KEY, lpcmAudioCopyEnabled ? 'true' : 'false');
         } catch (error) {
             warnLog('Failed to save webOS diagnostics settings:', error);
         }
@@ -1692,13 +1706,22 @@
         });
     }
 
+    function setLpcmAudioCopyEnabled(enabled, reason) {
+        setFeatureFlag(enabled, reason, {
+            getValue: function () { return lpcmAudioCopyEnabled; },
+            setValue: function (v) { lpcmAudioCopyEnabled = v; },
+            debugLabel: 'LPCM/PCM audio copy'
+        });
+    }
+
     function emitFeatureOverridesChanged() {
         postMessage('WebOS.featureOverrides', {
             playbackDiagnosticsEnabled: !!playbackDiagnosticsEnabled,
             disableAssRenderAhead: !!disableAssRenderAhead,
             assTimeSyncFixEnabled: !!assTimeSyncFixEnabled,
             pgsForceMainThread: !!pgsForceMainThread,
-            pgsPatchObjectReuse: !!pgsPatchObjectReuse
+            pgsPatchObjectReuse: !!pgsPatchObjectReuse,
+            lpcmAudioCopyEnabled: !!lpcmAudioCopyEnabled
         });
     }
 
@@ -3006,11 +3029,13 @@
         }
 
         var hdrGroup = ensureWebOSSettingsGroup(settingsRoot, 'webos-settings-group-hdr', 'webOS HDR UI');
+        var audioGroup = ensureWebOSSettingsGroup(settingsRoot, 'webos-settings-group-audio', 'webOS audio');
         var assGroup = ensureWebOSSettingsGroup(settingsRoot, 'webos-settings-group-ass', 'webOS ASS subtitles');
         var pgsGroup = ensureWebOSSettingsGroup(settingsRoot, 'webos-settings-group-pgs', 'webOS PGS subtitles');
         var diagnosticsGroup = ensureWebOSSettingsGroup(settingsRoot, 'webos-settings-group-diagnostics', 'webOS diagnostics');
         var hdrDimContainer = getControlContainerBySelector('.webosHdrUiDimSlider');
         var hdrSubtitleOpacityContainer = getControlContainerBySelector('.webosHdrSubtitleOpacitySlider');
+        var lpcmAudioCopyContainer = getControlContainerBySelector('.chkWebOSLpcmAudioCopy');
         var assTimeSyncContainer = getControlContainerBySelector('.chkWebOSAssTimeSyncFix');
         var assRenderAheadContainer = getControlContainerBySelector('.chkWebOSDisableAssRenderAhead');
         var diagnosticsContainer = getControlContainerBySelector('.chkWebOSPlaybackDiagnostics');
@@ -3026,6 +3051,15 @@
             hdrSubtitleOpacityContainer = createHdrSubtitleOpacityControlContainer();
         }
         appendControlToGroup(hdrGroup, hdrSubtitleOpacityContainer);
+
+        if (!lpcmAudioCopyContainer) {
+            lpcmAudioCopyContainer = createWebOSCheckboxControlContainer(
+                'chkWebOSLpcmAudioCopy',
+                'webOS: Allow LPCM/PCM audio copy',
+                'Experimental. Adds Blu-ray/DVD LPCM and common PCM codecs to video direct-play audio codec lists. Enable only when ARC/eARC and the receiver can handle multichannel PCM. Restart playback after changing.'
+            );
+        }
+        appendControlToGroup(audioGroup, lpcmAudioCopyContainer);
 
         if (!assRenderAheadContainer) {
             assRenderAheadContainer = createWebOSCheckboxControlContainer(
@@ -3071,11 +3105,22 @@
         appendControlToGroup(pgsGroup, pgsPatchObjectReuseContainer);
         appendControlToGroup(diagnosticsGroup, diagnosticsContainer);
 
+        var lpcmAudioCopyCheckbox = document.querySelector('.chkWebOSLpcmAudioCopy');
         var assTimeSyncCheckbox = document.querySelector('.chkWebOSAssTimeSyncFix');
         var assRenderAheadCheckbox = document.querySelector('.chkWebOSDisableAssRenderAhead');
         var diagnosticsCheckbox = document.querySelector('.chkWebOSPlaybackDiagnostics');
         var pgsForceMainThreadCheckbox = document.querySelector('.chkWebOSPgsForceMainThread');
         var pgsPatchObjectReuseCheckbox = document.querySelector('.chkWebOSPgsPatchObjectReuse');
+
+        if (lpcmAudioCopyCheckbox) {
+            lpcmAudioCopyCheckbox.checked = !!lpcmAudioCopyEnabled;
+            if (lpcmAudioCopyCheckbox.getAttribute('data-webos-init') !== 'true') {
+                lpcmAudioCopyCheckbox.addEventListener('change', function () {
+                    setLpcmAudioCopyEnabled(lpcmAudioCopyCheckbox.checked, 'settings-page');
+                });
+                lpcmAudioCopyCheckbox.setAttribute('data-webos-init', 'true');
+            }
+        }
 
         if (assTimeSyncCheckbox) {
             assTimeSyncCheckbox.checked = !!assTimeSyncFixEnabled;
@@ -3140,6 +3185,7 @@
 
         if (document.querySelector('.webosHdrUiDimSlider')
             && document.querySelector('.webosHdrSubtitleOpacitySlider')
+            && document.querySelector('.chkWebOSLpcmAudioCopy')
             && document.querySelector('.chkWebOSAssTimeSyncFix')
             && document.querySelector('.chkWebOSDisableAssRenderAhead')
             && document.querySelector('.chkWebOSPlaybackDiagnostics')
@@ -3200,16 +3246,6 @@
 
     function hasPlaybackSettingsDom() {
         return !!getPlaybackSettingsAnchor();
-    }
-
-    function hasInjectedWebOSSettingsControls() {
-        return !!(document.querySelector('.webosHdrUiDimSlider')
-            || document.querySelector('.webosHdrSubtitleOpacitySlider')
-            || document.querySelector('.chkWebOSAssTimeSyncFix')
-            || document.querySelector('.chkWebOSDisableAssRenderAhead')
-            || document.querySelector('.chkWebOSPlaybackDiagnostics')
-            || document.querySelector('.chkWebOSPgsForceMainThread')
-            || document.querySelector('.chkWebOSPgsPatchObjectReuse'));
     }
 
     function elementMatchesSelector(element, selector) {
@@ -3850,6 +3886,13 @@
 
         var itemId = currentMediaSessionItemId || latestPlaybackInfoRequestItemId;
         var mediaSourceId = currentPlaybackMediaSourceId;
+        if (itemId && playbackVideoDelivery === 'unknown') {
+            var cachedVideoDelivery = getCachedPlaybackInfoVideoDeliveryHint(itemId, mediaSourceId);
+            if (cachedVideoDelivery !== 'unknown') {
+                setPlaybackVideoDelivery(cachedVideoDelivery, reason + '-playbackinfo-cache');
+            }
+        }
+
         if (itemId && playbackDynamicRange === 'unknown') {
             var cachedHint = getCachedPlaybackInfoDynamicRangeHint(itemId, mediaSourceId);
             if (cachedHint !== 'unknown') {
@@ -4355,6 +4398,134 @@
         return null;
     }
 
+    function normalizePlaybackVideoDelivery(value) {
+        var normalizedValue = value ? value.toString().toLowerCase() : '';
+        if (normalizedValue === 'directplay'
+            || normalizedValue === 'directstream'
+            || normalizedValue === 'copy'
+            || normalizedValue === 'transcode') {
+            return normalizedValue;
+        }
+        return 'unknown';
+    }
+
+    function isPlaybackVideoCopiedOrDirect(delivery) {
+        delivery = normalizePlaybackVideoDelivery(delivery);
+        return delivery === 'directplay'
+            || delivery === 'directstream'
+            || delivery === 'copy';
+    }
+
+    function getPlaybackInfoMediaSources(payload) {
+        var sources = [];
+        var groups = [
+            payload,
+            payload && payload.Item,
+            payload && payload.item,
+            payload && payload.NowPlayingItem,
+            payload && payload.nowPlayingItem
+        ];
+
+        for (var i = 0; i < groups.length; i++) {
+            var group = groups[i];
+            if (!group || typeof group !== 'object') {
+                continue;
+            }
+
+            var mediaSources = toArray(group.MediaSources || group.mediaSources);
+            for (var j = 0; j < mediaSources.length; j++) {
+                if (sources.indexOf(mediaSources[j]) === -1) {
+                    sources.push(mediaSources[j]);
+                }
+            }
+        }
+
+        return sources;
+    }
+
+    function getSelectedPlaybackInfoMediaSource(payload, mediaSourceId) {
+        var mediaSources = getPlaybackInfoMediaSources(payload);
+        if (!mediaSources.length) {
+            return null;
+        }
+
+        var normalizedMediaSourceId = mediaSourceId ? mediaSourceId.toString() : getSelectedMediaSourceId(payload);
+        if (normalizedMediaSourceId) {
+            for (var i = 0; i < mediaSources.length; i++) {
+                var candidateId = getObjectMediaSourceId(mediaSources[i]);
+                if (candidateId && candidateId === normalizedMediaSourceId) {
+                    return mediaSources[i];
+                }
+            }
+        }
+
+        return mediaSources[0];
+    }
+
+    function isTruthyPlaybackQueryValue(value) {
+        if (value === true) {
+            return true;
+        }
+        if (value === false || value === null || value === undefined || value === '') {
+            return false;
+        }
+
+        var normalizedValue = value.toString().toLowerCase();
+        return normalizedValue === '1'
+            || normalizedValue === 'true'
+            || normalizedValue === 'yes'
+            || normalizedValue === 'on';
+    }
+
+    function getPlaybackVideoDeliveryFromTranscodingUrl(url) {
+        if (!url || typeof url !== 'string') {
+            return 'unknown';
+        }
+
+        if (isTruthyPlaybackQueryValue(getQueryParameterValue(url, 'Static'))
+            || isTruthyPlaybackQueryValue(getQueryParameterValue(url, 'static'))) {
+            return 'directstream';
+        }
+
+        var videoCodec = getQueryParameterValue(url, 'VideoCodec')
+            || getQueryParameterValue(url, 'videoCodec')
+            || getQueryParameterValue(url, 'videocodec');
+        if (!videoCodec) {
+            return 'unknown';
+        }
+
+        return videoCodec.toString().toLowerCase() === 'copy' ? 'copy' : 'transcode';
+    }
+
+    function getPlaybackVideoDeliveryFromMediaSource(mediaSource) {
+        if (!mediaSource || typeof mediaSource !== 'object') {
+            return 'unknown';
+        }
+
+        var transcodingUrl = mediaSource.TranscodingUrl || mediaSource.transcodingUrl;
+        var transcodingUrlDelivery = getPlaybackVideoDeliveryFromTranscodingUrl(transcodingUrl);
+        if (transcodingUrlDelivery !== 'unknown') {
+            return transcodingUrlDelivery;
+        }
+
+        var playMethod = getProfileTypeName(mediaSource.PlayMethod || mediaSource.playMethod);
+        if (playMethod === 'directplay') {
+            return 'directplay';
+        }
+        if (playMethod === 'directstream') {
+            return 'directstream';
+        }
+        if (playMethod === 'transcode') {
+            return 'transcode';
+        }
+
+        return 'unknown';
+    }
+
+    function getPlaybackVideoDeliveryFromPlaybackInfoPayload(payload, mediaSourceId) {
+        return getPlaybackVideoDeliveryFromMediaSource(getSelectedPlaybackInfoMediaSource(payload, mediaSourceId));
+    }
+
     function combineDynamicRangeHints(currentHint, nextHint) {
         if (nextHint === 'unknown') {
             return currentHint || 'unknown';
@@ -4595,6 +4766,15 @@
         playbackInfoDynamicRangeHints[getDynamicRangeCacheKey(itemId, mediaSourceId)] = hint;
     }
 
+    function cachePlaybackInfoVideoDeliveryHint(itemId, mediaSourceId, videoDelivery) {
+        var normalizedVideoDelivery = normalizePlaybackVideoDelivery(videoDelivery);
+        if (!itemId || normalizedVideoDelivery === 'unknown') {
+            return;
+        }
+
+        playbackInfoVideoDeliveryHints[getDynamicRangeCacheKey(itemId, mediaSourceId)] = normalizedVideoDelivery;
+    }
+
     function getCachedPlaybackInfoDynamicRangeHint(itemId, mediaSourceId) {
         if (!itemId) {
             return 'unknown';
@@ -4606,6 +4786,20 @@
         }
 
         return playbackInfoDynamicRangeHints[cacheKey] || 'unknown';
+    }
+
+    function getCachedPlaybackInfoVideoDeliveryHint(itemId, mediaSourceId) {
+        if (!itemId) {
+            return 'unknown';
+        }
+
+        var cacheKey = getDynamicRangeCacheKey(itemId, mediaSourceId);
+        var exactHint = playbackInfoVideoDeliveryHints[cacheKey];
+        if (exactHint) {
+            return exactHint;
+        }
+
+        return 'unknown';
     }
 
     function fetchDynamicRangeHintForItemId(itemId, mediaSourceId) {
@@ -4698,6 +4892,7 @@
             // range at 'unknown', and re-arming the window would also reset
             // hdrUiInfoCorrectedHdrUntil and let later SDR overwrite HDR.
             setPlaybackDynamicRange('unknown', reason || 'item-changed');
+            setPlaybackVideoDelivery('unknown', reason || 'item-changed');
             armHdrUiInfoCorrectionWindow(reason || 'item-changed');
         }
     }
@@ -4884,6 +5079,7 @@
     function looksLikeDeviceProfile(value) {
         return !!(value && typeof value === 'object'
             && (Object.prototype.hasOwnProperty.call(value, 'DirectPlayProfiles')
+                || Object.prototype.hasOwnProperty.call(value, 'CodecProfiles')
                 || Object.prototype.hasOwnProperty.call(value, 'TranscodingProfiles')
                 || Object.prototype.hasOwnProperty.call(value, 'SubtitleProfiles')));
     }
@@ -4898,6 +5094,8 @@
             var beforeProfile = JSON.stringify({
                 MaxStreamingBitrate: value.MaxStreamingBitrate,
                 MaxStaticBitrate: value.MaxStaticBitrate,
+                DirectPlayProfiles: value.DirectPlayProfiles,
+                CodecProfiles: value.CodecProfiles,
                 SubtitleProfiles: value.SubtitleProfiles,
                 TranscodingProfiles: value.TranscodingProfiles
             });
@@ -4905,6 +5103,8 @@
             changed = JSON.stringify({
                 MaxStreamingBitrate: value.MaxStreamingBitrate,
                 MaxStaticBitrate: value.MaxStaticBitrate,
+                DirectPlayProfiles: value.DirectPlayProfiles,
+                CodecProfiles: value.CodecProfiles,
                 SubtitleProfiles: value.SubtitleProfiles,
                 TranscodingProfiles: value.TranscodingProfiles
             }) !== beforeProfile;
@@ -4920,7 +5120,7 @@
         }
 
         if (changed && source) {
-            debugLog('Patched PlaybackInfo device profile for subtitle delivery (' + source + ')');
+            debugLog('Patched PlaybackInfo device profile for playback compatibility (' + source + ')');
         }
         return changed;
     }
@@ -5044,8 +5244,9 @@
         return true;
     }
 
-    function rememberPendingPlaybackInfoDynamicRange(itemId, mediaSourceId, hint, context, reason) {
-        if (hint !== 'hdr' && hint !== 'sdr') {
+    function rememberPendingPlaybackInfoDynamicRange(itemId, mediaSourceId, hint, videoDelivery, context, reason) {
+        var normalizedVideoDelivery = normalizePlaybackVideoDelivery(videoDelivery);
+        if (hint !== 'hdr' && hint !== 'sdr' && normalizedVideoDelivery === 'unknown') {
             return;
         }
 
@@ -5060,7 +5261,8 @@
             sequence: contextSequence,
             itemId: itemId ? itemId.toString() : null,
             mediaSourceId: mediaSourceId ? mediaSourceId.toString() : null,
-            hint: hint,
+            hint: hint === 'hdr' || hint === 'sdr' ? hint : 'unknown',
+            videoDelivery: normalizedVideoDelivery,
             reason: reason || 'playbackinfo-pending'
         };
         debugLog('Pending PlaybackInfo dynamic range stored:', pendingPlaybackInfoDynamicRange);
@@ -5095,8 +5297,12 @@
         if (pending.itemId) {
             setCurrentPlaybackItemId(pending.itemId, pending.mediaSourceId, 'item-changed-playbackinfo-pending');
         }
-        setPlaybackDynamicRange(pending.hint, reason || pending.reason);
-        return true;
+        setPlaybackVideoDelivery(pending.videoDelivery, reason || pending.reason);
+        if (pending.hint !== 'unknown') {
+            setPlaybackDynamicRange(pending.hint, reason || pending.reason);
+            return true;
+        }
+        return false;
     }
 
     function getDynamicRangeHintFromPlaybackInfoPayload(payload, mediaSourceId) {
@@ -5211,6 +5417,7 @@
 
         var prefix = latestPlaybackInfoRequestItemId.toString() + '|';
         var pendingHint = 'unknown';
+        var pendingVideoDelivery = 'unknown';
         for (var key in playbackInfoDynamicRangeHints) {
             if (!Object.prototype.hasOwnProperty.call(playbackInfoDynamicRangeHints, key)) {
                 continue;
@@ -5219,12 +5426,17 @@
                 continue;
             }
             var entryHint = playbackInfoDynamicRangeHints[key];
+            var entryVideoDelivery = playbackInfoVideoDeliveryHints[key] || 'unknown';
             if (entryHint === 'hdr') {
                 pendingHint = 'hdr';
+                pendingVideoDelivery = entryVideoDelivery;
                 break;
             }
             if (entryHint === 'sdr') {
                 pendingHint = 'sdr';
+                if (pendingVideoDelivery === 'unknown') {
+                    pendingVideoDelivery = entryVideoDelivery;
+                }
             }
         }
 
@@ -5235,6 +5447,9 @@
         if (!currentMediaSessionItemId) {
             setCurrentPlaybackItemId(latestPlaybackInfoRequestItemId, currentPlaybackMediaSourceId, 'pending-playbackinfo');
         }
+        if (pendingVideoDelivery !== 'unknown') {
+            setPlaybackVideoDelivery(pendingVideoDelivery, 'playbackinfo-pending');
+        }
         setPlaybackDynamicRange(pendingHint, 'playbackinfo-pending');
     }
 
@@ -5243,22 +5458,9 @@
             return 'none';
         }
 
-        var mediaSources = toArray(payload.MediaSources || payload.mediaSources);
-        if (!mediaSources.length) {
-            return 'none';
-        }
-
-        var normalizedMediaSourceId = mediaSourceId ? mediaSourceId.toString() : null;
-        var selectedSource = null;
-        for (var i = 0; i < mediaSources.length; i++) {
-            var candidateId = getObjectMediaSourceId(mediaSources[i]);
-            if (normalizedMediaSourceId && candidateId && candidateId === normalizedMediaSourceId) {
-                selectedSource = mediaSources[i];
-                break;
-            }
-        }
+        var selectedSource = getSelectedPlaybackInfoMediaSource(payload, mediaSourceId);
         if (!selectedSource) {
-            selectedSource = mediaSources[0];
+            return 'none';
         }
 
         var streams = toArray(selectedSource.MediaStreams || selectedSource.mediaStreams);
@@ -5310,16 +5512,18 @@
         var itemId = extractItemIdFromPlaybackInfoUrl(sourceUrl);
         var mediaSourceId = getSelectedMediaSourceId(payload) || currentPlaybackMediaSourceId;
         var hint = getDynamicRangeHintFromPlaybackInfoPayload(payload, mediaSourceId);
+        var videoDelivery = getPlaybackVideoDeliveryFromPlaybackInfoPayload(payload, mediaSourceId);
         var pgsDeliveryDiagnostic = getPgsSubtitleDeliveryDiagnostic(payload, mediaSourceId);
         hdrDetectionPlaybackInfoLastHint = hint;
         hdrDetectionPlaybackInfoCount++;
         cachePlaybackInfoDynamicRangeHint(itemId, mediaSourceId, hint);
+        cachePlaybackInfoVideoDeliveryHint(itemId, mediaSourceId, videoDelivery);
         if (playbackState !== PlaybackState.PLAYING) {
             if (playbackState !== PlaybackState.IDLE) {
                 return;
             }
             pgsSubtitleDeliveryDiagnostic = pgsDeliveryDiagnostic;
-            rememberPendingPlaybackInfoDynamicRange(itemId, mediaSourceId, hint, context, reason);
+            rememberPendingPlaybackInfoDynamicRange(itemId, mediaSourceId, hint, videoDelivery, context, reason);
             return;
         }
         if (!shouldApplyPlaybackInfoResponse(itemId, mediaSourceId, context)) {
@@ -5330,6 +5534,7 @@
         if (itemId) {
             setCurrentPlaybackItemId(itemId, mediaSourceId, 'item-changed-playbackinfo');
         }
+        setPlaybackVideoDelivery(videoDelivery, reason || 'playbackinfo');
 
         if (hint !== 'unknown') {
             setPlaybackDynamicRange(hint, reason || 'playbackinfo');
@@ -5742,12 +5947,34 @@
         }
     }
 
+    function isHdrUiDimmingAllowedForCurrentPlayback() {
+        return playbackState === PlaybackState.PLAYING
+            && playbackDynamicRange === 'hdr'
+            && isPlaybackVideoCopiedOrDirect(playbackVideoDelivery);
+    }
+
+    function setPlaybackVideoDelivery(nextDelivery, reason) {
+        nextDelivery = normalizePlaybackVideoDelivery(nextDelivery);
+        if (playbackVideoDelivery === nextDelivery) {
+            if (reason) {
+                playbackVideoDeliveryReason = reason;
+            }
+            return;
+        }
+
+        var previousDelivery = playbackVideoDelivery;
+        playbackVideoDelivery = nextDelivery;
+        playbackVideoDeliveryReason = reason || null;
+        debugLog('Playback video delivery: ' + previousDelivery + ' -> ' + nextDelivery + ' (' + reason + ')');
+        refreshHdrUiDimming('video-delivery');
+    }
+
     function refreshHdrUiDimming(reason) {
         if (!document.body) {
             return;
         }
 
-        var shouldDim = playbackState === PlaybackState.PLAYING && playbackDynamicRange === 'hdr';
+        var shouldDim = isHdrUiDimmingAllowedForCurrentPlayback();
         var hasClass = document.body.classList.contains(HDR_UI_DIM_CLASS);
         if (shouldDim === hasClass) {
             return;
@@ -5995,6 +6222,22 @@
         return result;
     }
 
+    function getCopyableVideoCodecsForAudioTranscode(profile) {
+        // Only promote video-copy codecs that survived the current device
+        // profile's video capability checks. If the TV cannot direct play a
+        // codec, audio-only transcode must not force that video codec to copy.
+        var directPlayVideoCodecs = getDirectPlayVideoCodecMap(profile);
+        var result = [];
+        var candidates = ['hevc', 'h265'];
+        for (var i = 0; i < candidates.length; i++) {
+            var candidate = candidates[i];
+            if (directPlayVideoCodecs[candidate]) {
+                result.push(candidate);
+            }
+        }
+        return result;
+    }
+
     function hasIsInterlacedCondition(conditions) {
         if (!conditions || !conditions.length) {
             return false;
@@ -6155,16 +6398,7 @@
             return;
         }
 
-        var directPlayVideoCodecs = getDirectPlayVideoCodecMap(profile);
-        var copyVideoCodecs = [];
-        var candidates = ['hevc', 'h265'];
-        for (var i = 0; i < candidates.length; i++) {
-            var candidate = candidates[i];
-            if (directPlayVideoCodecs[candidate]) {
-                copyVideoCodecs.push(candidate);
-            }
-        }
-
+        var copyVideoCodecs = getCopyableVideoCodecsForAudioTranscode(profile);
         if (!copyVideoCodecs.length) {
             return;
         }
@@ -6188,17 +6422,77 @@
         }
     }
 
+    function addLpcmAudioCopyCodecsToProfileEntry(profileEntry) {
+        if (!profileEntry || !parseCommaSeparatedList(profileEntry.AudioCodec).length) {
+            return false;
+        }
+
+        var result = addValuesToList(profileEntry.AudioCodec, LPCM_AUDIO_COPY_CODECS);
+        if (!result.changed) {
+            return false;
+        }
+
+        profileEntry.AudioCodec = result.value;
+        return true;
+    }
+
+    function patchAudioProfilesForLpcmAudioCopy(profile) {
+        if (!lpcmAudioCopyEnabled || !profile) {
+            return;
+        }
+
+        var patchedDirectPlayProfiles = 0;
+        if (profile.DirectPlayProfiles && profile.DirectPlayProfiles.length) {
+            for (var i = 0; i < profile.DirectPlayProfiles.length; i++) {
+                var directPlayProfile = profile.DirectPlayProfiles[i];
+                if (!directPlayProfile || getProfileTypeName(directPlayProfile.Type) !== 'video') {
+                    continue;
+                }
+
+                if (addLpcmAudioCopyCodecsToProfileEntry(directPlayProfile)) {
+                    patchedDirectPlayProfiles++;
+                }
+            }
+        }
+
+        if (patchedDirectPlayProfiles) {
+            debugLog('Allowed LPCM/PCM direct-play audio copy profile(s):', patchedDirectPlayProfiles);
+        }
+    }
+
+    function applyVideoCapabilityProfilePatches(profile) {
+        // Video transcoding should be driven by the video/container capability
+        // report only. These patches remove known-bad direct-play claims.
+        patchDirectPlayProfilesForProblematicFormats(profile);
+        patchH264InterlaceSupport(profile);
+    }
+
+    function applyAudioTranscodeVideoCopyProfilePatches(profile) {
+        // Keep video copy scoped to codecs that survived device capability
+        // checks. Optional LPCM/PCM audio copy only expands existing audio
+        // codec lists on direct-play profiles for receiver testing; it does
+        // not override video support.
+        patchVideoTranscodingProfilesForAudioOnlyTranscode(profile);
+        patchAudioProfilesForLpcmAudioCopy(profile);
+    }
+
+    function applySubtitleDeliveryProfilePatches(profile) {
+        // Subtitle burn-in is not forced here. The profile only advertises
+        // client-renderable subtitle delivery; Jellyfin's own
+        // AlwaysBurnInSubtitleWhenTranscoding flag decides burn-in later.
+        preferExternalSubtitleProfilesForBitmapPgs(profile);
+        patchExternalSubtitleProfiles(profile);
+        patchHlsSubtitleManifestSupport(profile);
+    }
+
     function applyPlaybackCompatibilityProfilePatches(profile) {
         if (!profile || typeof profile !== 'object') {
             return profile;
         }
 
-        patchDirectPlayProfilesForProblematicFormats(profile);
-        patchH264InterlaceSupport(profile);
-        patchVideoTranscodingProfilesForAudioOnlyTranscode(profile);
-        preferExternalSubtitleProfilesForBitmapPgs(profile);
-        patchExternalSubtitleProfiles(profile);
-        patchHlsSubtitleManifestSupport(profile);
+        applyVideoCapabilityProfilePatches(profile);
+        applyAudioTranscodeVideoCopyProfilePatches(profile);
+        applySubtitleDeliveryProfilePatches(profile);
         patchPlaybackProfileBitrateLimits(profile);
         return profile;
     }
@@ -6355,6 +6649,13 @@
             }
 
             if (itemId) {
+                if (playbackVideoDelivery === 'unknown') {
+                    var playbackInfoVideoDelivery = getCachedPlaybackInfoVideoDeliveryHint(itemId, mediaSourceId);
+                    if (playbackInfoVideoDelivery !== 'unknown') {
+                        setPlaybackVideoDelivery(playbackInfoVideoDelivery, 'playbackinfo-cache');
+                    }
+                }
+
                 if (dynamicRangeHint === 'unknown') {
                     var playbackInfoHint = getCachedPlaybackInfoDynamicRangeHint(itemId, mediaSourceId);
                     if (playbackInfoHint !== 'unknown') {

@@ -222,7 +222,8 @@ function sanitizeFeatureOverrides(data) {
         'disableAssRenderAhead',
         'assTimeSyncFixEnabled',
         'pgsForceMainThread',
-        'pgsPatchObjectReuse'
+        'pgsPatchObjectReuse',
+        'lpcmAudioCopyEnabled'
     ];
     var result = {};
     if (data && typeof data === 'object') {

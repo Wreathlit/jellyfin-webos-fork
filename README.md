@@ -106,6 +106,64 @@ profiles and keeps the HEVC/H265 video-copy path, but it no longer rewrites
 PlaybackInfo subtitle delivery. PGS timing/main-thread/object-reuse fixes are
 renderer-side patches and are separate from server subtitle delivery.
 
+### Playback decision boundaries
+
+The playback compatibility patches intentionally keep four decisions separate:
+
+- Video transcoding is controlled by video/container capability reporting. The
+  fork only removes known-bad direct-play claims such as DVD/MPEG and interlaced
+  H264 support; it should not use subtitle state to decide video codec support.
+- Audio transcoding is controlled by Jellyfin Web's audio capability and
+  passthrough profile generation. The fork only allows video codec copy in video
+  transcode profiles for codecs that the patched device profile still reports as
+  direct-play capable, so unsupported audio can transcode without dragging
+  supported HEVC/HDR video into a video encode. Unsupported video codecs must
+  still transcode. The experimental LPCM/PCM audio-copy option is default-off;
+  when enabled it only appends Blu-ray/DVD LPCM and common PCM codec names to
+  existing video DirectPlay audio codec lists, so it does not bypass video
+  codec capability checks or advertise PCM as a supported HLS/fMP4 transcode
+  output.
+- Subtitle burn-in is controlled by the selected video path and Jellyfin's
+  `Always burn in subtitle on transcoding` setting. The fork advertises
+  client-renderable ASS/PGS delivery but does not force
+  `AlwaysBurnInSubtitleWhenTranscoding`, synthesize PlaybackInfo subtitle URLs,
+  or delete subtitle burn-in query parameters.
+- HDR/DV UI dimming is applied only when the detected playback range is HDR/DV
+  and PlaybackInfo indicates that the video stream is DirectPlay, DirectStream,
+  or transcode-with-video-copy (`Static=true` or `VideoCodec=copy`). If video
+  delivery is unknown or is a video transcode, the UI dim class is not enabled.
+
+The diagnostics overlay prints
+`video=directplay|directstream|copy|transcode|unknown` next to `range=...` so HDR
+dimming issues can be separated from codec, audio, and subtitle routing.
+
+### LPCM/PCM audio copy option
+
+Problem: some LPCM/PCM tracks are still converted to AAC even when the TV is
+connected to an AVR. This blocks testing whether the receiver path can handle
+PCM directly.
+
+Cause: Jellyfin Web's webOS profile only advertises a narrow PCM set by
+default. Blu-ray/DVD LPCM and other PCM variants can therefore look unsupported,
+and the server chooses audio transcode even when the video is otherwise
+copyable.
+
+Approach:
+
+- expose `webOS: Allow LPCM/PCM audio copy` as a default-off playback setting;
+- add `pcm_s16le`, `pcm_s24le`, `pcm_bluray`, and `pcm_dvd` to existing video
+  DirectPlay audio codec lists;
+- do not patch video transcode audio codec lists yet, because advertising PCM
+  for every HLS/fMP4/TS path can prevent the normal AAC fallback and produce an
+  unplayable stream;
+- do not create new codec lists when a profile omitted `AudioCodec`, because
+  that could accidentally narrow an upstream "unrestricted" profile.
+
+Status: experimental. Enable it only for ARC/eARC/receiver tests and restart
+playback after changing. This first version is intentionally limited to
+DirectPlay. If the selected container/protocol cannot carry the PCM track on a
+given path, the server or player may still need to transcode audio.
+
 ### Startup handoff and iframe focus
 
 Problem: Dolby Vision / HDR capability detection can be inconsistent at app
@@ -168,8 +226,8 @@ Approach:
 - never fall back to injecting into `body`; if the Playback settings container
   cannot be found, remove any stale injected block;
 - put them under a dedicated `webOS playback fixes` main heading;
-- group them under secondary headings: HDR UI, ASS subtitles, PGS subtitles, and
-  diagnostics;
+- group them under secondary headings: HDR UI, webOS audio, ASS subtitles, PGS
+  subtitles, and diagnostics;
 - move already-injected controls into the grouped block instead of duplicating
   them;
 - throttle mutation-triggered injection refreshes and ignore mutations inside
@@ -179,6 +237,7 @@ Injected controls:
 
 - HDR/DV UI dim brightness for playback overlays and ASS/PGS subtitles;
 - HDR/DV ASS/PGS subtitle opacity;
+- experimental LPCM/PCM DirectPlay audio copy over ARC/eARC receiver paths;
 - fix ASS time rollback;
 - disable ASS render-ahead;
 - force PGS main-thread renderer;
