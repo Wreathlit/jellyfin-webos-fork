@@ -31,6 +31,20 @@ function assertGitTracked(relativePath) {
 const assets = extractArray('injectedScriptUrls').concat(extractArray('injectedStyleUrls'));
 const missing = [];
 const untracked = [];
+const orderErrors = [];
+
+function assertScriptBefore(first, second) {
+    const firstIndex = extractArray('injectedScriptUrls').indexOf(first);
+    const secondIndex = extractArray('injectedScriptUrls').indexOf(second);
+    if (firstIndex === -1 || secondIndex === -1 || firstIndex >= secondIndex) {
+        orderErrors.push(first + ' must be injected before ' + second);
+    }
+}
+
+assertScriptBefore('js/injected/core/runtime.js', 'js/injected/core/features.js');
+assertScriptBefore('js/injected/core/features.js', 'js/injected/playback/profilePatches.js');
+assertScriptBefore('js/injected/playback/profilePatches.js', 'js/injected/playback/hdrDecisions.js');
+assertScriptBefore('js/injected/playback/hdrDecisions.js', 'js/webOS.js');
 
 for (let i = 0; i < assets.length; i++) {
     const asset = assets[i];
@@ -49,7 +63,7 @@ for (let i = 0; i < assets.length; i++) {
     }
 }
 
-if (missing.length || untracked.length) {
+if (missing.length || untracked.length || orderErrors.length) {
     if (missing.length) {
         console.error('Missing injected asset(s):');
         for (let i = 0; i < missing.length; i++) {
@@ -60,6 +74,12 @@ if (missing.length || untracked.length) {
         console.error('Untracked injected asset(s):');
         for (let j = 0; j < untracked.length; j++) {
             console.error('  - ' + untracked[j]);
+        }
+    }
+    if (orderErrors.length) {
+        console.error('Invalid injected script order:');
+        for (let k = 0; k < orderErrors.length; k++) {
+            console.error('  - ' + orderErrors[k]);
         }
     }
     process.exit(1);

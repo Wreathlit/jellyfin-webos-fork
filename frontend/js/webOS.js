@@ -27,6 +27,13 @@
     var webOSFeatureRegistry = webOSPatchRuntime && webOSPatchRuntime.get
         ? webOSPatchRuntime.get('core.features')
         : null;
+    var webOSProfilePatches = webOSPatchRuntime && webOSPatchRuntime.get
+        ? webOSPatchRuntime.get('playback.profilePatches')
+        : null;
+    var webOSHdrDecisions = webOSPatchRuntime && webOSPatchRuntime.get
+        ? webOSPatchRuntime.get('playback.hdrDecisions')
+        : null;
+    var hdrDecisionModuleWarned = false;
 
     function getRegisteredFeatureStorageKey(key, fallback) {
         return webOSFeatureRegistry && webOSFeatureRegistry.getStorageKey
@@ -119,12 +126,6 @@
     var LPCM_AUDIO_COPY_KEY = getRegisteredFeatureStorageKey('lpcmAudioCopyEnabled', 'webos_lpcm_audio_copy');
     var DEFAULT_PGS_FORCE_MAIN_THREAD = getRegisteredFeatureDefault('pgsForceMainThread', true);
     var DEFAULT_PGS_PATCH_OBJECT_REUSE = getRegisteredFeatureDefault('pgsPatchObjectReuse', true);
-    var LPCM_AUDIO_COPY_CODECS = [
-        'pcm_s16le',
-        'pcm_s24le',
-        'pcm_bluray',
-        'pcm_dvd'
-    ];
     var HDR_UI_DIM_BRIGHTNESS_KEY = 'webos_hdr_ui_dim_brightness';
     var HDR_UI_DIM_DEFAULT_BRIGHTNESS = 0.3;
     var HDR_UI_DIM_MIN_BRIGHTNESS = 0.05;
@@ -4060,223 +4061,33 @@
         }, HDR_UI_INFO_FALLBACK_SCAN_INTERVAL);
     }
 
-    function normalizeDynamicRangeText(value) {
-        if (!value || typeof value !== 'string') {
-            return '';
+    function getHdrDecisions() {
+        if (webOSHdrDecisions) {
+            return webOSHdrDecisions;
         }
-        return value.toLowerCase();
+
+        if (!hdrDecisionModuleWarned) {
+            hdrDecisionModuleWarned = true;
+            warnLog('webOS HDR decision module is unavailable');
+        }
+        return null;
     }
 
     function isHdrDynamicRangeText(value) {
-        var normalized = normalizeDynamicRangeText(value);
-        if (!normalized) {
-            return false;
-        }
-
-        return normalized.indexOf('hdr10') !== -1
-            || /(^|[^a-z0-9])hdr([^a-z0-9]|$)/i.test(normalized)
-            || normalized.indexOf('dolby vision') !== -1
-            || normalized.indexOf('dolbyvision') !== -1
-            || normalized.indexOf('dovi') !== -1
-            || normalized.indexOf('hlg') !== -1
-            || normalized.indexOf('smpte2084') !== -1
-            || /smpte\s*(?:st\s*)?2084/i.test(normalized)
-            || normalized.indexOf('arib-std-b67') !== -1
-            || /(^|[^a-z0-9])pq([^a-z0-9]|$)/i.test(normalized);
-    }
-
-    function isPositiveNumberValue(value) {
-        if (typeof value === 'number') {
-            return value > 0;
-        }
-
-        if (typeof value === 'string' && /^\s*\d+(?:\.\d+)?\s*$/.test(value)) {
-            return parseFloat(value) > 0;
-        }
-
-        return false;
-    }
-
-    function isHdrDoviProfileOrLevel(value) {
-        return isHdrDynamicRangeText(value) || isPositiveNumberValue(value);
+        var decisions = getHdrDecisions();
+        return !!(decisions && decisions.isHdrDynamicRangeText && decisions.isHdrDynamicRangeText(value));
     }
 
     function isSdrDynamicRangeText(value) {
-        var normalized = normalizeDynamicRangeText(value);
-        if (!normalized) {
-            return false;
-        }
-
-        return normalized.indexOf('standard dynamic range') !== -1
-            || /(^|[^a-z0-9])sdr([^a-z0-9]|$)/i.test(normalized);
-    }
-
-    function getDynamicRangeHintFromColorTransfer(value) {
-        if (isHdrDynamicRangeText(value)) {
-            return 'hdr';
-        }
-
-        var normalized = normalizeDynamicRangeText(value);
-        if (normalized.indexOf('bt709') !== -1
-            || normalized.indexOf('bt.709') !== -1
-            || normalized.indexOf('smpte170m') !== -1
-            || normalized.indexOf('iec61966-2-1') !== -1
-            || isSdrDynamicRangeText(value)) {
-            return 'sdr';
-        }
-
-        var transfer = parsePositiveInteger(value);
-        if (transfer === 16 || transfer === 18) {
-            return 'hdr';
-        }
-        if (transfer === 1 || transfer === 6 || transfer === 13) {
-            return 'sdr';
-        }
-
-        return 'unknown';
-    }
-
-    function isTruthyNormalizedString(value) {
-        return value === 'true' || value === '1' || value === 'yes';
-    }
-
-    function isTruthyMetadataFlag(value) {
-        if (value === true) {
-            return true;
-        }
-
-        if (typeof value === 'string') {
-            return isTruthyNormalizedString(value.toLowerCase());
-        }
-
-        return isPositiveNumberValue(value);
-    }
-
-    function isDolbyVisionNumericMetadataField(key) {
-        return key === 'dvprofile'
-            || key === 'dvlevel'
-            || key === 'dvversionmajor'
-            || key === 'dvversionminor'
-            || key === 'videodoviprofile'
-            || key === 'videodovilevel'
-            || key === 'rpupresentflag';
-    }
-
-    function getDynamicRangeHintFromMetadataField(key, value) {
-        var normalizedKey = key ? key.toString().toLowerCase() : '';
-        if (normalizedKey === 'colortransfer') {
-            return getDynamicRangeHintFromColorTransfer(value);
-        }
-
-        if (normalizedKey === 'hdr10pluspresentflag' && isTruthyMetadataFlag(value)) {
-            return 'hdr';
-        }
-
-        if (isDolbyVisionNumericMetadataField(normalizedKey) && isPositiveNumberValue(value)) {
-            return 'hdr';
-        }
-
-        if (isHdrDynamicRangeText(value)) {
-            return 'hdr';
-        }
-
-        if (isSdrDynamicRangeText(value)) {
-            return 'sdr';
-        }
-
-        return 'unknown';
-    }
-
-    function getDynamicRangeHintFromObjectFields(value, keysToInspect) {
-        if (!value || typeof value !== 'object') {
-            return 'unknown';
-        }
-
-        var sawSdr = false;
-        for (var i = 0; i < keysToInspect.length; i++) {
-            var key = keysToInspect[i];
-            if (!Object.prototype.hasOwnProperty.call(value, key)) {
-                continue;
-            }
-
-            var hint = getDynamicRangeHintFromMetadataField(key, value[key]);
-            if (hint === 'hdr') {
-                return 'hdr';
-            }
-            if (hint === 'sdr') {
-                sawSdr = true;
-            }
-        }
-
-        return sawSdr ? 'sdr' : 'unknown';
+        var decisions = getHdrDecisions();
+        return !!(decisions && decisions.isSdrDynamicRangeText && decisions.isSdrDynamicRangeText(value));
     }
 
     function getDynamicRangeHintFromMediaInfo(mediaInfo) {
-        if (!mediaInfo || typeof mediaInfo !== 'object') {
-            return 'unknown';
-        }
-
-        var mediaSourceHint = getDynamicRangeHintFromMediaSource(mediaInfo.MediaSource || mediaInfo.mediaSource);
-        if (mediaSourceHint !== 'unknown') {
-            return mediaSourceHint;
-        }
-
-        mediaSourceHint = getDynamicRangeHintFromItem({
-            MediaSources: mediaInfo.MediaSources || mediaInfo.mediaSources,
-            MediaStreams: mediaInfo.MediaStreams || mediaInfo.mediaStreams
-        }, getSelectedMediaSourceId(mediaInfo));
-        if (mediaSourceHint !== 'unknown') {
-            return mediaSourceHint;
-        }
-
-        var keysToInspect = [
-            'videoRangeType',
-            'VideoRangeType',
-            'videoRange',
-            'VideoRange',
-            'dynamicRange',
-            'DynamicRange',
-            'videoDoViTitle',
-            'VideoDoViTitle',
-            'dvProfile',
-            'DvProfile',
-            'dvLevel',
-            'DvLevel',
-            'rpuPresentFlag',
-            'RpuPresentFlag',
-            'hdr10PlusPresentFlag',
-            'Hdr10PlusPresentFlag',
-            'colorTransfer',
-            'ColorTransfer',
-            'displayTitle',
-            'DisplayTitle'
-        ];
-        var sawSdr = false;
-
-        for (var i = 0; i < keysToInspect.length; i++) {
-            var key = keysToInspect[i];
-            if (!Object.prototype.hasOwnProperty.call(mediaInfo, key)) {
-                continue;
-            }
-
-            var value = mediaInfo[key];
-            var hint = getDynamicRangeHintFromMetadataField(key, value);
-            if (hint === 'hdr') {
-                return 'hdr';
-            }
-            if (hint === 'sdr') {
-                sawSdr = true;
-            }
-        }
-
-        if (isHdrDoviProfileOrLevel(mediaInfo.videoDoViProfile)
-            || isHdrDoviProfileOrLevel(mediaInfo.VideoDoViProfile)
-            || isHdrDoviProfileOrLevel(mediaInfo.videoDoViLevel)
-            || isHdrDoviProfileOrLevel(mediaInfo.VideoDoViLevel)) {
-            return 'hdr';
-        }
-
-        return sawSdr ? 'sdr' : 'unknown';
+        var decisions = getHdrDecisions();
+        return decisions && decisions.getDynamicRangeHintFromMediaInfo
+            ? decisions.getDynamicRangeHintFromMediaInfo(mediaInfo)
+            : 'unknown';
     }
 
     function shouldInspectDynamicRangeUiElement(element) {
@@ -4335,448 +4146,48 @@
     }
 
     function toArray(value) {
-        return Object.prototype.toString.call(value) === '[object Array]' ? value : [];
-    }
-
-    function isVideoMediaStream(stream) {
-        if (!stream || typeof stream !== 'object') {
-            return false;
-        }
-
-        var type = Object.prototype.hasOwnProperty.call(stream, 'Type') ? stream.Type : stream.type;
-        if (type === null || type === undefined || type === '') {
-            return true;
-        }
-
-        if (typeof type === 'number') {
-            return type === 1;
-        }
-
-        var normalizedType = type.toString().toLowerCase();
-        return normalizedType === 'video' || normalizedType === '1';
-    }
-
-    function getDynamicRangeHintFromVideoStream(videoStream) {
-        if (!videoStream || typeof videoStream !== 'object') {
-            return 'unknown';
-        }
-
-        var fieldKeys = [
-            'VideoRangeType',
-            'videoRangeType',
-            'VideoRange',
-            'videoRange',
-            'VideoDoViTitle',
-            'videoDoViTitle',
-            'VideoDoViProfile',
-            'videoDoViProfile',
-            'VideoDoViLevel',
-            'videoDoViLevel',
-            'DvProfile',
-            'dvProfile',
-            'DvLevel',
-            'dvLevel',
-            'DvVersionMajor',
-            'dvVersionMajor',
-            'DvVersionMinor',
-            'dvVersionMinor',
-            'RpuPresentFlag',
-            'rpuPresentFlag',
-            'Hdr10PlusPresentFlag',
-            'hdr10PlusPresentFlag',
-            'ColorTransfer',
-            'colorTransfer',
-            'ColorPrimaries',
-            'colorPrimaries',
-            'ColorSpace',
-            'colorSpace',
-            'DisplayTitle',
-            'displayTitle',
-            'Title',
-            'title'
-        ];
-
-        var fieldHint = getDynamicRangeHintFromObjectFields(videoStream, fieldKeys);
-        if (fieldHint !== 'unknown') {
-            return fieldHint;
-        }
-
-        if (isHdrDynamicRangeText(videoStream.VideoDoViProfile)
-            || isHdrDynamicRangeText(videoStream.videoDoViProfile)
-            || isHdrDynamicRangeText(videoStream.DvProfile)
-            || isHdrDynamicRangeText(videoStream.dvProfile)
-            || isHdrDynamicRangeText(videoStream.VideoDoViLevel)
-            || isHdrDynamicRangeText(videoStream.videoDoViLevel)
-            || isHdrDynamicRangeText(videoStream.DvLevel)
-            || isHdrDynamicRangeText(videoStream.dvLevel)) {
-            return 'hdr';
-        }
-
-        return 'unknown';
-    }
-
-    function getObjectMediaSourceId(value) {
-        if (!value || typeof value !== 'object') {
-            return null;
-        }
-
-        var id = value.MediaSourceId || value.mediaSourceId || value.Id || value.id;
-        return id === null || id === undefined ? null : id.toString();
+        var decisions = getHdrDecisions();
+        return decisions && decisions.toArray ? decisions.toArray(value) : [];
     }
 
     function getSelectedMediaSourceId(value) {
-        if (!value || typeof value !== 'object') {
-            return null;
-        }
-
-        var id = value.MediaSourceId
-            || value.mediaSourceId
-            || value.SelectedMediaSourceId
-            || value.selectedMediaSourceId
-            || value.PlaybackMediaSourceId
-            || value.playbackMediaSourceId
-            || value.SourceId
-            || value.sourceId;
-        if (id !== null && id !== undefined && id !== '') {
-            return id.toString();
-        }
-
-        var nestedSource = value.MediaSource || value.mediaSource;
-        id = getObjectMediaSourceId(nestedSource);
-        if (id) {
-            return id;
-        }
-
-        var mediaSources = toArray(value.MediaSources || value.mediaSources);
-        if (mediaSources.length === 1) {
-            return getObjectMediaSourceId(mediaSources[0]);
-        }
-
-        return null;
+        var decisions = getHdrDecisions();
+        return decisions && decisions.getSelectedMediaSourceId
+            ? decisions.getSelectedMediaSourceId(value)
+            : null;
     }
 
     function normalizePlaybackVideoDelivery(value) {
-        var normalizedValue = value ? value.toString().toLowerCase() : '';
-        if (normalizedValue === 'directplay'
-            || normalizedValue === 'directstream'
-            || normalizedValue === 'copy'
-            || normalizedValue === 'transcode') {
-            return normalizedValue;
-        }
-        return 'unknown';
+        var decisions = getHdrDecisions();
+        return decisions && decisions.normalizePlaybackVideoDelivery
+            ? decisions.normalizePlaybackVideoDelivery(value)
+            : 'unknown';
     }
 
     function isPlaybackVideoCopiedOrDirect(delivery) {
-        delivery = normalizePlaybackVideoDelivery(delivery);
-        return delivery === 'directplay'
-            || delivery === 'directstream'
-            || delivery === 'copy';
-    }
-
-    function getPlaybackInfoMediaSources(payload) {
-        var sources = [];
-        var groups = [
-            payload,
-            payload && payload.Item,
-            payload && payload.item,
-            payload && payload.NowPlayingItem,
-            payload && payload.nowPlayingItem
-        ];
-
-        for (var i = 0; i < groups.length; i++) {
-            var group = groups[i];
-            if (!group || typeof group !== 'object') {
-                continue;
-            }
-
-            var mediaSources = toArray(group.MediaSources || group.mediaSources);
-            for (var j = 0; j < mediaSources.length; j++) {
-                if (sources.indexOf(mediaSources[j]) === -1) {
-                    sources.push(mediaSources[j]);
-                }
-            }
-        }
-
-        return sources;
+        var decisions = getHdrDecisions();
+        return !!(decisions && decisions.isPlaybackVideoCopiedOrDirect && decisions.isPlaybackVideoCopiedOrDirect(delivery));
     }
 
     function getSelectedPlaybackInfoMediaSource(payload, mediaSourceId) {
-        var mediaSources = getPlaybackInfoMediaSources(payload);
-        if (!mediaSources.length) {
-            return null;
-        }
-
-        var normalizedMediaSourceId = mediaSourceId ? mediaSourceId.toString() : getSelectedMediaSourceId(payload);
-        if (normalizedMediaSourceId) {
-            for (var i = 0; i < mediaSources.length; i++) {
-                var candidateId = getObjectMediaSourceId(mediaSources[i]);
-                if (candidateId && candidateId === normalizedMediaSourceId) {
-                    return mediaSources[i];
-                }
-            }
-        }
-
-        return mediaSources[0];
-    }
-
-    function isTruthyPlaybackQueryValue(value) {
-        if (value === true) {
-            return true;
-        }
-        if (value === false || value === null || value === undefined || value === '') {
-            return false;
-        }
-
-        var normalizedValue = value.toString().toLowerCase();
-        return normalizedValue === '1'
-            || normalizedValue === 'true'
-            || normalizedValue === 'yes'
-            || normalizedValue === 'on';
-    }
-
-    function getPlaybackVideoDeliveryFromTranscodingUrl(url) {
-        if (!url || typeof url !== 'string') {
-            return 'unknown';
-        }
-
-        if (isTruthyPlaybackQueryValue(getQueryParameterValue(url, 'Static'))
-            || isTruthyPlaybackQueryValue(getQueryParameterValue(url, 'static'))) {
-            return 'directstream';
-        }
-
-        var videoCodec = getQueryParameterValue(url, 'VideoCodec')
-            || getQueryParameterValue(url, 'videoCodec')
-            || getQueryParameterValue(url, 'videocodec');
-        if (!videoCodec) {
-            return 'unknown';
-        }
-
-        return videoCodec.toString().toLowerCase() === 'copy' ? 'copy' : 'transcode';
-    }
-
-    function getPlaybackVideoDeliveryFromMediaSource(mediaSource) {
-        if (!mediaSource || typeof mediaSource !== 'object') {
-            return 'unknown';
-        }
-
-        var transcodingUrl = mediaSource.TranscodingUrl || mediaSource.transcodingUrl;
-        var transcodingUrlDelivery = getPlaybackVideoDeliveryFromTranscodingUrl(transcodingUrl);
-        if (transcodingUrlDelivery !== 'unknown') {
-            return transcodingUrlDelivery;
-        }
-
-        var playMethod = getProfileTypeName(mediaSource.PlayMethod || mediaSource.playMethod);
-        if (playMethod === 'directplay') {
-            return 'directplay';
-        }
-        if (playMethod === 'directstream') {
-            return 'directstream';
-        }
-        if (playMethod === 'transcode') {
-            return 'transcode';
-        }
-
-        return 'unknown';
+        var decisions = getHdrDecisions();
+        return decisions && decisions.getSelectedPlaybackInfoMediaSource
+            ? decisions.getSelectedPlaybackInfoMediaSource(payload, mediaSourceId)
+            : null;
     }
 
     function getPlaybackVideoDeliveryFromPlaybackInfoPayload(payload, mediaSourceId) {
-        return getPlaybackVideoDeliveryFromMediaSource(getSelectedPlaybackInfoMediaSource(payload, mediaSourceId));
-    }
-
-    function combineDynamicRangeHints(currentHint, nextHint) {
-        if (nextHint === 'unknown') {
-            return currentHint || 'unknown';
-        }
-
-        if (!currentHint || currentHint === 'unknown') {
-            return nextHint;
-        }
-
-        return currentHint === nextHint ? currentHint : 'mixed';
-    }
-
-    function getCombinedDynamicRangeHintFromMediaSources(mediaSources) {
-        var mediaSourceHint = 'unknown';
-        for (var i = 0; i < mediaSources.length; i++) {
-            var mediaSource = mediaSources[i];
-            if (!mediaSource || typeof mediaSource !== 'object') {
-                continue;
-            }
-
-            mediaSourceHint = combineDynamicRangeHints(mediaSourceHint, getDynamicRangeHintFromMediaSource(mediaSource));
-            if (mediaSourceHint === 'mixed') {
-                return 'unknown';
-            }
-        }
-
-        return mediaSourceHint === 'hdr' || mediaSourceHint === 'sdr' ? mediaSourceHint : 'unknown';
-    }
-
-    function getDynamicRangeHintFromMediaSource(mediaSource) {
-        if (!mediaSource || typeof mediaSource !== 'object') {
-            return 'unknown';
-        }
-
-        var hint = getDynamicRangeHintFromObjectFields(mediaSource, [
-            'VideoType',
-            'videoType',
-            'VideoRangeType',
-            'videoRangeType',
-            'VideoRange',
-            'videoRange',
-            'DynamicRange',
-            'dynamicRange',
-            'VideoDoViTitle',
-            'videoDoViTitle',
-            'ColorTransfer',
-            'colorTransfer',
-            'DisplayTitle',
-            'displayTitle'
-        ]);
-
-        var sourceStreams = toArray(mediaSource.MediaStreams || mediaSource.mediaStreams);
-        for (var i = 0; i < sourceStreams.length; i++) {
-            var sourceStream = sourceStreams[i];
-            if (!isVideoMediaStream(sourceStream)) {
-                continue;
-            }
-
-            hint = combineDynamicRangeHints(hint, getDynamicRangeHintFromVideoStream(sourceStream));
-            if (hint === 'mixed') {
-                return 'unknown';
-            }
-        }
-
-        return hint || 'unknown';
+        var decisions = getHdrDecisions();
+        return decisions && decisions.getPlaybackVideoDeliveryFromPlaybackInfoPayload
+            ? decisions.getPlaybackVideoDeliveryFromPlaybackInfoPayload(payload, mediaSourceId)
+            : 'unknown';
     }
 
     function getDynamicRangeHintFromItem(item, mediaSourceId) {
-        if (!item || typeof item !== 'object') {
-            return 'unknown';
-        }
-
-        var normalizedMediaSourceId = mediaSourceId ? mediaSourceId.toString() : getSelectedMediaSourceId(item);
-        var mediaSources = toArray(item.MediaSources || item.mediaSources);
-        var selectedMediaSourceMatched = false;
-        if (normalizedMediaSourceId && mediaSources.length) {
-            for (var sourceIndex = 0; sourceIndex < mediaSources.length; sourceIndex++) {
-                var sourceId = getObjectMediaSourceId(mediaSources[sourceIndex]);
-                if (sourceId && sourceId === normalizedMediaSourceId) {
-                    selectedMediaSourceMatched = true;
-                    var selectedSourceHint = getDynamicRangeHintFromMediaSource(mediaSources[sourceIndex]);
-                    if (selectedSourceHint !== 'unknown') {
-                        return selectedSourceHint;
-                    }
-                    break;
-                }
-            }
-        }
-
-        if (!normalizedMediaSourceId && mediaSources.length > 1) {
-            return getCombinedDynamicRangeHintFromMediaSources(mediaSources);
-        }
-
-        if (selectedMediaSourceMatched && mediaSources.length > 1) {
-            var selectedMediaStreams = toArray(item.MediaStreams || item.mediaStreams);
-            var selectedSawSdr = false;
-            for (var selectedStreamIndex = 0; selectedStreamIndex < selectedMediaStreams.length; selectedStreamIndex++) {
-                var selectedStream = selectedMediaStreams[selectedStreamIndex];
-                if (!isVideoMediaStream(selectedStream)) {
-                    continue;
-                }
-
-                var selectedStreamHint = getDynamicRangeHintFromVideoStream(selectedStream);
-                if (selectedStreamHint === 'hdr') {
-                    return 'hdr';
-                }
-                if (selectedStreamHint === 'sdr') {
-                    selectedSawSdr = true;
-                }
-            }
-            return selectedSawSdr ? 'sdr' : 'unknown';
-        }
-
-        var fieldKeys = [
-            'VideoRangeType',
-            'VideoRange',
-            'VideoDoViTitle',
-            'VideoDoViProfile',
-            'VideoDoViLevel',
-            'DvProfile',
-            'DvLevel',
-            'RpuPresentFlag',
-            'Hdr10PlusPresentFlag',
-            'VideoType',
-            'DynamicRange',
-            'ColorTransfer',
-            'ColorPrimaries',
-            'ColorSpace',
-            'DisplayTitle',
-            'Title',
-            'videoRangeType',
-            'videoRange',
-            'videoDoViTitle',
-            'videoDoViProfile',
-            'videoDoViLevel',
-            'dvProfile',
-            'dvLevel',
-            'rpuPresentFlag',
-            'hdr10PlusPresentFlag',
-            'videoType',
-            'dynamicRange',
-            'colorTransfer',
-            'colorPrimaries',
-            'colorSpace',
-            'displayTitle',
-            'title'
-        ];
-
-        var sawSdr = false;
-        var itemFieldHint = getDynamicRangeHintFromObjectFields(item, fieldKeys);
-        if (itemFieldHint === 'hdr') {
-            return 'hdr';
-        }
-        if (itemFieldHint === 'sdr') {
-            sawSdr = true;
-        }
-
-        if (isHdrDynamicRangeText(item.VideoDoViProfile)
-            || isHdrDynamicRangeText(item.videoDoViProfile)
-            || isHdrDynamicRangeText(item.DvProfile)
-            || isHdrDynamicRangeText(item.dvProfile)
-            || isHdrDynamicRangeText(item.VideoDoViLevel)
-            || isHdrDynamicRangeText(item.videoDoViLevel)
-            || isHdrDynamicRangeText(item.DvLevel)
-            || isHdrDynamicRangeText(item.dvLevel)) {
-            return 'hdr';
-        }
-
-        var mediaStreams = toArray(item.MediaStreams || item.mediaStreams);
-        for (var j = 0; j < mediaStreams.length; j++) {
-            var stream = mediaStreams[j];
-            if (!isVideoMediaStream(stream)) {
-                continue;
-            }
-
-            var streamHint = getDynamicRangeHintFromVideoStream(stream);
-            if (streamHint === 'hdr') {
-                return 'hdr';
-            }
-            if (streamHint === 'sdr') {
-                sawSdr = true;
-            }
-        }
-
-        if (selectedMediaSourceMatched) {
-            return sawSdr ? 'sdr' : 'unknown';
-        }
-
-        var mediaSourceHint = getCombinedDynamicRangeHintFromMediaSources(mediaSources);
-        if (mediaSourceHint !== 'unknown') {
-            return mediaSourceHint;
-        }
-
-        return sawSdr ? 'sdr' : 'unknown';
+        var decisions = getHdrDecisions();
+        return decisions && decisions.getDynamicRangeHintFromItem
+            ? decisions.getDynamicRangeHintFromItem(item, mediaSourceId)
+            : 'unknown';
     }
 
     function getCurrentApiClient() {
@@ -4980,31 +4391,6 @@
             }
         }
         return maxBitrate;
-    }
-
-    function patchPlaybackProfileBitrateLimits(profile) {
-        if (!profile || typeof profile !== 'object') {
-            return;
-        }
-
-        var targetBitrate = getHighestKnownBitrateOption();
-        var changed = false;
-        var streamingBitrate = parsePositiveInteger(profile.MaxStreamingBitrate);
-        var staticBitrate = parsePositiveInteger(profile.MaxStaticBitrate);
-
-        if (streamingBitrate < targetBitrate) {
-            profile.MaxStreamingBitrate = targetBitrate;
-            changed = true;
-        }
-
-        if (staticBitrate < targetBitrate) {
-            profile.MaxStaticBitrate = targetBitrate;
-            changed = true;
-        }
-
-        if (changed) {
-            debugLog('Patched device profile bitrate limits: streaming=' + profile.MaxStreamingBitrate + ', static=' + profile.MaxStaticBitrate);
-        }
     }
 
     function escapeRegExp(value) {
@@ -5363,60 +4749,10 @@
     }
 
     function getDynamicRangeHintFromPlaybackInfoPayload(payload, mediaSourceId) {
-        if (!payload || typeof payload !== 'object') {
-            return 'unknown';
-        }
-
-        var selectedMediaSourceId = mediaSourceId || getSelectedMediaSourceId(payload);
-        var hint = getDynamicRangeHintFromItem(payload.NowPlayingItem, selectedMediaSourceId);
-        if (hint !== 'unknown') {
-            return hint;
-        }
-
-        hint = getDynamicRangeHintFromItem(payload.Item, selectedMediaSourceId);
-        if (hint !== 'unknown') {
-            return hint;
-        }
-
-        hint = getDynamicRangeHintFromItem({
-            MediaSources: payload.MediaSources || payload.mediaSources,
-            MediaStreams: payload.MediaStreams || payload.mediaStreams,
-            VideoRangeType: payload.VideoRangeType,
-            VideoRange: payload.VideoRange,
-            VideoDoViTitle: payload.VideoDoViTitle,
-            VideoDoViProfile: payload.VideoDoViProfile,
-            VideoDoViLevel: payload.VideoDoViLevel,
-            DvProfile: payload.DvProfile,
-            DvLevel: payload.DvLevel,
-            RpuPresentFlag: payload.RpuPresentFlag,
-            Hdr10PlusPresentFlag: payload.Hdr10PlusPresentFlag,
-            VideoType: payload.VideoType,
-            DynamicRange: payload.DynamicRange,
-            ColorTransfer: payload.ColorTransfer,
-            ColorPrimaries: payload.ColorPrimaries,
-            ColorSpace: payload.ColorSpace,
-            DisplayTitle: payload.DisplayTitle,
-            videoRangeType: payload.videoRangeType,
-            videoRange: payload.videoRange,
-            videoDoViTitle: payload.videoDoViTitle,
-            videoDoViProfile: payload.videoDoViProfile,
-            videoDoViLevel: payload.videoDoViLevel,
-            dvProfile: payload.dvProfile,
-            dvLevel: payload.dvLevel,
-            rpuPresentFlag: payload.rpuPresentFlag,
-            hdr10PlusPresentFlag: payload.hdr10PlusPresentFlag,
-            videoType: payload.videoType,
-            dynamicRange: payload.dynamicRange,
-            colorTransfer: payload.colorTransfer,
-            colorPrimaries: payload.colorPrimaries,
-            colorSpace: payload.colorSpace,
-            displayTitle: payload.displayTitle
-        }, selectedMediaSourceId);
-        if (hint !== 'unknown') {
-            return hint;
-        }
-
-        return getDynamicRangeHintFromItem(payload, selectedMediaSourceId);
+        var decisions = getHdrDecisions();
+        return decisions && decisions.getDynamicRangeHintFromPlaybackInfoPayload
+            ? decisions.getDynamicRangeHintFromPlaybackInfoPayload(payload, mediaSourceId)
+            : 'unknown';
     }
 
     function isSubtitleMediaStream(stream) {
@@ -6088,470 +5424,21 @@
         hdrUiInfoObserver.setEnabled(shouldUseHdrUiInfoObserver());
     }
 
-
-
-    function parseCommaSeparatedList(value) {
-        if (!value || typeof value !== 'string') {
-            return [];
-        }
-
-        var parts = value.split(',');
-        var result = [];
-        for (var i = 0; i < parts.length; i++) {
-            var token = parts[i];
-            if (!token) {
-                continue;
-            }
-
-            token = token.replace(/^\s+|\s+$/g, '');
-            if (token) {
-                result.push(token);
-            }
-        }
-
-        return result;
-    }
-
-    function removeValuesFromList(listValue, disallowedValuesMap) {
-        var parsed = parseCommaSeparatedList(listValue);
-        if (!parsed.length) {
-            return {
-                value: listValue,
-                changed: false
-            };
-        }
-
-        var filtered = [];
-        var changed = false;
-        for (var i = 0; i < parsed.length; i++) {
-            var token = parsed[i];
-            if (disallowedValuesMap[token.toLowerCase()]) {
-                changed = true;
-                continue;
-            }
-            filtered.push(token);
-        }
-
-        return {
-            value: filtered.join(','),
-            changed: changed
-        };
-    }
-
-    function addValuesToList(listValue, valuesToAdd) {
-        var parsed = parseCommaSeparatedList(listValue);
-        var seen = {};
-        var changed = false;
-
-        for (var i = 0; i < parsed.length; i++) {
-            seen[parsed[i].toLowerCase()] = true;
-        }
-
-        for (var j = 0; j < valuesToAdd.length; j++) {
-            var value = valuesToAdd[j];
-            if (!value || seen[value.toLowerCase()]) {
-                continue;
-            }
-
-            parsed.push(value);
-            seen[value.toLowerCase()] = true;
-            changed = true;
-        }
-
-        return {
-            value: parsed.join(','),
-            changed: changed
-        };
-    }
-
-    function getProfileTypeName(value) {
-        return value ? value.toString().toLowerCase() : '';
-    }
-
-    function hasSubtitleProfile(profile, format, method) {
-        if (!profile || !profile.SubtitleProfiles) {
-            return false;
-        }
-
-        var normalizedFormat = format.toString().toLowerCase();
-        var normalizedMethod = method.toString().toLowerCase();
-        for (var i = 0; i < profile.SubtitleProfiles.length; i++) {
-            var subtitleProfile = profile.SubtitleProfiles[i];
-            if (!subtitleProfile) {
-                continue;
-            }
-
-            if (getProfileTypeName(subtitleProfile.Format) === normalizedFormat
-                && getProfileTypeName(subtitleProfile.Method) === normalizedMethod) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    function addSubtitleProfile(profile, format, method) {
-        if (!profile || !format || !method) {
-            return false;
-        }
-
-        if (!profile.SubtitleProfiles) {
-            profile.SubtitleProfiles = [];
-        }
-
-        if (hasSubtitleProfile(profile, format, method)) {
-            return false;
-        }
-
-        profile.SubtitleProfiles.push({
-            Format: format,
-            Method: method
-        });
-        return true;
-    }
-
-    function isBitmapPgsSubtitleProfileFormat(format) {
-        var normalizedFormat = getProfileTypeName(format);
-        return normalizedFormat === 'pgssub'
-            || normalizedFormat === 'pgs'
-            || normalizedFormat === 'hdmv_pgs_subtitle';
-    }
-
-    function preferExternalSubtitleProfilesForBitmapPgs(profile) {
-        if (!profile || !profile.SubtitleProfiles
-            || Object.prototype.toString.call(profile.SubtitleProfiles) !== '[object Array]') {
-            return;
-        }
-
-        // This is device capability reporting, not a local burn-in override.
-        // Jellyfin still applies AlwaysBurnInSubtitleWhenTranscoding later when
-        // it builds the transcode URL. Without this, an Embed/Encode PGS profile
-        // can win before the client-rendered External path, which loses PGS
-        // delivery and can pull HDR video-copy playback into video encoding.
-        var patchedProfiles = 0;
-        for (var i = 0; i < profile.SubtitleProfiles.length; i++) {
-            var subtitleProfile = profile.SubtitleProfiles[i];
-            if (!subtitleProfile || !isBitmapPgsSubtitleProfileFormat(subtitleProfile.Format)) {
-                continue;
-            }
-            if (getProfileTypeName(subtitleProfile.Method) === 'external') {
-                continue;
-            }
-
-            subtitleProfile.Method = 'External';
-            patchedProfiles++;
-        }
-
-        if (patchedProfiles) {
-            debugLog('Preferred External SubtitleProfile method for PGS profile(s):', patchedProfiles);
-        }
-    }
-
-    function hasH264Codec(codecValue) {
-        var codecs = parseCommaSeparatedList(codecValue);
-        for (var i = 0; i < codecs.length; i++) {
-            var codec = codecs[i].toLowerCase();
-            if (codec === 'h264' || codec === 'avc') {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    function getDirectPlayVideoCodecMap(profile) {
-        var result = {};
-        if (!profile || !profile.DirectPlayProfiles) {
-            return result;
-        }
-
-        for (var i = 0; i < profile.DirectPlayProfiles.length; i++) {
-            var directPlayProfile = profile.DirectPlayProfiles[i];
-            if (!directPlayProfile || getProfileTypeName(directPlayProfile.Type) !== 'video') {
-                continue;
-            }
-
-            var codecs = parseCommaSeparatedList(directPlayProfile.VideoCodec);
-            for (var j = 0; j < codecs.length; j++) {
-                result[codecs[j].toLowerCase()] = true;
-            }
-        }
-
-        return result;
-    }
-
-    function getCopyableVideoCodecsForAudioTranscode(profile) {
-        // Only promote video-copy codecs that survived the current device
-        // profile's video capability checks. If the TV cannot direct play a
-        // codec, audio-only transcode must not force that video codec to copy.
-        var directPlayVideoCodecs = getDirectPlayVideoCodecMap(profile);
-        var result = [];
-        var candidates = ['hevc', 'h265'];
-        for (var i = 0; i < candidates.length; i++) {
-            var candidate = candidates[i];
-            if (directPlayVideoCodecs[candidate]) {
-                result.push(candidate);
-            }
-        }
-        return result;
-    }
-
-    function hasIsInterlacedCondition(conditions) {
-        if (!conditions || !conditions.length) {
-            return false;
-        }
-
-        for (var i = 0; i < conditions.length; i++) {
-            var condition = conditions[i];
-            if (!condition || !condition.Property) {
-                continue;
-            }
-
-            if (condition.Property.toString().toLowerCase() === 'isinterlaced') {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    function patchDirectPlayProfilesForProblematicFormats(profile) {
-        if (!profile || !profile.DirectPlayProfiles || !profile.DirectPlayProfiles.length) {
-            return;
-        }
-
-        var disallowedContainers = {
-            dvd: true,
-            vob: true,
-            vro: true,
-            mpg: true,
-            mpeg: true
-        };
-        var disallowedVideoCodecs = {
-            mpeg1video: true,
-            mpeg2video: true
-        };
-
-        var removedProfiles = 0;
-        var patchedProfiles = 0;
-        for (var i = profile.DirectPlayProfiles.length - 1; i >= 0; i--) {
-            var directPlayProfile = profile.DirectPlayProfiles[i];
-            if (!directPlayProfile || !directPlayProfile.Type || directPlayProfile.Type.toString().toLowerCase() !== 'video') {
-                continue;
-            }
-
-            var hadContainerList = typeof directPlayProfile.Container === 'string' && parseCommaSeparatedList(directPlayProfile.Container).length > 0;
-            var hadVideoCodecList = typeof directPlayProfile.VideoCodec === 'string' && parseCommaSeparatedList(directPlayProfile.VideoCodec).length > 0;
-            var changed = false;
-
-            var containerResult = removeValuesFromList(directPlayProfile.Container, disallowedContainers);
-            if (containerResult.changed) {
-                directPlayProfile.Container = containerResult.value;
-                changed = true;
-            }
-
-            var codecResult = removeValuesFromList(directPlayProfile.VideoCodec, disallowedVideoCodecs);
-            if (codecResult.changed) {
-                directPlayProfile.VideoCodec = codecResult.value;
-                changed = true;
-            }
-
-            var hasContainerList = typeof directPlayProfile.Container === 'string' && parseCommaSeparatedList(directPlayProfile.Container).length > 0;
-            var hasVideoCodecList = typeof directPlayProfile.VideoCodec === 'string' && parseCommaSeparatedList(directPlayProfile.VideoCodec).length > 0;
-            if ((hadContainerList && !hasContainerList) || (hadVideoCodecList && !hasVideoCodecList)) {
-                profile.DirectPlayProfiles.splice(i, 1);
-                removedProfiles++;
-                continue;
-            }
-
-            if (changed) {
-                patchedProfiles++;
-            }
-        }
-
-        if (patchedProfiles || removedProfiles) {
-            debugLog('Patched direct play profile(s) for DVD/MPEG compatibility. patched=' + patchedProfiles + ', removed=' + removedProfiles);
-        }
-    }
-
-    function patchH264InterlaceSupport(profile) {
-        if (!profile || !profile.CodecProfiles) {
-            return;
-        }
-
-        var patchedCodecProfiles = 0;
-        for (var i = 0; i < profile.CodecProfiles.length; i++) {
-            var codecProfile = profile.CodecProfiles[i];
-            if (!codecProfile || (codecProfile.Type && codecProfile.Type.toString().toLowerCase() !== 'video')) {
-                continue;
-            }
-
-            if (!hasH264Codec(codecProfile.Codec)) {
-                continue;
-            }
-
-            if (!codecProfile.Conditions) {
-                codecProfile.Conditions = [];
-            }
-
-            if (hasIsInterlacedCondition(codecProfile.Conditions)) {
-                continue;
-            }
-
-            codecProfile.Conditions.push({
-                Condition: 'NotEquals',
-                Property: 'IsInterlaced',
-                Value: 'true',
-                IsRequired: false
-            });
-            patchedCodecProfiles++;
-        }
-
-        if (patchedCodecProfiles) {
-            debugLog('Added non-interlaced H264 condition to codec profile(s):', patchedCodecProfiles);
-        }
-    }
-
-    function patchExternalSubtitleProfiles(profile) {
-        var added = 0;
-        var formats = ['ass', 'ssa', 'pgssub', 'pgs'];
-        for (var i = 0; i < formats.length; i++) {
-            if (addSubtitleProfile(profile, formats[i], 'External')) {
-                added++;
-            }
-        }
-
-        if (added) {
-            debugLog('Added external subtitle profile(s) for client-side rendering:', added);
-        }
-    }
-
-    function patchHlsSubtitleManifestSupport(profile) {
-        if (!profile || !profile.TranscodingProfiles || !profile.TranscodingProfiles.length) {
-            return;
-        }
-
-        var patchedProfiles = 0;
-        for (var i = 0; i < profile.TranscodingProfiles.length; i++) {
-            var transcodingProfile = profile.TranscodingProfiles[i];
-            if (!transcodingProfile
-                || getProfileTypeName(transcodingProfile.Type) !== 'video'
-                || getProfileTypeName(transcodingProfile.Protocol) !== 'hls') {
-                continue;
-            }
-
-            if (transcodingProfile.EnableSubtitlesInManifest !== true) {
-                transcodingProfile.EnableSubtitlesInManifest = true;
-                patchedProfiles++;
-            }
-        }
-
-        if (patchedProfiles) {
-            debugLog('Enabled HLS subtitle manifest support for video transcoding profile(s):', patchedProfiles);
-        }
-    }
-
-    function patchVideoTranscodingProfilesForAudioOnlyTranscode(profile) {
-        if (!profile || !profile.TranscodingProfiles || !profile.TranscodingProfiles.length) {
-            return;
-        }
-
-        var copyVideoCodecs = getCopyableVideoCodecsForAudioTranscode(profile);
-        if (!copyVideoCodecs.length) {
-            return;
-        }
-
-        var patchedProfiles = 0;
-        for (var j = 0; j < profile.TranscodingProfiles.length; j++) {
-            var transcodingProfile = profile.TranscodingProfiles[j];
-            if (!transcodingProfile || getProfileTypeName(transcodingProfile.Type) !== 'video') {
-                continue;
-            }
-
-            var result = addValuesToList(transcodingProfile.VideoCodec, copyVideoCodecs);
-            if (result.changed) {
-                transcodingProfile.VideoCodec = result.value;
-                patchedProfiles++;
-            }
-        }
-
-        if (patchedProfiles) {
-            debugLog('Allowed direct-stream video copy for audio-only transcode profile(s):', patchedProfiles);
-        }
-    }
-
-    function addLpcmAudioCopyCodecsToProfileEntry(profileEntry) {
-        if (!profileEntry || !parseCommaSeparatedList(profileEntry.AudioCodec).length) {
-            return false;
-        }
-
-        var result = addValuesToList(profileEntry.AudioCodec, LPCM_AUDIO_COPY_CODECS);
-        if (!result.changed) {
-            return false;
-        }
-
-        profileEntry.AudioCodec = result.value;
-        return true;
-    }
-
-    function patchAudioProfilesForLpcmAudioCopy(profile) {
-        if (!lpcmAudioCopyEnabled || !profile) {
-            return;
-        }
-
-        var patchedDirectPlayProfiles = 0;
-        if (profile.DirectPlayProfiles && profile.DirectPlayProfiles.length) {
-            for (var i = 0; i < profile.DirectPlayProfiles.length; i++) {
-                var directPlayProfile = profile.DirectPlayProfiles[i];
-                if (!directPlayProfile || getProfileTypeName(directPlayProfile.Type) !== 'video') {
-                    continue;
-                }
-
-                if (addLpcmAudioCopyCodecsToProfileEntry(directPlayProfile)) {
-                    patchedDirectPlayProfiles++;
-                }
-            }
-        }
-
-        if (patchedDirectPlayProfiles) {
-            debugLog('Allowed LPCM/PCM direct-play audio copy profile(s):', patchedDirectPlayProfiles);
-        }
-    }
-
-    function applyVideoCapabilityProfilePatches(profile) {
-        // Video transcoding should be driven by the video/container capability
-        // report only. These patches remove known-bad direct-play claims.
-        patchDirectPlayProfilesForProblematicFormats(profile);
-        patchH264InterlaceSupport(profile);
-    }
-
-    function applyAudioTranscodeVideoCopyProfilePatches(profile) {
-        // Keep video copy scoped to codecs that survived device capability
-        // checks. Optional LPCM/PCM audio copy only expands existing audio
-        // codec lists on direct-play profiles for receiver testing; it does
-        // not override video support.
-        patchVideoTranscodingProfilesForAudioOnlyTranscode(profile);
-        patchAudioProfilesForLpcmAudioCopy(profile);
-    }
-
-    function applySubtitleDeliveryProfilePatches(profile) {
-        // Subtitle burn-in is not forced here. The profile only advertises
-        // client-renderable subtitle delivery; Jellyfin's own
-        // AlwaysBurnInSubtitleWhenTranscoding flag decides burn-in later.
-        preferExternalSubtitleProfilesForBitmapPgs(profile);
-        patchExternalSubtitleProfiles(profile);
-        patchHlsSubtitleManifestSupport(profile);
-    }
-
     function applyPlaybackCompatibilityProfilePatches(profile) {
         if (!profile || typeof profile !== 'object') {
             return profile;
         }
 
-        applyVideoCapabilityProfilePatches(profile);
-        applyAudioTranscodeVideoCopyProfilePatches(profile);
-        applySubtitleDeliveryProfilePatches(profile);
-        patchPlaybackProfileBitrateLimits(profile);
-        return profile;
+        if (!webOSProfilePatches || !webOSProfilePatches.applyPlaybackCompatibilityProfilePatches) {
+            warnLog('webOS playback profile patch module is unavailable');
+            return profile;
+        }
+
+        return webOSProfilePatches.applyPlaybackCompatibilityProfilePatches(profile, {
+            maxBitrate: getHighestKnownBitrateOption(),
+            lpcmAudioCopyEnabled: lpcmAudioCopyEnabled,
+            debugLog: debugLog
+        });
     }
 
     // List of supported features

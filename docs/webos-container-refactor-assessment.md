@@ -16,16 +16,20 @@ The app is already a Jellyfin Web container:
   webOS device info, and injection of local assets into the hosted Jellyfin Web
   page.
 - `frontend/js/webOS.js` is the injected compatibility layer. It currently owns
-  AppHost bridging, PlaybackInfo interception, bitrate patches, HDR UI dimming,
-  ASS and PGS subtitle patches, settings injection, quality menu injection,
-  pointer/focus fixes, playback state tracking, and diagnostics.
+  AppHost bridging, PlaybackInfo interception, HDR UI dimming, ASS and PGS
+  subtitle patches, settings injection, quality menu injection, pointer/focus
+  fixes, playback state tracking, and diagnostics. Device profile compatibility
+  transforms have been extracted to `frontend/js/injected/playback/profilePatches.js`,
+  and pure HDR/Dolby Vision / video-delivery decisions have been extracted to
+  `frontend/js/injected/playback/hdrDecisions.js`.
 - `frontend/css/webOS.css` contains local CSS fixes for TV layout, HDR UI
   brightness, and subtitle overlays.
 - `services/service.js` provides Jellyfin UDP discovery.
 
 The largest maintenance risk is not the shell itself. The risk is that many
-independent runtime patches are now concentrated in one injected script and
-depend on Jellyfin Web internals that can move between upstream releases.
+independent runtime patches still depend on Jellyfin Web internals that can
+move between upstream releases, even after the first pure-decision modules were
+split out of the main injected script.
 
 ## Refactor Direction
 
@@ -152,6 +156,19 @@ Current migration constraints:
 - avoid changing ASS/PGS renderer behavior during early infrastructure stages;
 - add low-cost Node checks for injected asset manifests and pure decision
   logic before moving larger runtime hooks.
+
+Completed migration steps:
+
+- `frontend/js/injected/core/runtime.js` provides the private injected module
+  namespace.
+- `frontend/js/injected/core/features.js` owns boolean feature metadata.
+- `frontend/js/injected/playback/profilePatches.js` owns the pure device profile
+  compatibility transform, with focused Node coverage for bitrate, video
+  capability, subtitle delivery, audio-transcode video-copy, and LPCM behavior.
+- `frontend/js/injected/playback/hdrDecisions.js` owns pure HDR/Dolby Vision
+  and video-delivery classification, with focused Node coverage for metadata,
+  media-source selection, PlaybackInfo payloads, and copied/direct playback
+  eligibility.
 
 Continue to prefer narrow behavior-preserving changes. Only reconsider a full
 client rewrite if the iframe-based patch model itself becomes the blocker.

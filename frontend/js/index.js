@@ -571,6 +571,8 @@ var HANDOFF_INJECTION_TIMEOUT_MS = 45000;
 var injectedScriptUrls = [
     'js/injected/core/runtime.js',
     'js/injected/core/features.js',
+    'js/injected/playback/profilePatches.js',
+    'js/injected/playback/hdrDecisions.js',
     'js/webOS.js'
 ];
 var injectedStyleUrls = [

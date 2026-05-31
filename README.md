@@ -16,6 +16,13 @@ iframe injection path. Its current `core/features.js` registry owns boolean
 feature metadata such as storage keys, defaults, and settings text. HDR
 brightness and subtitle opacity sliders are still persisted separately because
 they are numeric display settings, not boolean feature flags.
+`playback/profilePatches.js` owns the pure device profile compatibility
+transforms: bitrate caps, known-bad video capability reporting, audio-transcode
+video-copy allowance, subtitle delivery profile reporting, and the optional
+LPCM/PCM DirectPlay audio copy expansion. `webOS.js` keeps the runtime hooks and
+passes the current settings into that module. `playback/hdrDecisions.js` owns
+pure HDR/Dolby Vision and video-delivery decisions used by the dimming logic;
+DOM scanning, playback state, and the actual dim class stay in `webOS.js`.
 
 ## Why this fork exists
 
@@ -137,8 +144,9 @@ The playback compatibility patches intentionally keep four decisions separate:
   or delete subtitle burn-in query parameters.
 - HDR/DV UI dimming is applied only when the detected playback range is HDR/DV
   and PlaybackInfo indicates that the video stream is DirectPlay, DirectStream,
-  or transcode-with-video-copy (`Static=true` or `VideoCodec=copy`). If video
-  delivery is unknown or is a video transcode, the UI dim class is not enabled.
+  or transcode-with-video-copy (`VideoCodec=copy`). `Static=true` is classified
+  as DirectStream. If video delivery is unknown or is a video transcode, the UI
+  dim class is not enabled.
 
 The diagnostics overlay prints
 `video=directplay|directstream|copy|transcode|unknown` next to `range=...` so HDR
