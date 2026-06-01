@@ -4,29 +4,29 @@ const path = require('path');
 const vm = require('vm');
 
 const root = path.resolve(__dirname, '..', '..');
+const runtimePath = path.join(root, 'frontend', 'js', 'injected', 'core', 'runtime.js');
 const featuresPath = path.join(root, 'frontend', 'js', 'injected', 'core', 'features.js');
 const indexPath = path.join(root, 'frontend', 'js', 'index.js');
 
 function loadFeatureRegistry() {
-    const window = {
-        __JellyfinWebOSPatchRuntime: {
-            modules: {},
-            moduleOrder: [],
-            define: function (name, module) {
-                this.modules[name] = module;
-                this.moduleOrder.push(name);
-                return module;
-            }
-        }
+    const window = {};
+    const context = {
+        window: window
     };
 
-    vm.runInNewContext(fs.readFileSync(featuresPath, 'utf8'), {
-        window: window
-    }, {
+    vm.runInNewContext(fs.readFileSync(runtimePath, 'utf8'), context, {
+        filename: runtimePath
+    });
+    vm.runInNewContext(fs.readFileSync(featuresPath, 'utf8'), context, {
         filename: featuresPath
     });
+    vm.runInNewContext(fs.readFileSync(featuresPath, 'utf8'), context, {
+        filename: featuresPath + '#repeat'
+    });
 
-    return window.__JellyfinWebOSPatchRuntime.modules['core.features'];
+    const runtime = window.__JellyfinWebOSPatchRuntime;
+    assert.strictEqual(runtime.moduleOrder.filter((name) => name === 'core.features').length, 1, 'runtime should de-duplicate module order');
+    return runtime.get('core.features');
 }
 
 function extractAllowedFeatureOverrides() {

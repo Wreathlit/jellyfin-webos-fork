@@ -33,6 +33,8 @@ assert(patches, 'subtitles.scriptPatches should register');
     assert.strictEqual(result.patched, true);
     assert(result.text.indexOf('window.WebOSAssRendererOptions') !== -1);
     assert(result.text.indexOf('limitRenderAhead') !== -1);
+    assert(result.text.indexOf('renderAhead:(window.WebOSAssRendererOptions&&window.WebOSAssRendererOptions.limitRenderAhead?window.WebOSAssRendererOptions.renderAheadMiB:90.0)') !== -1);
+    assert(result.text.indexOf('renderAhead:(window.WebOSAssRendererOptions&&window.WebOSAssRendererOptions.limitRenderAhead?window.WebOSAssRendererOptions.renderAheadMiB:90)') !== -1);
 }
 
 {

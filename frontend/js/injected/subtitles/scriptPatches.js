@@ -41,8 +41,12 @@
         }
 
         var patched = text;
-        patched = patched.replace(/renderAhead\s*:\s*90\.0\b/g, buildAssRenderAheadReplacement('90'));
-        patched = patched.replace(/renderAhead\s*:\s*90(?!\.)\b/g, buildAssRenderAheadReplacement('90'));
+        patched = patched.replace(/renderAhead\s*:\s*(90\.0)\b/g, function (match, originalValue) {
+            return buildAssRenderAheadReplacement(originalValue);
+        });
+        patched = patched.replace(/renderAhead\s*:\s*(90)(?!\.)\b/g, function (match, originalValue) {
+            return buildAssRenderAheadReplacement(originalValue);
+        });
 
         result.text = patched;
         result.patched = patched !== text;
