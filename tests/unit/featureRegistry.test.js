@@ -79,6 +79,23 @@ const expectedDefinitions = {
     }
 };
 
+const expectedNumberDefinitions = {
+    hdrUiDimBrightness: {
+        storageKey: 'webos_hdr_ui_dim_brightness',
+        defaultValue: 0.3,
+        minValue: 0.05,
+        maxValue: 1,
+        group: 'hdr'
+    },
+    hdrSubtitleOpacity: {
+        storageKey: 'webos_hdr_subtitle_opacity',
+        defaultValue: 0.62,
+        minValue: 0.25,
+        maxValue: 1,
+        group: 'hdr'
+    }
+};
+
 const definitions = registry.getBooleanDefinitions();
 const keys = JSON.parse(JSON.stringify(definitions.map((definition) => definition.key).sort()));
 assert.deepStrictEqual(keys, extractAllowedFeatureOverrides(), 'feature registry and host whitelist should match');
@@ -99,6 +116,29 @@ for (let i = 0; i < definitions.length; i++) {
     }, expectedDefinition, definition.key + ' definition should keep its public contract');
 }
 
+const numberDefinitions = registry.getNumberDefinitions();
+const numberKeys = JSON.parse(JSON.stringify(numberDefinitions.map((definition) => definition.key).sort()));
+assert.deepStrictEqual(numberKeys, Object.keys(expectedNumberDefinitions).sort(), 'feature registry should contain expected numeric settings');
+
+for (let i = 0; i < numberDefinitions.length; i++) {
+    const definition = numberDefinitions[i];
+    const expectedDefinition = expectedNumberDefinitions[definition.key];
+    assert(definition.key, 'numeric setting key is required');
+    assert(definition.storageKey, definition.key + ' storageKey is required');
+    assert.strictEqual(typeof definition.defaultValue, 'number', definition.key + ' defaultValue should be numeric');
+    assert.strictEqual(typeof definition.minValue, 'number', definition.key + ' minValue should be numeric');
+    assert.strictEqual(typeof definition.maxValue, 'number', definition.key + ' maxValue should be numeric');
+    assert(definition.title, definition.key + ' title is required');
+    assert(definition.description, definition.key + ' description is required');
+    assert.deepStrictEqual({
+        storageKey: definition.storageKey,
+        defaultValue: definition.defaultValue,
+        minValue: definition.minValue,
+        maxValue: definition.maxValue,
+        group: definition.group
+    }, expectedDefinition, definition.key + ' definition should keep its public numeric contract');
+}
+
 assert.strictEqual(registry.getDefaultValue('playbackDiagnosticsEnabled', true), false);
 assert.strictEqual(registry.getDefaultValue('disableAssRenderAhead', false), true);
 assert.strictEqual(registry.getInitialBooleanValue('lpcmAudioCopyEnabled', {
@@ -108,7 +148,9 @@ assert.strictEqual(registry.getInitialBooleanValue('lpcmAudioCopyEnabled', {
 const storage = {
     values: {
         webos_disable_ass_render_ahead: '0',
-        webos_ass_time_sync_fix: '1'
+        webos_ass_time_sync_fix: '1',
+        webos_hdr_ui_dim_brightness: '1.5',
+        webos_hdr_subtitle_opacity: '0.123'
     },
     getItem: function (key) {
         return Object.prototype.hasOwnProperty.call(this.values, key) ? this.values[key] : null;
@@ -122,6 +164,17 @@ assert.strictEqual(registry.loadBooleanValue('disableAssRenderAhead', storage, t
 assert.strictEqual(registry.loadBooleanValue('assTimeSyncFixEnabled', storage, false), true);
 registry.saveBooleanValue('lpcmAudioCopyEnabled', storage, true);
 assert.strictEqual(storage.values.webos_lpcm_audio_copy, 'true');
+assert.strictEqual(registry.loadNumberValue('hdrUiDimBrightness', storage, 0.3), 1, 'brightness should clamp to max');
+assert.strictEqual(registry.loadNumberValue('hdrSubtitleOpacity', storage, 0.62), 0.25, 'subtitle opacity should clamp to min');
+assert.strictEqual(registry.loadNumberValue('hdrUiDimBrightness', {
+    getItem: function () {
+        return 'bad';
+    }
+}, 0.44), 0.44, 'invalid numeric settings should use fallback');
+registry.saveNumberValue('hdrUiDimBrightness', storage, 0.333);
+registry.saveNumberValue('hdrSubtitleOpacity', storage, 0.987);
+assert.strictEqual(storage.values.webos_hdr_ui_dim_brightness, '0.33');
+assert.strictEqual(storage.values.webos_hdr_subtitle_opacity, '0.99');
 
 const payload = registry.createOverridePayload({
     playbackDiagnosticsEnabled: true,

@@ -21,7 +21,9 @@ The app is already a Jellyfin Web container:
   fixes, playback state tracking, and diagnostics. Device profile compatibility
   transforms have been extracted to `frontend/js/injected/playback/profilePatches.js`,
   and pure HDR/Dolby Vision / video-delivery decisions have been extracted to
-  `frontend/js/injected/playback/hdrDecisions.js`.
+  `frontend/js/injected/playback/hdrDecisions.js`. Pure PlaybackInfo bitrate
+  URL/body transforms have been extracted to
+  `frontend/js/injected/playback/playbackInfoPatches.js`.
 - `frontend/css/webOS.css` contains local CSS fixes for TV layout, HDR UI
   brightness, and subtitle overlays.
 - `services/service.js` provides Jellyfin UDP discovery.
@@ -161,7 +163,8 @@ Completed migration steps:
 
 - `frontend/js/injected/core/runtime.js` provides the private injected module
   namespace.
-- `frontend/js/injected/core/features.js` owns boolean feature metadata.
+- `frontend/js/injected/core/features.js` owns boolean feature metadata and
+  local numeric setting metadata for HDR UI brightness / subtitle opacity.
 - `frontend/js/injected/playback/profilePatches.js` owns the pure device profile
   compatibility transform, with focused Node coverage for bitrate, video
   capability, subtitle delivery, audio-transcode video-copy, and LPCM behavior.
@@ -169,6 +172,13 @@ Completed migration steps:
   and video-delivery classification, with focused Node coverage for metadata,
   media-source selection, PlaybackInfo payloads, and copied/direct playback
   eligibility.
+- `frontend/js/injected/playback/playbackInfoPatches.js` owns pure
+  PlaybackInfo URL/body max-bitrate patching and nested device-profile body
+  traversal, while `webOS.js` keeps fetch/XHR interception, playback-start force
+  windows, and diagnostic side effects.
+- `frontend/js/injected/subtitles/scriptPatches.js` owns pure ASS/PGS renderer
+  script text replacement and match metadata, while `webOS.js` keeps script
+  interception, runtime helpers, counters, warnings, and diagnostics.
 
 Continue to prefer narrow behavior-preserving changes. Only reconsider a full
 client rewrite if the iframe-based patch model itself becomes the blocker.

@@ -12,17 +12,23 @@ The main local patch surface is:
 - `frontend/css/webOS.css`
 
 `frontend/js/injected/` is the behavior-preserving modular runtime used by the
-iframe injection path. Its current `core/features.js` registry owns boolean
-feature metadata such as storage keys, defaults, and settings text. HDR
-brightness and subtitle opacity sliders are still persisted separately because
-they are numeric display settings, not boolean feature flags.
+iframe injection path. Its current `core/features.js` registry owns boolean and
+numeric setting metadata such as storage keys, defaults, ranges, and settings
+text. Boolean feature overrides still use the existing postMessage whitelist;
+HDR brightness and subtitle opacity remain local numeric display settings.
 `playback/profilePatches.js` owns the pure device profile compatibility
 transforms: bitrate caps, known-bad video capability reporting, audio-transcode
 video-copy allowance, subtitle delivery profile reporting, and the optional
 LPCM/PCM DirectPlay audio copy expansion. `webOS.js` keeps the runtime hooks and
-passes the current settings into that module. `playback/hdrDecisions.js` owns
-pure HDR/Dolby Vision and video-delivery decisions used by the dimming logic;
-DOM scanning, playback state, and the actual dim class stay in `webOS.js`.
+passes the current settings into that module. `playback/playbackInfoPatches.js`
+owns pure PlaybackInfo URL/body bitrate and nested device-profile body patching;
+fetch/XHR interception, playback-start force windows, and diagnostics stay in
+`webOS.js`. `subtitles/scriptPatches.js` owns pure ASS/PGS renderer script text
+replacement and reports which patch families matched; script interception,
+runtime counters, warning policy, and DOM/XHR behavior stay in `webOS.js`.
+`playback/hdrDecisions.js` owns pure HDR/Dolby Vision and video-delivery
+decisions used by the dimming logic; DOM scanning, playback state, and the
+actual dim class stay in `webOS.js`.
 
 ## Why this fork exists
 
@@ -310,7 +316,9 @@ cache frames that are later replayed out of sync.
 Approach:
 
 - patch libass renderer script options so `renderAhead` defaults to `0` on
-  webOS;
+  webOS. The fragile script-text replacement is isolated in
+  `subtitles/scriptPatches.js`, while `webOS.js` only records counters and
+  performs script interception;
 - expose the small-backward-time clamp as `webOS: Fix ASS time rollback`,
   enabled by default;
 - clamp only small backward `currentTime` messages posted to the ASS worker when
@@ -346,7 +354,10 @@ Approach:
 - guard OffscreenCanvas `render` posts against non-seek backward indexes;
 - force libpgs to use the `mainThread` renderer by default on webOS;
 - patch libpgs object lookup so reused object ids use the newest ODS sequence
-  instead of all matching object definitions since the last epoch break.
+  instead of all matching object definitions since the last epoch break. The
+  string rewrite patterns live in `subtitles/scriptPatches.js`; webOS runtime
+  state, renderer options, monotonic-time helpers, and diagnostics stay in
+  `webOS.js`.
 
 Status: verified workaround. The verified good combination is `target=main`,
 `obj=on`. `target=main`, `obj=off` still flashes, so the object-id reuse fix is

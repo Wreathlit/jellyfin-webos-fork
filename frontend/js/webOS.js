@@ -33,7 +33,15 @@
     var webOSHdrDecisions = webOSPatchRuntime && webOSPatchRuntime.get
         ? webOSPatchRuntime.get('playback.hdrDecisions')
         : null;
+    var webOSPlaybackInfoPatches = webOSPatchRuntime && webOSPatchRuntime.get
+        ? webOSPatchRuntime.get('playback.playbackInfoPatches')
+        : null;
+    var webOSSubtitleScriptPatches = webOSPatchRuntime && webOSPatchRuntime.get
+        ? webOSPatchRuntime.get('subtitles.scriptPatches')
+        : null;
     var hdrDecisionModuleWarned = false;
+    var playbackInfoPatchModuleWarned = false;
+    var subtitleScriptPatchModuleWarned = false;
 
     function getRegisteredFeatureStorageKey(key, fallback) {
         return webOSFeatureRegistry && webOSFeatureRegistry.getStorageKey
@@ -59,13 +67,44 @@
             : null;
     }
 
+    function getRegisteredNumberFeatureDefinition(key) {
+        return webOSFeatureRegistry && webOSFeatureRegistry.getNumberDefinition
+            ? webOSFeatureRegistry.getNumberDefinition(key)
+            : null;
+    }
+
+    function getRegisteredFeatureDefinition(key) {
+        return getRegisteredBooleanFeatureDefinition(key)
+            || getRegisteredNumberFeatureDefinition(key);
+    }
+
+    function getRegisteredNumberFeatureStorageKey(key, fallback) {
+        var definition = getRegisteredNumberFeatureDefinition(key);
+        return definition && definition.storageKey ? definition.storageKey : fallback;
+    }
+
+    function getRegisteredNumberFeatureDefault(key, fallback) {
+        var definition = getRegisteredNumberFeatureDefinition(key);
+        return definition && typeof definition.defaultValue === 'number' ? definition.defaultValue : fallback;
+    }
+
+    function getRegisteredNumberFeatureMin(key, fallback) {
+        var definition = getRegisteredNumberFeatureDefinition(key);
+        return definition && typeof definition.minValue === 'number' ? definition.minValue : fallback;
+    }
+
+    function getRegisteredNumberFeatureMax(key, fallback) {
+        var definition = getRegisteredNumberFeatureDefinition(key);
+        return definition && typeof definition.maxValue === 'number' ? definition.maxValue : fallback;
+    }
+
     function getRegisteredFeatureTitle(key, fallback) {
-        var definition = getRegisteredBooleanFeatureDefinition(key);
+        var definition = getRegisteredFeatureDefinition(key);
         return definition && definition.title ? definition.title : fallback;
     }
 
     function getRegisteredFeatureDescription(key, fallback) {
-        var definition = getRegisteredBooleanFeatureDefinition(key);
+        var definition = getRegisteredFeatureDefinition(key);
         return definition && definition.description ? definition.description : fallback;
     }
 
@@ -126,17 +165,17 @@
     var LPCM_AUDIO_COPY_KEY = getRegisteredFeatureStorageKey('lpcmAudioCopyEnabled', 'webos_lpcm_audio_copy');
     var DEFAULT_PGS_FORCE_MAIN_THREAD = getRegisteredFeatureDefault('pgsForceMainThread', true);
     var DEFAULT_PGS_PATCH_OBJECT_REUSE = getRegisteredFeatureDefault('pgsPatchObjectReuse', true);
-    var HDR_UI_DIM_BRIGHTNESS_KEY = 'webos_hdr_ui_dim_brightness';
-    var HDR_UI_DIM_DEFAULT_BRIGHTNESS = 0.3;
-    var HDR_UI_DIM_MIN_BRIGHTNESS = 0.05;
-    var HDR_UI_DIM_MAX_BRIGHTNESS = 1;
+    var HDR_UI_DIM_BRIGHTNESS_KEY = getRegisteredNumberFeatureStorageKey('hdrUiDimBrightness', 'webos_hdr_ui_dim_brightness');
+    var HDR_UI_DIM_DEFAULT_BRIGHTNESS = getRegisteredNumberFeatureDefault('hdrUiDimBrightness', 0.3);
+    var HDR_UI_DIM_MIN_BRIGHTNESS = getRegisteredNumberFeatureMin('hdrUiDimBrightness', 0.05);
+    var HDR_UI_DIM_MAX_BRIGHTNESS = getRegisteredNumberFeatureMax('hdrUiDimBrightness', 1);
     var HDR_UI_DIM_MIN_PERCENT = Math.round(HDR_UI_DIM_MIN_BRIGHTNESS * 100);
     var HDR_UI_DIM_MAX_PERCENT = Math.round(HDR_UI_DIM_MAX_BRIGHTNESS * 100);
     var HDR_UI_DIM_DEFAULT_PERCENT = Math.round(HDR_UI_DIM_DEFAULT_BRIGHTNESS * 100);
-    var HDR_SUBTITLE_OPACITY_KEY = 'webos_hdr_subtitle_opacity';
-    var HDR_SUBTITLE_DEFAULT_OPACITY = 0.62;
-    var HDR_SUBTITLE_MIN_OPACITY = 0.25;
-    var HDR_SUBTITLE_MAX_OPACITY = 1;
+    var HDR_SUBTITLE_OPACITY_KEY = getRegisteredNumberFeatureStorageKey('hdrSubtitleOpacity', 'webos_hdr_subtitle_opacity');
+    var HDR_SUBTITLE_DEFAULT_OPACITY = getRegisteredNumberFeatureDefault('hdrSubtitleOpacity', 0.62);
+    var HDR_SUBTITLE_MIN_OPACITY = getRegisteredNumberFeatureMin('hdrSubtitleOpacity', 0.25);
+    var HDR_SUBTITLE_MAX_OPACITY = getRegisteredNumberFeatureMax('hdrSubtitleOpacity', 1);
     var HDR_SUBTITLE_MIN_OPACITY_PERCENT = Math.round(HDR_SUBTITLE_MIN_OPACITY * 100);
     var HDR_SUBTITLE_MAX_OPACITY_PERCENT = Math.round(HDR_SUBTITLE_MAX_OPACITY * 100);
     var HDR_SUBTITLE_DEFAULT_OPACITY_PERCENT = Math.round(HDR_SUBTITLE_DEFAULT_OPACITY * 100);
@@ -1054,6 +1093,21 @@
         localStorage.setItem(storageKey, value ? 'true' : 'false');
     }
 
+    function loadRegisteredNumberFeature(key, storageKey, fallback, min, max) {
+        if (webOSFeatureRegistry && webOSFeatureRegistry.loadNumberValue) {
+            return webOSFeatureRegistry.loadNumberValue(key, localStorage, fallback);
+        }
+        return parseStoredNumber(localStorage.getItem(storageKey), fallback, min, max);
+    }
+
+    function saveRegisteredNumberFeature(key, storageKey, value, formattedValue) {
+        if (webOSFeatureRegistry && webOSFeatureRegistry.saveNumberValue) {
+            webOSFeatureRegistry.saveNumberValue(key, localStorage, value);
+            return;
+        }
+        localStorage.setItem(storageKey, formattedValue !== undefined ? formattedValue : value.toString());
+    }
+
     function parseStoredNumber(value, fallback, min, max) {
         if (value === null || value === undefined || value === '') {
             return fallback;
@@ -1587,8 +1641,20 @@
                 hdrSubtitleOpacity = clampHdrSubtitleOpacity(hdrSubtitleOpacity);
                 return;
             }
-            hdrUiDimBrightness = clampHdrUiDimBrightness(localStorage.getItem(HDR_UI_DIM_BRIGHTNESS_KEY));
-            hdrSubtitleOpacity = clampHdrSubtitleOpacity(localStorage.getItem(HDR_SUBTITLE_OPACITY_KEY));
+            hdrUiDimBrightness = clampHdrUiDimBrightness(loadRegisteredNumberFeature(
+                'hdrUiDimBrightness',
+                HDR_UI_DIM_BRIGHTNESS_KEY,
+                hdrUiDimBrightness,
+                HDR_UI_DIM_MIN_BRIGHTNESS,
+                HDR_UI_DIM_MAX_BRIGHTNESS
+            ));
+            hdrSubtitleOpacity = clampHdrSubtitleOpacity(loadRegisteredNumberFeature(
+                'hdrSubtitleOpacity',
+                HDR_SUBTITLE_OPACITY_KEY,
+                hdrSubtitleOpacity,
+                HDR_SUBTITLE_MIN_OPACITY,
+                HDR_SUBTITLE_MAX_OPACITY
+            ));
         } catch (error) {
             hdrUiDimBrightness = clampHdrUiDimBrightness(hdrUiDimBrightness);
             hdrSubtitleOpacity = clampHdrSubtitleOpacity(hdrSubtitleOpacity);
@@ -1601,8 +1667,18 @@
             if (!window.localStorage) {
                 return;
             }
-            localStorage.setItem(HDR_UI_DIM_BRIGHTNESS_KEY, formatHdrUiDimBrightness(hdrUiDimBrightness));
-            localStorage.setItem(HDR_SUBTITLE_OPACITY_KEY, formatHdrSubtitleOpacity(hdrSubtitleOpacity));
+            saveRegisteredNumberFeature(
+                'hdrUiDimBrightness',
+                HDR_UI_DIM_BRIGHTNESS_KEY,
+                hdrUiDimBrightness,
+                formatHdrUiDimBrightness(hdrUiDimBrightness)
+            );
+            saveRegisteredNumberFeature(
+                'hdrSubtitleOpacity',
+                HDR_SUBTITLE_OPACITY_KEY,
+                hdrSubtitleOpacity,
+                formatHdrSubtitleOpacity(hdrSubtitleOpacity)
+            );
         } catch (error) {
             warnLog('Failed to save persisted HDR UI dim brightness:', error);
         }
@@ -1993,175 +2069,70 @@
         debugLog('Reset subtitle timing state (' + reason + ')');
     }
 
-    function buildAssRenderAheadReplacement(originalValue) {
-        return 'renderAhead:(window.WebOSAssRendererOptions&&window.WebOSAssRendererOptions.limitRenderAhead?window.WebOSAssRendererOptions.renderAheadMiB:' + originalValue + ')';
+    function getSubtitleScriptPatches() {
+        if (webOSSubtitleScriptPatches) {
+            return webOSSubtitleScriptPatches;
+        }
+
+        if (!subtitleScriptPatchModuleWarned) {
+            subtitleScriptPatchModuleWarned = true;
+            warnLog('webOS subtitle script patch module is unavailable');
+        }
+        return null;
     }
 
-    function buildPgsRenderAtVideoTimestampReplacement(methodPrefix) {
-        return methodPrefix + '{if(this.video){var t=this.video.currentTime+this.$timeOffset;this.renderAtTimestamp(window.WebOSMonotonicMediaTime?window.WebOSMonotonicMediaTime.get(this.video,"pgs",t):t)}}';
-    }
-
-    function buildPgsAsyncSubtitleDataGuardReplacement() {
-        return 'e.prototype.render=function(t){if(window.WebOSPgsRenderGuard&&!window.WebOSPgsRenderGuard.request(this,t))return;this.__webosLatestPgsIndex=t;window.WebOSPgsAsyncStats&&window.WebOSPgsAsyncStats.request(t);this.worker.postMessage({op:"requestSubtitleData",index:t})},e.prototype.onWorkerMessage=function(e){if("subtitleData"===e.data.op){if(e.data&&typeof e.data.index==="number"&&typeof this.__webosLatestPgsIndex==="number"&&e.data.index!==this.__webosLatestPgsIndex){window.WebOSPgsAsyncStats&&window.WebOSPgsAsyncStats.drop(e.data.index,this.__webosLatestPgsIndex);return}window.WebOSPgsAsyncStats&&window.WebOSPgsAsyncStats.draw(e.data&&e.data.index);var r=e.data.subtitleData;this.renderer&&this.renderer.draw(r)}else t.prototype.onWorkerMessage.call(this,e)}';
-    }
-
-    function buildPgsOffscreenRenderGuardReplacement() {
-        return 'e.prototype.render=function(t){if(window.WebOSPgsRenderGuard&&!window.WebOSPgsRenderGuard.request(this,t))return;this.worker.postMessage({op:"render",index:t})}';
-    }
-
-    function buildPgsMainThreadRenderGuardReplacement(prototypeName, indexName, selfName, subtitleDataName) {
-        return prototypeName + '.prototype.render=function(' + indexName + '){if(window.WebOSPgsRenderGuard&&!window.WebOSPgsRenderGuard.request(this,' + indexName + '))return;this.__webosLatestPgsIndex=' + indexName + ';window.WebOSPgsMainThreadStats&&window.WebOSPgsMainThreadStats.request(' + indexName + ');var ' + selfName + '=this,__webosRaf=window.requestAnimationFrame||function(e){return setTimeout(e,16)},__webosDefer=window.setTimeout||function(e){return __webosRaf(e)};__webosDefer((function(){if(' + selfName + '.__webosLatestPgsIndex!==' + indexName + '){window.WebOSPgsMainThreadStats&&window.WebOSPgsMainThreadStats.drop(' + indexName + ',' + selfName + '.__webosLatestPgsIndex);return}var ' + subtitleDataName + '=' + selfName + '.pgs.getSubtitleAtIndex(' + indexName + ');' + selfName + '.pgs.cacheSubtitleAtIndex(' + indexName + '+1);__webosRaf((function(){if(' + selfName + '.__webosLatestPgsIndex!==' + indexName + '){window.WebOSPgsMainThreadStats&&window.WebOSPgsMainThreadStats.drop(' + indexName + ',' + selfName + '.__webosLatestPgsIndex);return}window.WebOSPgsMainThreadStats&&window.WebOSPgsMainThreadStats.draw(' + indexName + ');' + selfName + '.renderer.draw(' + subtitleDataName + ')}))}),0)}';
-    }
-
-    function buildPgsLatestObjectDataReplacement(match, compositionName, paletteName, contextName, widthName, heightName, chunksName, indexName, arrayName, objectName) {
-        return 'getPixelDataFromComposition=function(' + compositionName + ',' + paletteName + ',' + contextName + '){var ' + widthName + '=0,' + heightName + '=0,' + chunksName + '=[];if(window.WebOSPgsRendererOptions&&window.WebOSPgsRendererOptions.patchObjectReuse){for(var ' + indexName + '=' + contextName + '.length-1;' + indexName + '>=0;' + indexName + '--){var ' + objectName + '=' + contextName + '[' + indexName + '];if(' + objectName + '.id==' + compositionName + '.id){' + objectName + '.data&&' + chunksName + '.push(' + objectName + '.data);if(' + objectName + '.isFirstInSequence){' + widthName + '=' + objectName + '.width,' + heightName + '=' + objectName + '.height;break}}}' + chunksName + '.reverse()}else{for(var ' + indexName + '=0,' + arrayName + '=' + contextName + ';' + indexName + '<' + arrayName + '.length;' + indexName + '++){var ' + objectName + '=' + arrayName + '[' + indexName + '];' + objectName + '.id==' + compositionName + '.id&&(' + objectName + '.isFirstInSequence&&(' + widthName + '=' + objectName + '.width,' + heightName + '=' + objectName + '.height),' + objectName + '.data&&' + chunksName + '.push(' + objectName + '.data))}}if(0!=' + chunksName + '.length){';
-    }
-
-    function buildPgsForceMainThreadModeReplacement(match, optionsName, modeName, modeHelperName) {
-        return 'createPgsRenderer=function(' + optionsName + '){var ' + modeName + ';switch(window.WebOSPgsRendererOptions&&window.WebOSPgsRendererOptions.forceMainThread?"mainThread":null!==(' + modeName + '=' + optionsName + '.mode)&&void 0!==' + modeName + '?' + modeName + ':' + modeHelperName + '.getRendererModeByPlatform()){';
-    }
-
-    function patchAssRendererScriptText(text, url) {
-        if (!text || typeof text !== 'string') {
+    function patchSubtitleRendererScriptText(text, url) {
+        var patches = getSubtitleScriptPatches();
+        if (!patches || !patches.patchSubtitleRendererScriptText) {
             return text;
         }
 
-        if (text.indexOf('renderAhead') === -1) {
+        var result = patches.patchSubtitleRendererScriptText(text, {
+            forceMainThread: !!pgsForceMainThread,
+            patchObjectReuse: !!pgsPatchObjectReuse
+        });
+        if (!result || result.text === undefined) {
             return text;
         }
 
-        var patched = text;
-        patched = patched.replace(/renderAhead\s*:\s*90\.0\b/g, buildAssRenderAheadReplacement('90'));
-        patched = patched.replace(/renderAhead\s*:\s*90(?!\.)\b/g, buildAssRenderAheadReplacement('90'));
-
-        if (patched !== text) {
+        if (result.ass && result.ass.patched) {
             assScriptPatchCount++;
             assScriptLastPatchInfo = 'patched ' + (url || 'script');
             debugLog('Patched ASS renderer script:', url || 'inline');
         }
 
-        return patched;
-    }
-
-    function patchPgsRendererScriptText(text, url) {
-        if (!text || typeof text !== 'string') {
-            return text;
-        }
-
-        var mayPatchTime = text.indexOf('renderAtVideoTimestamp') !== -1 && text.indexOf('video.currentTime') !== -1;
-        var mayPatchAsync = text.indexOf('requestSubtitleData') !== -1 && text.indexOf('subtitleData') !== -1;
-        var mayPatchRender = text.indexOf('op:"render"') !== -1 && text.indexOf('transferControlToOffscreen') !== -1;
-        var mayPatchMainThread = text.indexOf('getSubtitleAtIndex') !== -1 && text.indexOf('cacheSubtitleAtIndex') !== -1;
-        var mayPatchObjectData = text.indexOf('getPixelDataFromComposition') !== -1 && text.indexOf('isFirstInSequence') !== -1;
-        var mayPatchMode = text.indexOf('createPgsRenderer') !== -1 && text.indexOf('getRendererModeByPlatform') !== -1;
-        if (!mayPatchTime && !mayPatchAsync && !mayPatchRender && !mayPatchMainThread && !mayPatchObjectData && !mayPatchMode) {
-            return text;
-        }
-
-        var patched = text;
-        var patchedTime = false;
-        var patchedAsync = false;
-        var patchedRender = false;
-        var patchedMainThread = false;
-        var patchedObjectData = false;
-        var patchedMode = false;
-        if (mayPatchTime) {
-            var beforeTimePatch = patched;
-            var prototypeNeedle = 'renderAtVideoTimestamp=function(){this.video&&this.renderAtTimestamp(this.video.currentTime+this.$timeOffset)}';
-            var prototypeReplacement = buildPgsRenderAtVideoTimestampReplacement('renderAtVideoTimestamp=function()');
-            patched = patched.split(prototypeNeedle).join(prototypeReplacement);
-            patched = patched.replace(
-                /renderAtVideoTimestamp\s*=\s*function\s*\(\)\s*\{\s*this\.video\s*&&\s*this\.renderAtTimestamp\s*\(\s*this\.video\.currentTime\s*\+\s*this\.\$timeOffset\s*\)\s*\}/g,
-                prototypeReplacement
-            );
-            patched = patched.replace(
-                /renderAtVideoTimestamp\s*\(\)\s*\{\s*this\.video\s*&&\s*this\.renderAtTimestamp\s*\(\s*this\.video\.currentTime\s*\+\s*this\.\$timeOffset\s*\)\s*\}/g,
-                buildPgsRenderAtVideoTimestampReplacement('renderAtVideoTimestamp()')
-            );
-            patchedTime = patched !== beforeTimePatch;
-        }
-
-        if (mayPatchObjectData) {
-            var beforeObjectDataPatch = patched;
-            patched = patched.replace(
-                /getPixelDataFromComposition=function\((\w+),(\w+),(\w+)\)\{for\(var (\w+)=0,(\w+)=0,(\w+)=\[\],(\w+)=0,(\w+)=\3;\7<\8\.length;\7\+\+\)\{var (\w+)=\8\[\7\];\9\.id==\1\.id&&\(\9\.isFirstInSequence&&\(\4=\9\.width,\5=\9\.height\),\9\.data&&\6\.push\(\9\.data\)\)\}if\(0!=\6\.length\)\{/g,
-                buildPgsLatestObjectDataReplacement
-            );
-            patchedObjectData = patched !== beforeObjectDataPatch;
-        }
-
-        if (mayPatchMainThread) {
-            var beforeMainThreadPatch = patched;
-            patched = patched.replace(
-                /(\w+)\.prototype\.render=function\((\w+)\)\{var (\w+)=this,(\w+)=this\.pgs\.getSubtitleAtIndex\(\2\);requestAnimationFrame\(\(function\(\)\{\3\.renderer\.draw\(\4\)\}\)\),this\.pgs\.cacheSubtitleAtIndex\(\2\+1\)\}/g,
-                function (match, prototypeName, indexName, selfName, subtitleDataName) {
-                    return buildPgsMainThreadRenderGuardReplacement(prototypeName, indexName, selfName, subtitleDataName);
-                }
-            );
-            patchedMainThread = patched !== beforeMainThreadPatch;
-        }
-
-        if (mayPatchAsync) {
-            var beforeAsyncPatch = patched;
-            var asyncSubtitleDataNeedle = 'e.prototype.render=function(t){this.worker.postMessage({op:"requestSubtitleData",index:t})},e.prototype.onWorkerMessage=function(e){if("subtitleData"===e.data.op){var r=e.data.subtitleData;this.renderer&&this.renderer.draw(r)}else t.prototype.onWorkerMessage.call(this,e)}';
-            patched = patched.split(asyncSubtitleDataNeedle).join(buildPgsAsyncSubtitleDataGuardReplacement());
-            patchedAsync = patched !== beforeAsyncPatch;
-        }
-
-        if (mayPatchRender) {
-            var beforeRenderPatch = patched;
-            var offscreenRenderNeedle = 'e.prototype.render=function(t){this.worker.postMessage({op:"render",index:t})}';
-            patched = patched.split(offscreenRenderNeedle).join(buildPgsOffscreenRenderGuardReplacement());
-            patchedRender = patched !== beforeRenderPatch;
-        }
-
-        if (mayPatchMode) {
-            var beforeModePatch = patched;
-            patched = patched.replace(
-                /createPgsRenderer=function\((\w+)\)\{var (\w+);switch\(null!==\(\2=\1\.mode\)&&void 0!==\2\?\2:(\w+)\.getRendererModeByPlatform\(\)\)\{/g,
-                buildPgsForceMainThreadModeReplacement
-            );
-            patchedMode = patched !== beforeModePatch;
-        }
-
-        if (patched !== text) {
+        if (result.pgs && result.pgs.patched) {
             pgsScriptPatchCount++;
-            if (patchedTime) {
+            if (result.pgs.time) {
                 pgsScriptTimePatchCount++;
             }
-            if (patchedAsync) {
+            if (result.pgs.async) {
                 pgsScriptAsyncPatchCount++;
             }
-            if (patchedRender) {
+            if (result.pgs.render) {
                 pgsScriptRenderPatchCount++;
             }
-            if (patchedMainThread) {
+            if (result.pgs.mainThread) {
                 pgsScriptMainThreadPatchCount++;
             }
-            if (patchedObjectData) {
+            if (result.pgs.objectData) {
                 pgsScriptObjectPatchCount++;
             }
-            if (patchedMode) {
+            if (result.pgs.mode) {
                 pgsScriptModePatchCount++;
             }
             pgsScriptLastPatchInfo = 'patched ' + (url || 'script');
             debugLog('Patched PGS renderer script:', url || 'inline');
         }
 
-        if ((pgsForceMainThread && mayPatchMode && !patchedMode)
-            || (pgsPatchObjectReuse && mayPatchObjectData && !patchedObjectData)) {
+        if (result.pgs && result.pgs.criticalMissing) {
             pgsScriptLastPatchInfo = 'missing critical PGS patch ' + (url || 'script')
-                + ' mode=' + (patchedMode ? '1' : '0')
-                + ' obj=' + (patchedObjectData ? '1' : '0');
+                + ' mode=' + (result.pgs.mode ? '1' : '0')
+                + ' obj=' + (result.pgs.objectData ? '1' : '0');
             warnLog('PGS renderer critical patch did not match:', pgsScriptLastPatchInfo);
         }
 
-        return patched;
-    }
-
-    function patchSubtitleRendererScriptText(text, url) {
-        var patched = patchAssRendererScriptText(text, url);
-        return patchPgsRendererScriptText(patched, url);
+        return result.text;
     }
 
     function dispatchScriptLoadEvent(script, type) {
@@ -2687,13 +2658,15 @@
         var container = document.createElement('div');
         container.className = 'checkboxContainer checkboxContainer-withDescription webos-hdr-ui-dim-control';
         container.innerHTML = '<label class="webos-hdr-ui-dim-header">' +
-            '<span>webOS: HDR/DV UI brightness</span>' +
+            '<span>' + getRegisteredFeatureTitle('hdrUiDimBrightness', 'webOS: HDR/DV UI brightness') + '</span>' +
             '<span class="webos-hdr-ui-dim-value"></span>' +
             '</label>' +
             '<div class="webos-hdr-ui-dim-slider-wrap">' +
             '<input type="range" class="webosHdrUiDimSlider" min="' + HDR_UI_DIM_MIN_PERCENT.toString() + '" max="' + HDR_UI_DIM_MAX_PERCENT.toString() + '" step="1" />' +
             '</div>' +
-            '<div class="fieldDescription checkboxFieldDescription">Adjust overlay UI and ASS/PGS subtitle brightness during HDR/Dolby Vision playback. Lower percentage = darker.</div>';
+            '<div class="fieldDescription checkboxFieldDescription">' +
+            getRegisteredFeatureDescription('hdrUiDimBrightness', 'Adjust overlay UI and ASS/PGS subtitle brightness during HDR/Dolby Vision playback. Lower percentage = darker.') +
+            '</div>';
         return container;
     }
 
@@ -2701,13 +2674,15 @@
         var container = document.createElement('div');
         container.className = 'checkboxContainer checkboxContainer-withDescription webos-hdr-ui-dim-control webos-hdr-subtitle-opacity-control';
         container.innerHTML = '<label class="webos-hdr-ui-dim-header">' +
-            '<span>webOS: HDR/DV subtitle opacity</span>' +
+            '<span>' + getRegisteredFeatureTitle('hdrSubtitleOpacity', 'webOS: HDR/DV subtitle opacity') + '</span>' +
             '<span class="webos-hdr-subtitle-opacity-value"></span>' +
             '</label>' +
             '<div class="webos-hdr-ui-dim-slider-wrap">' +
             '<input type="range" class="webosHdrSubtitleOpacitySlider" min="' + HDR_SUBTITLE_MIN_OPACITY_PERCENT.toString() + '" max="' + HDR_SUBTITLE_MAX_OPACITY_PERCENT.toString() + '" step="1" />' +
             '</div>' +
-            '<div class="fieldDescription checkboxFieldDescription">Adjust ASS/PGS subtitle opacity during HDR/Dolby Vision playback.</div>';
+            '<div class="fieldDescription checkboxFieldDescription">' +
+            getRegisteredFeatureDescription('hdrSubtitleOpacity', 'Adjust ASS/PGS subtitle opacity during HDR/Dolby Vision playback.') +
+            '</div>';
         return container;
     }
 
@@ -4365,13 +4340,42 @@
         }
     }
 
-    function isPlaybackInfoUrl(url) {
-        if (!url || typeof url !== 'string') {
-            return false;
+    function getPlaybackInfoPatches() {
+        if (webOSPlaybackInfoPatches) {
+            return webOSPlaybackInfoPatches;
         }
 
-        var normalizedUrl = url.toLowerCase();
-        return normalizedUrl.indexOf('/items/') !== -1 && normalizedUrl.indexOf('/playbackinfo') !== -1;
+        if (!playbackInfoPatchModuleWarned) {
+            playbackInfoPatchModuleWarned = true;
+            warnLog('webOS PlaybackInfo patch module is unavailable');
+        }
+        return null;
+    }
+
+    function fallbackExtractItemIdFromPlaybackInfoUrl(url) {
+        if (!url || typeof url !== 'string') {
+            return null;
+        }
+
+        var match = /\/Items\/([^\/\?#]+)\/PlaybackInfo(?:[\/\?#]|$)/i.exec(url);
+        if (!match || !match[1]) {
+            return null;
+        }
+
+        var itemId = match[1];
+        try {
+            itemId = decodeURIComponent(itemId);
+        } catch (error) {
+            // Ignore malformed URI fragments and use raw value.
+        }
+        return itemId;
+    }
+
+    function isPlaybackInfoUrl(url) {
+        var patches = getPlaybackInfoPatches();
+        return patches && patches.isPlaybackInfoUrl
+            ? patches.isPlaybackInfoUrl(url)
+            : fallbackExtractItemIdFromPlaybackInfoUrl(url) !== null;
     }
 
     function parsePositiveInteger(value) {
@@ -4393,53 +4397,6 @@
         return maxBitrate;
     }
 
-    function escapeRegExp(value) {
-        return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    }
-
-    function getQueryParameterValue(url, name) {
-        if (!url || typeof url !== 'string' || !name) {
-            return null;
-        }
-
-        var pattern = new RegExp('[?&]' + escapeRegExp(name) + '=([^&#]*)');
-        var match = pattern.exec(url);
-        if (!match || match.length < 2) {
-            return null;
-        }
-
-        try {
-            return decodeURIComponent(match[1].replace(/\+/g, '%20'));
-        } catch (error) {
-            return match[1];
-        }
-    }
-
-    function setQueryParameterValue(url, name, value) {
-        if (!url || typeof url !== 'string' || !name) {
-            return url;
-        }
-
-        var hash = '';
-        var hashIndex = url.indexOf('#');
-        if (hashIndex !== -1) {
-            hash = url.substring(hashIndex);
-            url = url.substring(0, hashIndex);
-        }
-
-        var encodedValue = encodeURIComponent(value.toString());
-        var encodedName = encodeURIComponent(name);
-        var pattern = new RegExp('([?&])' + escapeRegExp(encodedName) + '=.*?(?=&|$)');
-
-        if (pattern.test(url)) {
-            url = url.replace(pattern, '$1' + name + '=' + encodedValue);
-        } else {
-            url += (url.indexOf('?') === -1 ? '?' : '&') + name + '=' + encodedValue;
-        }
-
-        return url + hash;
-    }
-
     function cloneShallowObject(value) {
         if (!value || typeof value !== 'object') {
             return {};
@@ -4455,14 +4412,16 @@
     }
 
     function enforcePlaybackInfoMaxBitrateUrl(url, source) {
-        if (!isPlaybackInfoUrl(url)) {
+        var patches = getPlaybackInfoPatches();
+        if (!patches || !patches.enforceMaxBitrateUrl || !patches.isPlaybackInfoUrl || !patches.isPlaybackInfoUrl(url)) {
             return {
                 url: url,
                 targetBitrate: 0
             };
         }
 
-        var playbackInfoItemId = extractItemIdFromPlaybackInfoUrl(url);
+        var patched = patches.enforceMaxBitrateUrl(url, getHighestKnownBitrateOption(), PLAYBACK_INFO_MAX_BITRATE_PARAM);
+        var playbackInfoItemId = patched.itemId;
         if (!shouldForcePlaybackStartMaxBitrate()
             && playbackInfoItemId
             && playbackInfoItemId !== currentMediaSessionItemId
@@ -4471,157 +4430,32 @@
             startPlaybackStartMaxBitrateForce('playbackinfo-item-change-' + source);
         }
 
-        var existingBitrate = parsePositiveInteger(getQueryParameterValue(url, PLAYBACK_INFO_MAX_BITRATE_PARAM));
-        var existingCamelCaseBitrate = parsePositiveInteger(getQueryParameterValue(url, 'maxStreamingBitrate'));
-        var targetBitrate = getHighestKnownBitrateOption();
-        if (existingBitrate > targetBitrate) {
-            targetBitrate = existingBitrate;
-        }
-        if (existingCamelCaseBitrate > targetBitrate) {
-            targetBitrate = existingCamelCaseBitrate;
-        }
-
-        var updatedUrl = setQueryParameterValue(url, PLAYBACK_INFO_MAX_BITRATE_PARAM, targetBitrate);
         if (shouldForcePlaybackStartMaxBitrate()) {
-            markPlaybackStartMaxBitrateForced(source, targetBitrate);
+            markPlaybackStartMaxBitrateForced(source, patched.targetBitrate);
         }
 
         return {
-            url: updatedUrl,
-            targetBitrate: targetBitrate
+            url: patched.url,
+            targetBitrate: patched.targetBitrate
         };
     }
 
-    function patchPlaybackInfoBitrateObject(value, normalizedTarget, source) {
-        if (!value || typeof value !== 'object') {
-            return false;
-        }
-
-        var changed = false;
-        var keys = ['MaxStreamingBitrate', 'maxStreamingBitrate', 'MaxStaticBitrate', 'maxStaticBitrate'];
-        for (var i = 0; i < keys.length; i++) {
-            var key = keys[i];
-            var currentBitrate = parsePositiveInteger(value[key]);
-            if (currentBitrate < normalizedTarget) {
-                value[key] = normalizedTarget;
-                changed = true;
-                debugLog('Patched PlaybackInfo body bitrate (' + source + ', ' + key + '): ' + currentBitrate + ' -> ' + normalizedTarget);
-            }
-        }
-
-        var nestedKeys = ['PlaybackInfo', 'playbackInfo', 'PlaybackInfoDto', 'playbackInfoDto', 'DeviceProfile', 'deviceProfile', 'Profile', 'profile'];
-        for (var j = 0; j < nestedKeys.length; j++) {
-            if (patchPlaybackInfoBitrateObject(value[nestedKeys[j]], normalizedTarget, source)) {
-                changed = true;
-            }
-        }
-
-        return changed;
-    }
-
-    function looksLikeDeviceProfile(value) {
-        return !!(value && typeof value === 'object'
-            && (Object.prototype.hasOwnProperty.call(value, 'DirectPlayProfiles')
-                || Object.prototype.hasOwnProperty.call(value, 'CodecProfiles')
-                || Object.prototype.hasOwnProperty.call(value, 'TranscodingProfiles')
-                || Object.prototype.hasOwnProperty.call(value, 'SubtitleProfiles')));
-    }
-
-    function patchPlaybackInfoProfileObjects(value, source) {
-        if (!value || typeof value !== 'object') {
-            return false;
-        }
-
-        var changed = false;
-        if (looksLikeDeviceProfile(value)) {
-            var beforeProfile = JSON.stringify({
-                MaxStreamingBitrate: value.MaxStreamingBitrate,
-                MaxStaticBitrate: value.MaxStaticBitrate,
-                DirectPlayProfiles: value.DirectPlayProfiles,
-                CodecProfiles: value.CodecProfiles,
-                SubtitleProfiles: value.SubtitleProfiles,
-                TranscodingProfiles: value.TranscodingProfiles
-            });
-            applyPlaybackCompatibilityProfilePatches(value);
-            changed = JSON.stringify({
-                MaxStreamingBitrate: value.MaxStreamingBitrate,
-                MaxStaticBitrate: value.MaxStaticBitrate,
-                DirectPlayProfiles: value.DirectPlayProfiles,
-                CodecProfiles: value.CodecProfiles,
-                SubtitleProfiles: value.SubtitleProfiles,
-                TranscodingProfiles: value.TranscodingProfiles
-            }) !== beforeProfile;
-        }
-
-        for (var key in value) {
-            if (!Object.prototype.hasOwnProperty.call(value, key)) {
-                continue;
-            }
-            if (patchPlaybackInfoProfileObjects(value[key], source)) {
-                changed = true;
-            }
-        }
-
-        if (changed && source) {
-            debugLog('Patched PlaybackInfo device profile for playback compatibility (' + source + ')');
-        }
-        return changed;
-    }
-
     function enforcePlaybackInfoMaxBitrateBody(body, targetBitrate, source) {
-        var normalizedTarget = parsePositiveInteger(targetBitrate);
-        if (!normalizedTarget || body === null || body === undefined) {
-            return body;
-        }
-
-        if (typeof body === 'string') {
-            var trimmed = body.replace(/^\s+|\s+$/g, '');
-            if (!trimmed || trimmed.charAt(0) !== '{') {
-                return body;
-            }
-
-            try {
-                var parsed = JSON.parse(trimmed);
-                if (!parsed || typeof parsed !== 'object') {
-                    return body;
-                }
-
-                var changed = patchPlaybackInfoBitrateObject(parsed, normalizedTarget, source);
-                changed = patchPlaybackInfoProfileObjects(parsed, source) || changed;
-                if (!changed) {
-                    return body;
-                }
-                return JSON.stringify(parsed);
-            } catch (error) {
-                return body;
-            }
-        }
-
-        if (typeof body === 'object') {
-            patchPlaybackInfoBitrateObject(body, normalizedTarget, source);
-            patchPlaybackInfoProfileObjects(body, source);
-        }
-
-        return body;
+        var patches = getPlaybackInfoPatches();
+        return patches && patches.enforceMaxBitrateBody
+            ? patches.enforceMaxBitrateBody(body, targetBitrate, {
+                source: source,
+                debugLog: debugLog,
+                patchProfile: applyPlaybackCompatibilityProfilePatches
+            })
+            : body;
     }
 
     function extractItemIdFromPlaybackInfoUrl(url) {
-        if (!url || typeof url !== 'string') {
-            return null;
-        }
-
-        var match = /\/Items\/([^\/\?]+)\/PlaybackInfo/i.exec(url);
-        if (!match || !match[1]) {
-            return null;
-        }
-
-        var itemId = match[1];
-        try {
-            itemId = decodeURIComponent(itemId);
-        } catch (error) {
-            // Ignore malformed URI fragments and use raw value.
-        }
-        return itemId;
+        var patches = getPlaybackInfoPatches();
+        return patches && patches.extractItemIdFromPlaybackInfoUrl
+            ? patches.extractItemIdFromPlaybackInfoUrl(url)
+            : fallbackExtractItemIdFromPlaybackInfoUrl(url);
     }
 
     function createPlaybackInfoRequestContext(url) {

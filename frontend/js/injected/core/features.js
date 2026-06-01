@@ -23,6 +23,33 @@
         return fallback;
     }
 
+    function parseStoredNumber(value, fallback, min, max) {
+        if (value === null || value === undefined || value === '') {
+            return fallback;
+        }
+
+        var parsed = parseFloat(value);
+        if (isNaN(parsed)) {
+            return fallback;
+        }
+
+        if (typeof min === 'number' && parsed < min) {
+            parsed = min;
+        }
+        if (typeof max === 'number' && parsed > max) {
+            parsed = max;
+        }
+        return parsed;
+    }
+
+    function formatStoredNumber(value, definition) {
+        var parsed = parseStoredNumber(value, definition.defaultValue, definition.minValue, definition.maxValue);
+        if (typeof definition.storageDecimals === 'number') {
+            return parsed.toFixed(definition.storageDecimals);
+        }
+        return parsed.toString();
+    }
+
     var booleanDefinitions = [
         {
             key: 'playbackDiagnosticsEnabled',
@@ -74,7 +101,33 @@
         }
     ];
 
+    var numberDefinitions = [
+        {
+            key: 'hdrUiDimBrightness',
+            storageKey: 'webos_hdr_ui_dim_brightness',
+            defaultValue: 0.3,
+            minValue: 0.05,
+            maxValue: 1,
+            storageDecimals: 2,
+            title: 'webOS: HDR/DV UI brightness',
+            description: 'Adjust overlay UI and ASS/PGS subtitle brightness during HDR/Dolby Vision playback. Lower percentage = darker.',
+            group: 'hdr'
+        },
+        {
+            key: 'hdrSubtitleOpacity',
+            storageKey: 'webos_hdr_subtitle_opacity',
+            defaultValue: 0.62,
+            minValue: 0.25,
+            maxValue: 1,
+            storageDecimals: 2,
+            title: 'webOS: HDR/DV subtitle opacity',
+            description: 'Adjust ASS/PGS subtitle opacity during HDR/Dolby Vision playback.',
+            group: 'hdr'
+        }
+    ];
+
     var booleanDefinitionMap = toMap(booleanDefinitions);
+    var numberDefinitionMap = toMap(numberDefinitions);
 
     var api = {
         getBooleanDefinitions: function () {
@@ -83,6 +136,14 @@
 
         getBooleanDefinition: function (key) {
             return booleanDefinitionMap[key] || null;
+        },
+
+        getNumberDefinitions: function () {
+            return numberDefinitions.slice(0);
+        },
+
+        getNumberDefinition: function (key) {
+            return numberDefinitionMap[key] || null;
         },
 
         getStorageKey: function (key, fallback) {
@@ -116,6 +177,22 @@
                 return;
             }
             storage.setItem(definition.storageKey, value ? 'true' : 'false');
+        },
+
+        loadNumberValue: function (key, storage, fallback) {
+            var definition = numberDefinitionMap[key];
+            if (!definition || !storage || !storage.getItem) {
+                return fallback;
+            }
+            return parseStoredNumber(storage.getItem(definition.storageKey), fallback, definition.minValue, definition.maxValue);
+        },
+
+        saveNumberValue: function (key, storage, value) {
+            var definition = numberDefinitionMap[key];
+            if (!definition || !storage || !storage.setItem) {
+                return;
+            }
+            storage.setItem(definition.storageKey, formatStoredNumber(value, definition));
         },
 
         createOverridePayload: function (values) {

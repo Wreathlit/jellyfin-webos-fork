@@ -573,6 +573,8 @@ var injectedScriptUrls = [
     'js/injected/core/features.js',
     'js/injected/playback/profilePatches.js',
     'js/injected/playback/hdrDecisions.js',
+    'js/injected/playback/playbackInfoPatches.js',
+    'js/injected/subtitles/scriptPatches.js',
     'js/webOS.js'
 ];
 var injectedStyleUrls = [
