@@ -21,8 +21,17 @@
         return {
             maxBitrate: parsePositiveInteger(options.maxBitrate),
             lpcmAudioCopyEnabled: !!options.lpcmAudioCopyEnabled,
+            subtitleBurnInMode: normalizeSubtitleBurnInMode(options.subtitleBurnInMode || options.subtitleBurnIn || options.subtitleBurnin),
             debugLog: typeof options.debugLog === 'function' ? options.debugLog : null
         };
+    }
+
+    function normalizeSubtitleBurnInMode(value) {
+        var normalizedValue = value ? value.toString().toLowerCase().replace(/[\s_-]+/g, '') : '';
+        if (normalizedValue === 'all' || normalizedValue === 'allcomplexformats' || normalizedValue === 'onlyimageformats') {
+            return normalizedValue;
+        }
+        return '';
     }
 
     function debugLog(context) {
@@ -164,17 +173,30 @@
             || normalizedFormat === 'hdmv_pgs_subtitle';
     }
 
+    function canAdvertiseExternalTextSubtitles(context) {
+        return context.subtitleBurnInMode !== 'all'
+            && context.subtitleBurnInMode !== 'allcomplexformats';
+    }
+
+    function canAdvertiseExternalBitmapSubtitles(context) {
+        return context.subtitleBurnInMode !== 'all'
+            && context.subtitleBurnInMode !== 'allcomplexformats'
+            && context.subtitleBurnInMode !== 'onlyimageformats';
+    }
+
     function preferExternalSubtitleProfilesForBitmapPgs(profile, context) {
         if (!profile || !profile.SubtitleProfiles
             || Object.prototype.toString.call(profile.SubtitleProfiles) !== '[object Array]') {
             return;
         }
 
-        // This is device capability reporting, not a local burn-in override.
-        // Jellyfin still applies AlwaysBurnInSubtitleWhenTranscoding later when
-        // it builds the transcode URL. Without this, an Embed/Encode PGS profile
-        // can win before the client-rendered External path, which loses PGS
-        // delivery and can pull HDR video-copy playback into video encoding.
+        if (!canAdvertiseExternalBitmapSubtitles(context)) {
+            return;
+        }
+
+        // Keep this aligned with Jellyfin Web's native Burn subtitles setting.
+        // When burn-in is not requested, prefer client-rendered PGS before
+        // Embed/Encode so audio-only transcode can keep supported video copy.
         var patchedProfiles = 0;
         for (var i = 0; i < profile.SubtitleProfiles.length; i++) {
             var subtitleProfile = profile.SubtitleProfiles[i];
@@ -360,7 +382,15 @@
 
     function patchExternalSubtitleProfiles(profile, context) {
         var added = 0;
-        var formats = ['ass', 'ssa', 'pgssub', 'pgs'];
+        var formats = [];
+        if (canAdvertiseExternalTextSubtitles(context)) {
+            formats.push('ass');
+            formats.push('ssa');
+        }
+        if (canAdvertiseExternalBitmapSubtitles(context)) {
+            formats.push('pgssub');
+            formats.push('pgs');
+        }
         for (var i = 0; i < formats.length; i++) {
             if (addSubtitleProfile(profile, formats[i], 'External')) {
                 added++;
@@ -505,9 +535,9 @@
     }
 
     function applySubtitleDeliveryProfilePatches(profile, context) {
-        // Subtitle burn-in is not forced here. The profile only advertises
-        // client-renderable subtitle delivery; Jellyfin's own
-        // AlwaysBurnInSubtitleWhenTranscoding flag decides burn-in later.
+        // Respect Jellyfin Web's native Burn subtitles setting. If it requests
+        // Encode for a subtitle class, do not add External profiles that would
+        // make the server choose client rendering before the Encode fallback.
         preferExternalSubtitleProfilesForBitmapPgs(profile, context);
         patchExternalSubtitleProfiles(profile, context);
         patchHlsSubtitleManifestSupport(profile, context);

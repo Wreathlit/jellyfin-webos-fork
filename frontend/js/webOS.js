@@ -5271,8 +5271,27 @@
         return webOSProfilePatches.applyPlaybackCompatibilityProfilePatches(profile, {
             maxBitrate: getHighestKnownBitrateOption(),
             lpcmAudioCopyEnabled: lpcmAudioCopyEnabled,
+            subtitleBurnInMode: getNativeSubtitleBurnInMode(),
             debugLog: debugLog
         });
+    }
+
+    function getNativeSubtitleBurnInMode() {
+        try {
+            var storage = window.localStorage;
+            if (!storage) {
+                return '';
+            }
+
+            var value = storage.getItem('subtitleburnin');
+            value = value ? value.toString().toLowerCase().replace(/[\s_-]+/g, '') : '';
+            return value === 'all' || value === 'allcomplexformats' || value === 'onlyimageformats'
+                ? value
+                : '';
+        } catch (error) {
+            debugLog('Failed to read Jellyfin subtitle burn-in setting:', error && error.message ? error.message : error);
+            return '';
+        }
     }
 
     // List of supported features

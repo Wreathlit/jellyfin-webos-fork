@@ -104,7 +104,9 @@ Approach:
 
 - keep the HEVC/H265 video-copy patch for audio-only transcode;
 - explicitly advertise external `ass`, `ssa`, `pgssub`, and `pgs` subtitle
-  profiles for Jellyfin Web's client-side renderers;
+  profiles for Jellyfin Web's client-side renderers only when Jellyfin Web's
+  native `Burn subtitles` mode still allows that class of subtitle to be
+  client-rendered;
 - prefer External delivery for existing PGS subtitle profiles so Jellyfin picks
   the client-rendered PGS path before Embed/Encode when burn-in is not required;
 - enable subtitles in HLS video transcoding manifests so text subtitle tracks
@@ -113,11 +115,13 @@ Approach:
   PGS delivery failures have been traced to upstream/server path selection, so
   the client should not synthesize subtitle URLs or override server delivery
   methods;
-- respect Jellyfin's `Always burn in subtitle on transcoding` setting for all
-  subtitle formats. webOS profile reporting can still make unsupported video
-  formats such as interlaced H264 transcode, and can prefer client-rendered PGS
-  delivery, but subtitle burn-in remains the server/user setting's
-  responsibility;
+- respect Jellyfin's native subtitle burn-in controls. `Burn subtitles` gates
+  the client-rendered ASS/SSA/PGS profiles before the server chooses a delivery
+  method; `Always burn in subtitle on transcoding` is passed through separately
+  for cases where transcoding is already selected. webOS profile reporting can
+  still make unsupported video formats such as interlaced H264 transcode, and
+  can prefer client-rendered PGS delivery when burn-in is not required, but it
+  must not override the user's burn-in mode;
 - keep the last PlaybackInfo payload available for the playback-start fallback
   window for HDR detection without adding more subtitle delivery heuristics.
 
@@ -143,11 +147,15 @@ The playback compatibility patches intentionally keep four decisions separate:
   existing video DirectPlay audio codec lists, so it does not bypass video
   codec capability checks or advertise PCM as a supported HLS/fMP4 transcode
   output.
-- Subtitle burn-in is controlled by the selected video path and Jellyfin's
-  `Always burn in subtitle on transcoding` setting. The fork advertises
-  client-renderable ASS/PGS delivery but does not force
+- Subtitle burn-in is controlled by Jellyfin's native settings and the selected
+  video path. The fork reads the saved `subtitleburnin` mode and follows
+  upstream `subtitleburnin` gating for the subtitle profiles it owns: `all`
+  prevents the fork from adding or converting ASS/SSA/PGS External delivery,
+  `allcomplexformats` prevents ASS/SSA and PGS External delivery, and
+  `onlyimageformats` prevents PGS External delivery. It also does not force
   `AlwaysBurnInSubtitleWhenTranscoding`, synthesize PlaybackInfo subtitle URLs,
-  or delete subtitle burn-in query parameters.
+  delete subtitle burn-in query parameters, or clean up unrelated upstream
+  subtitle profiles.
 - HDR/DV UI dimming is applied only when the detected playback range is HDR/DV
   and PlaybackInfo indicates that the video stream is DirectPlay, DirectStream,
   or transcode-with-video-copy (`VideoCodec=copy`). `Static=true` is classified

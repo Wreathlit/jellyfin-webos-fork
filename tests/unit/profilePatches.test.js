@@ -160,6 +160,146 @@ assert(profilePatches, 'playback.profilePatches should register');
 
 {
     const profile = {
+        DirectPlayProfiles: [],
+        TranscodingProfiles: [
+            {
+                Type: 'Video',
+                Protocol: 'hls',
+                VideoCodec: 'h264',
+                AudioCodec: 'aac'
+            }
+        ],
+        SubtitleProfiles: [
+            {
+                Format: 'pgssub',
+                Method: 'Embed'
+            }
+        ]
+    };
+
+    profilePatches.applyPlaybackCompatibilityProfilePatches(profile, {
+        subtitleBurnInMode: 'allcomplexformats'
+    });
+
+    assert.strictEqual(profile.SubtitleProfiles[0].Method, 'Embed', 'All Complex Formats must not convert PGS to External');
+    assert(!hasSubtitleProfile(profile, 'ass', 'external'), 'All Complex Formats must not add ASS External');
+    assert(!hasSubtitleProfile(profile, 'ssa', 'external'), 'All Complex Formats must not add SSA External');
+    assert(!hasSubtitleProfile(profile, 'pgssub', 'external'), 'All Complex Formats must not add PGSSUB External');
+    assert(!hasSubtitleProfile(profile, 'pgs', 'external'), 'All Complex Formats must not add PGS External');
+    assert.strictEqual(profile.TranscodingProfiles[0].EnableSubtitlesInManifest, true, 'manifest support patch should remain independent');
+}
+
+{
+    const pgsAliases = ['pgs', 'hdmv_pgs_subtitle'];
+    for (let i = 0; i < pgsAliases.length; i++) {
+        const profile = {
+            DirectPlayProfiles: [],
+            TranscodingProfiles: [],
+            SubtitleProfiles: [
+                {
+                    Format: pgsAliases[i],
+                    Method: 'Embed'
+                }
+            ]
+        };
+
+        profilePatches.applyPlaybackCompatibilityProfilePatches(profile, {
+            subtitleBurnInMode: 'All Complex Formats'
+        });
+
+        assert.strictEqual(profile.SubtitleProfiles[0].Method, 'Embed', pgsAliases[i] + ' must not convert to External when complex subtitles burn in');
+        assert(!hasSubtitleProfile(profile, pgsAliases[i], 'external'), pgsAliases[i] + ' External must not be added when complex subtitles burn in');
+    }
+}
+
+{
+    const profile = {
+        DirectPlayProfiles: [],
+        TranscodingProfiles: [],
+        SubtitleProfiles: [
+            {
+                Format: 'pgssub',
+                Method: 'Embed'
+            }
+        ]
+    };
+
+    profilePatches.applyPlaybackCompatibilityProfilePatches(profile, {
+        subtitleBurnInMode: 'onlyimageformats'
+    });
+
+    assert.strictEqual(profile.SubtitleProfiles[0].Method, 'Embed', 'Only Image Formats must not convert PGS to External');
+    assert(hasSubtitleProfile(profile, 'ass', 'external'), 'Only Image Formats should still allow ASS External');
+    assert(hasSubtitleProfile(profile, 'ssa', 'external'), 'Only Image Formats should still allow SSA External');
+    assert(!hasSubtitleProfile(profile, 'pgssub', 'external'), 'Only Image Formats must not add PGSSUB External');
+    assert(!hasSubtitleProfile(profile, 'pgs', 'external'), 'Only Image Formats must not add PGS External');
+}
+
+{
+    const profile = {
+        DirectPlayProfiles: [],
+        TranscodingProfiles: [],
+        SubtitleProfiles: [
+            {
+                Format: 'pgssub',
+                Method: 'Embed'
+            }
+        ]
+    };
+
+    profilePatches.applyPlaybackCompatibilityProfilePatches(profile, {
+        subtitleBurnin: 'only-image-formats'
+    });
+
+    assert.strictEqual(profile.SubtitleProfiles[0].Method, 'Embed', 'hyphenated Only Image Formats must not convert PGS to External');
+    assert(hasSubtitleProfile(profile, 'ass', 'external'), 'hyphenated Only Image Formats should still allow ASS External');
+    assert(hasSubtitleProfile(profile, 'ssa', 'external'), 'hyphenated Only Image Formats should still allow SSA External');
+    assert(!hasSubtitleProfile(profile, 'pgssub', 'external'), 'hyphenated Only Image Formats must not add PGSSUB External');
+    assert(!hasSubtitleProfile(profile, 'pgs', 'external'), 'hyphenated Only Image Formats must not add PGS External');
+}
+
+{
+    const profile = {
+        DirectPlayProfiles: [],
+        TranscodingProfiles: [],
+        SubtitleProfiles: [
+            {
+                Format: 'pgssub',
+                Method: 'Embed'
+            }
+        ]
+    };
+
+    profilePatches.applyPlaybackCompatibilityProfilePatches(profile, {
+        subtitleBurnIn: 'all'
+    });
+
+    assert.strictEqual(profile.SubtitleProfiles[0].Method, 'Embed', 'All subtitles must not convert PGS to External');
+    assert(!hasSubtitleProfile(profile, 'ass', 'external'), 'All subtitles must not add ASS External');
+    assert(!hasSubtitleProfile(profile, 'ssa', 'external'), 'All subtitles must not add SSA External');
+    assert(!hasSubtitleProfile(profile, 'pgssub', 'external'), 'All subtitles must not add PGSSUB External');
+    assert(!hasSubtitleProfile(profile, 'pgs', 'external'), 'All subtitles must not add PGS External');
+}
+
+{
+    const profile = {
+        DirectPlayProfiles: [],
+        TranscodingProfiles: [],
+        SubtitleProfiles: []
+    };
+
+    profilePatches.applyPlaybackCompatibilityProfilePatches(profile, {
+        subtitleBurnInMode: 'ALL_COMPLEX_FORMATS'
+    });
+
+    assert(!hasSubtitleProfile(profile, 'ass', 'external'), 'underscore All Complex Formats must not add ASS External');
+    assert(!hasSubtitleProfile(profile, 'ssa', 'external'), 'underscore All Complex Formats must not add SSA External');
+    assert(!hasSubtitleProfile(profile, 'pgssub', 'external'), 'underscore All Complex Formats must not add PGSSUB External');
+    assert(!hasSubtitleProfile(profile, 'pgs', 'external'), 'underscore All Complex Formats must not add PGS External');
+}
+
+{
+    const profile = {
         MaxStreamingBitrate: 200000000,
         MaxStaticBitrate: 200000000,
         DirectPlayProfiles: [
