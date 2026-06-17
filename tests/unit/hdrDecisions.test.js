@@ -112,6 +112,26 @@ const playbackInfoPayload = {
 assert.strictEqual(hdr.getDynamicRangeHintFromPlaybackInfoPayload(playbackInfoPayload), 'hdr');
 assert.strictEqual(hdr.getPlaybackVideoDeliveryFromPlaybackInfoPayload(playbackInfoPayload), 'directstream');
 
+const directPlayPlaybackInfoPayload = {
+    MediaSourceId: 'ms-direct',
+    MediaSources: [
+        {
+            Id: 'ms-direct',
+            SupportsDirectPlay: true,
+            SupportsDirectStream: true,
+            MediaStreams: [
+                {
+                    Type: 'Video',
+                    VideoRange: 'HDR10'
+                }
+            ]
+        }
+    ]
+};
+
+assert.strictEqual(hdr.getDynamicRangeHintFromPlaybackInfoPayload(directPlayPlaybackInfoPayload), 'hdr');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromPlaybackInfoPayload(directPlayPlaybackInfoPayload), 'directplay');
+
 assert.strictEqual(hdr.getDynamicRangeHintFromMediaInfo({
     MediaSource: {
         MediaStreams: [
@@ -126,6 +146,16 @@ assert.strictEqual(hdr.getDynamicRangeHintFromMediaInfo({
 assert.strictEqual(hdr.getPlaybackVideoDeliveryFromTranscodingUrl('/videos/1/master.m3u8?VideoCodec=copy'), 'copy');
 assert.strictEqual(hdr.getPlaybackVideoDeliveryFromTranscodingUrl('/videos/1/master.m3u8?VideoCodec=h264'), 'transcode');
 assert.strictEqual(hdr.getPlaybackVideoDeliveryFromTranscodingUrl('/videos/1/master.m3u8?Static=true&VideoCodec=h264'), 'directstream');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    SupportsDirectPlay: true
+}), 'directplay');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    directStreamUrl: '/videos/1/stream.mkv'
+}), 'directstream');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    SupportsDirectPlay: true,
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=h264'
+}), 'transcode', 'TranscodingUrl should win over capability flags');
 assert.strictEqual(hdr.normalizePlaybackVideoDelivery('DirectPlay'), 'directplay');
 assert.strictEqual(hdr.isPlaybackVideoCopiedOrDirect('directplay'), true);
 assert.strictEqual(hdr.isPlaybackVideoCopiedOrDirect('directstream'), true);

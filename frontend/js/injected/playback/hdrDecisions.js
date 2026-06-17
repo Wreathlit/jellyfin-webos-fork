@@ -682,6 +682,11 @@
             return transcodingUrlDelivery;
         }
 
+        var directStreamUrl = mediaSource.DirectStreamUrl || mediaSource.directStreamUrl;
+        if (directStreamUrl) {
+            return 'directstream';
+        }
+
         var playMethod = getLowerName(mediaSource.PlayMethod || mediaSource.playMethod);
         if (playMethod === 'directplay') {
             return 'directplay';
@@ -691,6 +696,16 @@
         }
         if (playMethod === 'transcode') {
             return 'transcode';
+        }
+
+        if (isTruthyPlaybackQueryValue(mediaSource.SupportsDirectPlay)
+            || isTruthyPlaybackQueryValue(mediaSource.supportsDirectPlay)) {
+            return 'directplay';
+        }
+
+        if (isTruthyPlaybackQueryValue(mediaSource.SupportsDirectStream)
+            || isTruthyPlaybackQueryValue(mediaSource.supportsDirectStream)) {
+            return 'directstream';
         }
 
         return 'unknown';
