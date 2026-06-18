@@ -153,6 +153,18 @@ assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
     directStreamUrl: '/videos/1/stream.mkv'
 }), 'directstream');
 assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
+    DirectStreamUrl: '/videos/1/stream.mkv'
+}), 'transcode', 'explicit PlayMethod should win over candidate DirectStreamUrl');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
+    SupportsDirectPlay: true
+}), 'transcode', 'explicit PlayMethod should win over capability flags');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=copy'
+}), 'copy', 'TranscodingUrl should still identify video-copy transcodes');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
     SupportsDirectPlay: true,
     TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=h264'
 }), 'transcode', 'TranscodingUrl should win over capability flags');

@@ -682,11 +682,6 @@
             return transcodingUrlDelivery;
         }
 
-        var directStreamUrl = mediaSource.DirectStreamUrl || mediaSource.directStreamUrl;
-        if (directStreamUrl) {
-            return 'directstream';
-        }
-
         var playMethod = getLowerName(mediaSource.PlayMethod || mediaSource.playMethod);
         if (playMethod === 'directplay') {
             return 'directplay';
@@ -696,6 +691,11 @@
         }
         if (playMethod === 'transcode') {
             return 'transcode';
+        }
+
+        var directStreamUrl = mediaSource.DirectStreamUrl || mediaSource.directStreamUrl;
+        if (directStreamUrl) {
+            return 'directstream';
         }
 
         if (isTruthyPlaybackQueryValue(mediaSource.SupportsDirectPlay)

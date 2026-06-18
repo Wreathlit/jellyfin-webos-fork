@@ -37,7 +37,7 @@ assert.strictEqual(patches.extractItemIdFromPlaybackInfoUrl('/Items/abc/Images/P
 {
     const result = patches.enforceMaxBitrateUrl('/Items/abc%201/PlaybackInfo?foo=bar#frag', 120000000);
 
-    assert.strictEqual(result.url, '/Items/abc%201/PlaybackInfo?foo=bar&MaxStreamingBitrate=120000000#frag');
+    assert.strictEqual(result.url, '/Items/abc%201/PlaybackInfo?foo=bar&MaxStreamingBitrate=120000000&maxStreamingBitrate=120000000#frag');
     assert.strictEqual(result.targetBitrate, 120000000);
     assert.strictEqual(result.itemId, 'abc 1');
 }
@@ -46,7 +46,53 @@ assert.strictEqual(patches.extractItemIdFromPlaybackInfoUrl('/Items/abc/Images/P
     const result = patches.enforceMaxBitrateUrl('/Items/abc/PlaybackInfo?MaxStreamingBitrate=200000000', 120000000);
 
     assert.strictEqual(result.targetBitrate, 200000000, 'higher server bitrate should not be lowered');
-    assert.strictEqual(result.url, '/Items/abc/PlaybackInfo?MaxStreamingBitrate=200000000');
+    assert.strictEqual(result.url, '/Items/abc/PlaybackInfo?MaxStreamingBitrate=200000000&maxStreamingBitrate=200000000');
+}
+
+{
+    const result = patches.enforceMaxBitrateUrl('/Items/abc/PlaybackInfo?maxStreamingBitrate=60000000&foo=1', 120000000);
+
+    assert.strictEqual(result.targetBitrate, 120000000, 'lower camelCase bitrate should be raised');
+    assert(result.url.indexOf('maxStreamingBitrate=120000000') !== -1, 'camelCase bitrate should be forced');
+    assert(result.url.indexOf('MaxStreamingBitrate=120000000') !== -1, 'PascalCase bitrate should be forced');
+    assert.strictEqual(result.url.indexOf('maxStreamingBitrate=60000000'), -1, 'lower camelCase bitrate should not remain');
+}
+
+{
+    const result = patches.enforceMaxBitrateUrl('/Items/abc/PlaybackInfo?MaxStreamingBitrate=120000000&maxStreamingBitrate=60000000', 95000000);
+
+    assert.strictEqual(result.targetBitrate, 120000000, 'highest existing bitrate should be preserved');
+    assert(result.url.indexOf('MaxStreamingBitrate=120000000') !== -1);
+    assert(result.url.indexOf('maxStreamingBitrate=120000000') !== -1);
+    assert.strictEqual(result.url.indexOf('maxStreamingBitrate=60000000'), -1, 'conflicting lower camelCase bitrate should not remain');
+}
+
+{
+    const result = patches.enforceMaxBitrateUrl('/Items/abc/PlaybackInfo?MaxStreamingBitrate=60000000&foo=1&MaxStreamingBitrate=80000000', 120000000);
+
+    assert.strictEqual(result.targetBitrate, 120000000);
+    assert.strictEqual(result.url.indexOf('MaxStreamingBitrate=60000000'), -1, 'first duplicate lower PascalCase bitrate should not remain');
+    assert.strictEqual(result.url.indexOf('MaxStreamingBitrate=80000000'), -1, 'second duplicate lower PascalCase bitrate should not remain');
+}
+
+{
+    const result = patches.enforceMaxBitrateUrl('/Items/abc/PlaybackInfo?MaxStreamingBitrate=60000000&foo=1&MaxStreamingBitrate=200000000', 120000000);
+
+    assert.strictEqual(result.targetBitrate, 200000000, 'higher later PascalCase duplicate should not be lowered');
+    assert.strictEqual(result.url.indexOf('MaxStreamingBitrate=60000000'), -1);
+    assert.strictEqual(result.url.indexOf('MaxStreamingBitrate=120000000'), -1);
+    assert(result.url.indexOf('MaxStreamingBitrate=200000000') !== -1);
+    assert(result.url.indexOf('maxStreamingBitrate=200000000') !== -1);
+}
+
+{
+    const result = patches.enforceMaxBitrateUrl('/Items/abc/PlaybackInfo?maxStreamingBitrate=60000000&foo=1&maxStreamingBitrate=180000000', 120000000);
+
+    assert.strictEqual(result.targetBitrate, 180000000, 'higher later camelCase duplicate should not be lowered');
+    assert.strictEqual(result.url.indexOf('maxStreamingBitrate=60000000'), -1);
+    assert.strictEqual(result.url.indexOf('maxStreamingBitrate=120000000'), -1);
+    assert(result.url.indexOf('MaxStreamingBitrate=180000000') !== -1);
+    assert(result.url.indexOf('maxStreamingBitrate=180000000') !== -1);
 }
 
 {
@@ -117,7 +163,7 @@ assert.strictEqual(patches.enforceMaxBitrateBody('[{"MaxStreamingBitrate":1}]', 
 
     assert.strictEqual(returned, body, 'object bodies should be patched in place');
     assert.strictEqual(body.MaxStreamingBitrate, 200000000, 'higher object bitrate should not be lowered');
-    assert.strictEqual(body.maxStreamingBitrate, 120000000);
+    assert.strictEqual(body.maxStreamingBitrate, 200000000, 'lower sibling body bitrate should be raised to the highest effective value');
     assert.strictEqual(body.Profile.MaxStaticBitrate, 120000000);
     assert.deepStrictEqual(body.DeviceProfile.SubtitleProfiles, [
         {
