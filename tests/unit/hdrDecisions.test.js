@@ -143,6 +143,21 @@ assert.strictEqual(hdr.getDynamicRangeHintFromMediaInfo({
     }
 }), 'hdr');
 
+// Top-level metadata-field loop (no MediaSource/MediaSources/MediaStreams present).
+assert.strictEqual(hdr.getDynamicRangeHintFromMediaInfo({
+    VideoRangeType: 'HDR10'
+}), 'hdr', 'top-level VideoRangeType should be inspected when no media source is present');
+assert.strictEqual(hdr.getDynamicRangeHintFromMediaInfo({
+    ColorTransfer: 'bt709'
+}), 'sdr', 'top-level SDR-only signal should resolve to sdr');
+// videoDoViProfile/Level fallback (these keys are not in the inspected list above).
+assert.strictEqual(hdr.getDynamicRangeHintFromMediaInfo({
+    VideoDoViProfile: 8
+}), 'hdr', 'HDR Dolby Vision profile fallback should force HDR');
+assert.strictEqual(hdr.getDynamicRangeHintFromMediaInfo({
+    title: 'no recognizable signal'
+}), 'unknown', 'no recognizable dynamic-range signal should resolve to unknown');
+
 assert.strictEqual(hdr.getPlaybackVideoDeliveryFromTranscodingUrl('/videos/1/master.m3u8?VideoCodec=copy'), 'copy');
 assert.strictEqual(hdr.getPlaybackVideoDeliveryFromTranscodingUrl('/videos/1/master.m3u8?VideoCodec=h264'), 'transcode');
 assert.strictEqual(hdr.getPlaybackVideoDeliveryFromTranscodingUrl('/videos/1/master.m3u8?Static=true&VideoCodec=h264'), 'directstream');

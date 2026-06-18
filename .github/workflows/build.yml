@@ -31,6 +31,9 @@ jobs:
       - name: Check packaging
         run: npm run check
 
+      - name: Run injected-asset and unit tests
+        run: npm test
+
   build:
     needs: check
     runs-on: ubuntu-latest

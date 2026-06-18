@@ -50,6 +50,10 @@
         return parsed.toString();
     }
 
+    // NOTE: these boolean feature keys are mirrored by sanitizeFeatureOverrides() in
+    // frontend/js/index.js, because the shell runs in a separate realm and cannot import
+    // this registry. Keep the two lists aligned when adding a feature;
+    // tests/unit/featureRegistry.test.js asserts they match.
     var booleanDefinitions = [
         {
             key: 'playbackDiagnosticsEnabled',

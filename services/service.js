@@ -29,9 +29,10 @@ var UNSAFE_MAP_KEYS = {
 	'valueOf': true
 };
 
-// scanresult and subscriptions are null-prototype maps; for...in only
-// visits own properties, so direct access is equivalent.
-function hasOwn(obj, key) {
+// scanresult and subscriptions are null-prototype maps holding only non-null object
+// values, so "has a non-null value" is equivalent to a key-presence check here. Named
+// hasValue (not hasOwn) to reflect the actual semantics rather than imply hasOwnProperty.
+function hasValue(obj, key) {
 	return obj[key] != null;
 }
 
@@ -97,6 +98,12 @@ function isValidServerAddress(address) {
 
 var dgram = require('dgram');
 var client4 = dgram.createSocket("udp4");
+// Without an 'error' listener, an unhandled socket error (e.g. EADDRINUSE on bind, or a
+// send() failure) is thrown as an uncaught exception and tears down the whole discovery
+// service for the rest of the app session. Log and keep the service alive instead.
+client4.on("error", function (err) {
+	console.error("Jellyfin discovery socket error:", err);
+});
 
 // var client6;
 // try {
@@ -120,7 +127,7 @@ var scanresult = Object.create(null);
 function pruneScanResults() {
 	var now = Date.now();
 	for (var serverId in scanresult) {
-		if (!hasOwn(scanresult, serverId)) {
+		if (!hasValue(scanresult, serverId)) {
 			continue;
 		}
 
@@ -136,7 +143,7 @@ function evictOldestScanResult() {
 	var oldestLastSeen = Infinity;
 
 	for (var serverId in scanresult) {
-		if (!hasOwn(scanresult, serverId)) {
+		if (!hasValue(scanresult, serverId)) {
 			continue;
 		}
 
@@ -159,7 +166,7 @@ function evictOldestScanResult() {
 function countScanResultsForSource(address) {
 	var count = 0;
 	for (var serverId in scanresult) {
-		if (!hasOwn(scanresult, serverId)) {
+		if (!hasValue(scanresult, serverId)) {
 			continue;
 		}
 
@@ -174,10 +181,10 @@ function countScanResultsForSource(address) {
 function sendScanResults(server_id) {
 	pruneScanResults();
 	for (var i in subscriptions) {
-		if (hasOwn(subscriptions, i)) {
+		if (hasValue(subscriptions, i)) {
 			var s = subscriptions[i];
 			if (server_id) {
-				if (!hasOwn(scanresult, server_id)) {
+				if (!hasValue(scanresult, server_id)) {
 					continue;
 				}
 				var res = Object.create(null);
@@ -203,7 +210,7 @@ function handleDiscoveryResponse(message, remote) {
 			typeof msg.Name == "string" && msg.Name.length <= 256 &&
 			typeof msg.Address == "string" && isValidServerAddress(msg.Address)) {
 
-			var isNewServerId = !hasOwn(scanresult, msg.Id);
+			var isNewServerId = !hasValue(scanresult, msg.Id);
 			if (isNewServerId && countScanResultsForSource(remote.address) >= MAX_SCAN_RESULTS_PER_SOURCE) {
 				return;
 			}

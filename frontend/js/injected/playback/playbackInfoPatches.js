@@ -211,6 +211,10 @@
     }
 
     function getProfilePatchSnapshot(value) {
+        // Change detection for the string-body path diffs this snapshot before/after the
+        // profile transform, so it must cover every DeviceProfile field the transform
+        // mutates. If a future profile patch starts touching another field, add it here
+        // (or have the transform report mutation explicitly) so the change is not missed.
         try {
             return JSON.stringify({
                 MaxStreamingBitrate: value.MaxStreamingBitrate,

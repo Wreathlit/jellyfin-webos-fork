@@ -408,7 +408,17 @@ Install dependencies:
 npm install
 ```
 
-Validate package metadata:
+Run the unit tests and injected-asset checks (pure Node, no TV required):
+
+```sh
+npm test
+```
+
+This runs `npm run check:assets` (injected-runtime asset manifest + load-order check) and
+`npm run test:unit` (the pure decision-module unit tests under `tests/unit/`). Run it
+before pushing — CI runs the same command.
+
+Validate the IPK package structure (requires the webOS CLI):
 
 ```sh
 npm run check
@@ -419,6 +429,10 @@ Build an IPK:
 ```sh
 npm run package
 ```
+
+If you prefer the containerized webOS SDK toolchain over a local install, `dev.sh` wraps
+the same `ares-*` commands inside a Docker image, e.g. `./dev.sh ares-package --no-minify
+services frontend`.
 
 When the default `build` output is locked by a previous install/test session,
 write to a new output directory:

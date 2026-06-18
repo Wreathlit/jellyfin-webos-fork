@@ -1102,6 +1102,8 @@
 
     function saveRegisteredNumberFeature(key, storageKey, value, formattedValue) {
         if (webOSFeatureRegistry && webOSFeatureRegistry.saveNumberValue) {
+            // The registry re-formats via formatStoredNumber (toFixed(2)); formattedValue is
+            // only consumed by the fallback below when the injected features module is absent.
             webOSFeatureRegistry.saveNumberValue(key, localStorage, value);
             return;
         }
@@ -3380,8 +3382,9 @@
             if (!isInsideWebOSSettingsRoot(mutation.target)) {
                 return false;
             }
+            // mutation.target is already guaranteed inside the settings root by the check
+            // above; an in-root element with a parent only ever gains/loses in-root nodes.
             if (mutation.target && mutation.target.nodeType === 1
-                && isInsideWebOSSettingsRoot(mutation.target)
                 && mutation.target.parentNode) {
                 continue;
             }
@@ -4206,6 +4209,11 @@
             return;
         }
 
+        // Bound the cache so a long-running session that browses many items cannot grow it
+        // without limit (mirrors mediaItemDynamicRangeCache).
+        if (Object.keys(playbackInfoDynamicRangeHints).length >= MEDIA_DYNAMIC_RANGE_CACHE_LIMIT) {
+            playbackInfoDynamicRangeHints = {};
+        }
         playbackInfoDynamicRangeHints[getDynamicRangeCacheKey(itemId, mediaSourceId)] = hint;
     }
 
@@ -4215,6 +4223,11 @@
             return;
         }
 
+        // Bound the cache so a long-running session that browses many items cannot grow it
+        // without limit (mirrors mediaItemDynamicRangeCache).
+        if (Object.keys(playbackInfoVideoDeliveryHints).length >= MEDIA_DYNAMIC_RANGE_CACHE_LIMIT) {
+            playbackInfoVideoDeliveryHints = {};
+        }
         playbackInfoVideoDeliveryHints[getDynamicRangeCacheKey(itemId, mediaSourceId)] = normalizedVideoDelivery;
     }
 
@@ -4223,12 +4236,7 @@
             return 'unknown';
         }
 
-        var cacheKey = getDynamicRangeCacheKey(itemId, mediaSourceId);
-        if (mediaSourceId) {
-            return playbackInfoDynamicRangeHints[cacheKey] || 'unknown';
-        }
-
-        return playbackInfoDynamicRangeHints[cacheKey] || 'unknown';
+        return playbackInfoDynamicRangeHints[getDynamicRangeCacheKey(itemId, mediaSourceId)] || 'unknown';
     }
 
     function getCachedPlaybackInfoVideoDeliveryHint(itemId, mediaSourceId) {
@@ -5372,10 +5380,6 @@
             supports: function (command) {
                 var normalizedCommand = command && command.toLowerCase();
                 var isSupported = normalizedCommand && SupportedFeatures.indexOf(normalizedCommand) != -1;
-
-                if (normalizedCommand === 'htmlvideoautoplay') {
-                    isSupported = true;
-                }
 
                 postMessage('AppHost.supports', {
                     command: command,

@@ -488,18 +488,21 @@ function handleSuccessManifest(data, baseurl) {
     // Fallback path: keep behavior deterministic even if no prior server entry is found.
     var address = baseurl.replace(/^https?:\/\//i, '').split('/')[0];
     var fallbackName = (data && typeof data.shortname === 'string' && data.shortname.length > 0) ? data.shortname : address;
-    var fallbackId = fallbackName || baseurl;
+    // Persist the id as the "unknown id" sentinel (false), not a name/address. Storing a
+    // non-GUID here would make a later reconnect compare it against the real server Id and
+    // spuriously trip the "server ID has changed" warning. lruStrategy keys the entry under
+    // baseurl when id is false.
     connected_servers = lruStrategy(getConnectedServers(), 4, {
         'baseurl': baseurl,
         'hosturl': hosturl,
         'Name': fallbackName,
         'Address': address,
         'auto_connect': false,
-        'id': fallbackId
+        'id': false
     });
     storage.set('connected_servers', connected_servers)
     debugLog("martin:handleSuccessManifest added server");
-    debugLog(connected_servers[fallbackId]);
+    debugLog(connected_servers[baseurl]);
 
     getTextToInject(function (bundle) {
         handoff(hosturl, bundle, null);
@@ -1074,9 +1077,12 @@ function renderSingleServer(server_id, server) {
 
     // Discovery re-renders the same servers every ~15s; update text in place
     // instead of tearing the card down and rebuilding closures each cycle.
+    // Address is only populated after the manifest step; fall back to baseurl so a card
+    // whose handshake never completed never renders or connects to "undefined".
+    var serverAddress = server.Address || server.baseurl || '';
     server_card.querySelector(".server_card_title").innerText = server.Name;
-    server_card.querySelector(".server_card_url").innerText = server.Address;
-    server_card.querySelector("button").value = server.Address;
+    server_card.querySelector(".server_card_url").innerText = serverAddress;
+    server_card.querySelector("button").value = serverAddress;
 }
 
 
