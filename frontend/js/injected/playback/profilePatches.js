@@ -216,17 +216,6 @@
         }
     }
 
-    function hasH264Codec(codecValue) {
-        var codecs = parseCommaSeparatedList(codecValue);
-        for (var i = 0; i < codecs.length; i++) {
-            var codec = codecs[i].toLowerCase();
-            if (codec === 'h264' || codec === 'avc') {
-                return true;
-            }
-        }
-        return false;
-    }
-
     function getDirectPlayVideoCodecMap(profile) {
         var result = {};
         if (!profile || !profile.DirectPlayProfiles) {
@@ -262,25 +251,6 @@
             }
         }
         return result;
-    }
-
-    function hasIsInterlacedCondition(conditions) {
-        if (!conditions || !conditions.length) {
-            return false;
-        }
-
-        for (var i = 0; i < conditions.length; i++) {
-            var condition = conditions[i];
-            if (!condition || !condition.Property) {
-                continue;
-            }
-
-            if (condition.Property.toString().toLowerCase() === 'isinterlaced') {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     function patchDirectPlayProfilesForProblematicFormats(profile, context) {
@@ -339,44 +309,6 @@
 
         if (patchedProfiles || removedProfiles) {
             debugLog(context, 'Patched direct play profile(s) for DVD/MPEG compatibility. patched=' + patchedProfiles + ', removed=' + removedProfiles);
-        }
-    }
-
-    function patchH264InterlaceSupport(profile, context) {
-        if (!profile || !profile.CodecProfiles) {
-            return;
-        }
-
-        var patchedCodecProfiles = 0;
-        for (var i = 0; i < profile.CodecProfiles.length; i++) {
-            var codecProfile = profile.CodecProfiles[i];
-            if (!codecProfile || (codecProfile.Type && codecProfile.Type.toString().toLowerCase() !== 'video')) {
-                continue;
-            }
-
-            if (!hasH264Codec(codecProfile.Codec)) {
-                continue;
-            }
-
-            if (!codecProfile.Conditions) {
-                codecProfile.Conditions = [];
-            }
-
-            if (hasIsInterlacedCondition(codecProfile.Conditions)) {
-                continue;
-            }
-
-            codecProfile.Conditions.push({
-                Condition: 'NotEquals',
-                Property: 'IsInterlaced',
-                Value: 'true',
-                IsRequired: false
-            });
-            patchedCodecProfiles++;
-        }
-
-        if (patchedCodecProfiles) {
-            debugLog(context, 'Added non-interlaced H264 condition to codec profile(s):', patchedCodecProfiles);
         }
     }
 
@@ -520,9 +452,9 @@
 
     function applyVideoCapabilityProfilePatches(profile, context) {
         // Video transcoding should be driven by the video/container capability
-        // report only. These patches remove known-bad direct-play claims.
+        // report only. This removes known-bad direct-play claims; every other
+        // video capability decision is left to Jellyfin Web's own reporting.
         patchDirectPlayProfilesForProblematicFormats(profile, context);
-        patchH264InterlaceSupport(profile, context);
     }
 
     function applyAudioTranscodeVideoCopyProfilePatches(profile, context) {

@@ -270,6 +270,9 @@
     var playbackStartFallbackGeneration = 0;
     var pgsSubtitleDeliveryDiagnostic = 'none';
     var pgsSubtitleFetchDiagnostic = 'none';
+    var playbackTranscodeReasonsDiagnostic = 'none';
+    var playbackVideoStreamDiagnostic = 'none';
+    var subtitleBurnInFixDiagnostic = 'none';
     var playbackDiagnosticsOverlay = null;
     var playbackDiagnosticsOverlayRetryTimer = null;
     var playbackDiagnosticsRafId = null;
@@ -671,6 +674,9 @@
             pendingPlaybackInfoDynamicRange = null;
             pgsSubtitleDeliveryDiagnostic = 'none';
             pgsSubtitleFetchDiagnostic = 'none';
+            playbackTranscodeReasonsDiagnostic = 'none';
+            playbackVideoStreamDiagnostic = 'none';
+            subtitleBurnInFixDiagnostic = 'none';
             resetSubtitleTimingState('playback-idle');
         }
 
@@ -970,7 +976,8 @@
             'long=' + formatPlaybackDiagnosticsLongTaskInfo(now) + ' video=' + dimensions + ' t=' + currentTime + ' drop=' + formatPlaybackDiagnosticsNumber(dropped) + '/' + formatPlaybackDiagnosticsNumber(total),
             'ASS canvas=' + getPlaybackDiagnosticsAssCanvasInfo() + ' worker=' + getPlaybackDiagnosticsAssWorkerInfo(),
             'PGS ' + getPlaybackDiagnosticsPgsInfo(),
-            'subs pgs=' + pgsSubtitleDeliveryDiagnostic + ' sup=' + pgsSubtitleFetchDiagnostic
+            'subs pgs=' + pgsSubtitleDeliveryDiagnostic + ' sup=' + pgsSubtitleFetchDiagnostic + ' burn=' + subtitleBurnInFixDiagnostic,
+            'why=' + playbackTranscodeReasonsDiagnostic + ' vid=' + playbackVideoStreamDiagnostic
         ].join('\n');
 
         playbackDiagnosticsLastUpdateTs = now;
@@ -4688,6 +4695,68 @@
         setPlaybackDynamicRange(pendingHint, 'playbackinfo-pending');
     }
 
+    function isVideoMediaStream(stream) {
+        if (!stream || typeof stream !== 'object') {
+            return false;
+        }
+
+        var type = Object.prototype.hasOwnProperty.call(stream, 'Type') ? stream.Type : stream.type;
+        if (typeof type === 'number') {
+            return type === 1;
+        }
+        if (type === null || type === undefined || type === '') {
+            return false;
+        }
+        return type.toString().toLowerCase() === 'video' || type.toString() === '1';
+    }
+
+    function getVideoStreamDiagnostic(payload, mediaSourceId) {
+        // VideoProfileNotSupported and friends are decided from these exact
+        // fields, so print them next to the reason instead of guessing.
+        var selectedSource = getSelectedPlaybackInfoMediaSource(payload, mediaSourceId);
+        if (!selectedSource) {
+            return 'none';
+        }
+
+        var streams = toArray(selectedSource.MediaStreams || selectedSource.mediaStreams);
+        for (var i = 0; i < streams.length; i++) {
+            var stream = streams[i];
+            if (!isVideoMediaStream(stream)) {
+                continue;
+            }
+
+            var parts = [(stream.Codec || stream.codec || '?').toString()];
+            parts.push((stream.Profile || stream.profile || '?').toString());
+            var bitDepth = stream.BitDepth || stream.bitDepth;
+            parts.push(bitDepth ? bitDepth.toString() + 'bit' : '?bit');
+            var level = stream.Level || stream.level;
+            parts.push(level ? 'L' + level.toString() : 'L?');
+            return parts.join('/');
+        }
+
+        return 'novideo';
+    }
+
+    function getTranscodeReasonsDiagnostic(payload, mediaSourceId) {
+        // Jellyfin puts the decision it actually made in the transcoding URL, so
+        // this is the authoritative answer to "why is this transcoding".
+        var selectedSource = getSelectedPlaybackInfoMediaSource(payload, mediaSourceId);
+        if (!selectedSource) {
+            return 'none';
+        }
+
+        var transcodingUrl = selectedSource.TranscodingUrl || selectedSource.transcodingUrl;
+        if (!transcodingUrl) {
+            return 'direct';
+        }
+
+        var patches = getPlaybackInfoPatches();
+        var reasons = patches && patches.getQueryParameterValue
+            ? patches.getQueryParameterValue(transcodingUrl, 'TranscodeReasons')
+            : null;
+        return reasons || 'unlisted';
+    }
+
     function getPgsSubtitleDeliveryDiagnostic(payload, mediaSourceId) {
         if (!payload || typeof payload !== 'object') {
             return 'none';
@@ -4749,6 +4818,8 @@
         var hint = getDynamicRangeHintFromPlaybackInfoPayload(payload, mediaSourceId);
         var videoDelivery = getPlaybackVideoDeliveryFromPlaybackInfoPayload(payload, mediaSourceId);
         var pgsDeliveryDiagnostic = getPgsSubtitleDeliveryDiagnostic(payload, mediaSourceId);
+        var transcodeReasonsDiagnostic = getTranscodeReasonsDiagnostic(payload, mediaSourceId);
+        var videoStreamDiagnostic = getVideoStreamDiagnostic(payload, mediaSourceId);
         hdrDetectionPlaybackInfoLastHint = hint;
         hdrDetectionPlaybackInfoCount++;
         cachePlaybackInfoDynamicRangeHint(itemId, mediaSourceId, hint);
@@ -4758,6 +4829,8 @@
                 return;
             }
             pgsSubtitleDeliveryDiagnostic = pgsDeliveryDiagnostic;
+            playbackTranscodeReasonsDiagnostic = transcodeReasonsDiagnostic;
+            playbackVideoStreamDiagnostic = videoStreamDiagnostic;
             rememberPendingPlaybackInfoDynamicRange(itemId, mediaSourceId, hint, videoDelivery, context, reason);
             return;
         }
@@ -4765,6 +4838,8 @@
             return;
         }
         pgsSubtitleDeliveryDiagnostic = pgsDeliveryDiagnostic;
+        playbackTranscodeReasonsDiagnostic = transcodeReasonsDiagnostic;
+        playbackVideoStreamDiagnostic = videoStreamDiagnostic;
 
         if (itemId) {
             setCurrentPlaybackItemId(itemId, mediaSourceId, 'item-changed-playbackinfo');
@@ -4881,6 +4956,56 @@
         }
     }
 
+    function patchBurnedInSubtitleDelivery(payload, source) {
+        var patches = getPlaybackInfoPatches();
+        if (!patches || !patches.patchBurnedInSubtitleDelivery) {
+            subtitleBurnInFixDiagnostic = 'nomodule';
+            return false;
+        }
+
+        var burnInEnabled = getNativeAlwaysBurnInSubtitleWhenTranscoding();
+        if (!burnInEnabled) {
+            subtitleBurnInFixDiagnostic = 'off';
+            return false;
+        }
+
+        var changed = patches.patchBurnedInSubtitleDelivery(payload, {
+            alwaysBurnInSubtitleWhenTranscoding: true,
+            source: source,
+            debugLog: debugLog
+        });
+        subtitleBurnInFixDiagnostic = (changed ? 'on/fixed:' : 'on/skip:') + source;
+        return changed;
+    }
+
+    function rebuildPlaybackInfoResponse(response, payload) {
+        // Response bodies are one-shot, so a patched payload has to be handed
+        // back as a fresh Response. Status and headers are carried over so the
+        // api client still sees the original result.
+        try {
+            if (typeof window.Response !== 'function') {
+                return response;
+            }
+
+            var headers = response.headers;
+            if (typeof window.Headers === 'function') {
+                // The rewritten body has its own length; a copied Content-Length
+                // would describe the server's original payload.
+                headers = new window.Headers(response.headers);
+                headers['delete']('content-length');
+            }
+
+            return new window.Response(JSON.stringify(payload), {
+                status: response.status,
+                statusText: response.statusText,
+                headers: headers
+            });
+        } catch (error) {
+            debugLog('Failed to rebuild patched PlaybackInfo response:', error);
+            return response;
+        }
+    }
+
     function inspectPlaybackInfoFetchResult(fetchResult, url, context) {
         if (!isPlaybackInfoUrl(url) || !fetchResult || typeof fetchResult.then !== 'function') {
             return fetchResult;
@@ -4891,7 +5016,9 @@
                 if (response && typeof response.clone === 'function') {
                     return response.clone().json().then(function (payload) {
                         applyDynamicRangeFromPlaybackInfo(payload, url, 'playbackinfo-fetch', context);
-                        return response;
+                        return patchBurnedInSubtitleDelivery(payload, 'fetch')
+                            ? rebuildPlaybackInfoResponse(response, payload)
+                            : response;
                     }, function () {
                         // Ignore payload parse errors.
                         return response;
@@ -4904,31 +5031,151 @@
         });
     }
 
-    function inspectPlaybackInfoXhrResponse(xhr) {
+    function getXhrResponseTypeName(xhr) {
         try {
-            if (!xhr || !isPlaybackInfoUrl(xhr.__webOsPlaybackInfoUrl)) {
+            return (xhr.responseType || '').toString();
+        } catch (error) {
+            return '';
+        }
+    }
+
+    function readPlaybackInfoXhrPayload(xhr) {
+        var responseType = getXhrResponseTypeName(xhr);
+        if (responseType === 'json') {
+            var jsonResponse = null;
+            try {
+                jsonResponse = xhr.response;
+            } catch (error) {
+                jsonResponse = null;
+            }
+            return jsonResponse && typeof jsonResponse === 'object'
+                ? { payload: jsonResponse, live: true }
+                : null;
+        }
+
+        if (responseType !== '' && responseType !== 'text') {
+            return null;
+        }
+
+        var responseText = '';
+        try {
+            responseText = xhr.responseText || '';
+        } catch (error) {
+            responseText = '';
+        }
+        if (!responseText) {
+            return null;
+        }
+
+        try {
+            return { payload: JSON.parse(responseText), live: false };
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function shadowXhrTextResponse(xhr, text) {
+        // An XHR body cannot be replaced, so the rewritten JSON is exposed by
+        // shadowing the prototype getters with own properties on the instance.
+        // They are removed again on the next open() so a reused XHR cannot
+        // serve a stale body.
+        var descriptor = {
+            configurable: true,
+            enumerable: false,
+            get: function () {
+                return text;
+            }
+        };
+
+        Object.defineProperty(xhr, 'responseText', descriptor);
+        xhr.__webOsPlaybackInfoShadowedText = true;
+
+        var responseType = getXhrResponseTypeName(xhr);
+        if (responseType === '' || responseType === 'text') {
+            Object.defineProperty(xhr, 'response', descriptor);
+            xhr.__webOsPlaybackInfoShadowedResponse = true;
+        }
+    }
+
+    function clearXhrResponseShadow(xhr) {
+        try {
+            if (xhr.__webOsPlaybackInfoShadowedText) {
+                delete xhr.responseText;
+                xhr.__webOsPlaybackInfoShadowedText = false;
+            }
+            if (xhr.__webOsPlaybackInfoShadowedResponse) {
+                delete xhr.response;
+                xhr.__webOsPlaybackInfoShadowedResponse = false;
+            }
+        } catch (error) {
+            debugLog('Failed to clear patched XHR PlaybackInfo response:', error);
+        }
+    }
+
+    function patchPlaybackInfoXhrResponseBody(xhr) {
+        try {
+            if (xhr.__webOsPlaybackInfoBurnInHandled) {
                 return;
             }
             if (xhr.status && (xhr.status < 200 || xhr.status >= 300)) {
                 return;
             }
-            var payload = null;
-            if (xhr.response && typeof xhr.response === 'object') {
-                payload = xhr.response;
-            } else {
-                var responseText = '';
-                try {
-                    responseText = xhr.responseText || '';
-                } catch (responseTextError) {
-                    responseText = '';
-                }
-                if (!responseText) {
-                    return;
-                }
-                payload = JSON.parse(responseText);
+
+            var read = readPlaybackInfoXhrPayload(xhr);
+            if (!read) {
+                return;
             }
 
-            applyDynamicRangeFromPlaybackInfo(payload, xhr.__webOsPlaybackInfoUrl, 'playbackinfo-xhr', xhr.__webOsPlaybackInfoContext);
+            xhr.__webOsPlaybackInfoBurnInHandled = true;
+            if (!patchBurnedInSubtitleDelivery(read.payload, 'xhr')) {
+                return;
+            }
+            if (read.live) {
+                // responseType=json hands out the parsed object itself, so the
+                // in-place edit is already what Jellyfin Web reads.
+                return;
+            }
+
+            shadowXhrTextResponse(xhr, JSON.stringify(read.payload));
+        } catch (error) {
+            debugLog('Failed to patch XHR PlaybackInfo response:', error);
+        }
+    }
+
+    function handlePlaybackInfoXhrReadyStateChange(xhr) {
+        // readystatechange(DONE) is dispatched before load/loadend, and this
+        // listener is registered from open(), so it runs before any handler the
+        // api client assigns afterwards. That is the only window in which the
+        // response body can still be corrected.
+        if (!xhr || xhr.readyState !== 4 || !isPlaybackInfoUrl(xhr.__webOsPlaybackInfoUrl)) {
+            return;
+        }
+
+        inspectPlaybackInfoXhrResponse(xhr);
+        patchPlaybackInfoXhrResponseBody(xhr);
+    }
+
+    function inspectPlaybackInfoXhrResponse(xhr) {
+        try {
+            if (!xhr || !isPlaybackInfoUrl(xhr.__webOsPlaybackInfoUrl)) {
+                return;
+            }
+            if (xhr.__webOsPlaybackInfoInspected) {
+                return;
+            }
+            if (xhr.status && (xhr.status < 200 || xhr.status >= 300)) {
+                return;
+            }
+
+            // Read before patchPlaybackInfoXhrResponseBody rewrites delivery
+            // methods, so the diagnostics keep reporting what the server sent.
+            var read = readPlaybackInfoXhrPayload(xhr);
+            if (!read) {
+                return;
+            }
+
+            xhr.__webOsPlaybackInfoInspected = true;
+            applyDynamicRangeFromPlaybackInfo(read.payload, xhr.__webOsPlaybackInfoUrl, 'playbackinfo-xhr', xhr.__webOsPlaybackInfoContext);
         } catch (error) {
             // Ignore JSON parse errors.
         }
@@ -5123,11 +5370,24 @@
                     }
 
                     var openArgs = arguments;
+                    clearXhrResponseShadow(this);
+                    this.__webOsPlaybackInfoInspected = false;
+                    this.__webOsPlaybackInfoBurnInHandled = false;
                     if (isPlaybackInfoUrl(requestUrl)) {
                         var enforcedXhrBitrate = enforcePlaybackInfoMaxBitrateUrl(requestUrl, 'xhr');
                         requestUrl = enforcedXhrBitrate.url;
                         this.__webOsPlaybackInfoMaxBitrate = enforcedXhrBitrate.targetBitrate;
                         this.__webOsPlaybackInfoContext = createPlaybackInfoRequestContext(requestUrl);
+
+                        // Registered here, not in send(), so this listener is
+                        // ahead of the onreadystatechange/onloadend handler the
+                        // api client assigns between open() and send().
+                        if (!this.__webOsPlaybackInfoReadyStateHooked && this.addEventListener) {
+                            this.__webOsPlaybackInfoReadyStateHooked = true;
+                            this.addEventListener('readystatechange', function () {
+                                handlePlaybackInfoXhrReadyStateChange(this);
+                            });
+                        }
 
                         var argsCopy = [];
                         for (var i = 0; i < arguments.length; i++) {
@@ -5282,6 +5542,23 @@
             subtitleBurnInMode: getNativeSubtitleBurnInMode(),
             debugLog: debugLog
         });
+    }
+
+    function getNativeAlwaysBurnInSubtitleWhenTranscoding() {
+        // Jellyfin Web stores this one through appSettings, so the key has no
+        // user id prefix, same as `subtitleburnin`.
+        try {
+            var storage = window.localStorage;
+            if (!storage) {
+                return false;
+            }
+
+            var value = storage.getItem('alwaysBurnInSubtitleWhenTranscoding');
+            return value ? value.toString().toLowerCase() === 'true' : false;
+        } catch (error) {
+            debugLog('Failed to read Jellyfin always-burn-in subtitle setting:', error && error.message ? error.message : error);
+            return false;
+        }
     }
 
     function getNativeSubtitleBurnInMode() {

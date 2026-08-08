@@ -111,32 +111,75 @@ Approach:
   the client-rendered PGS path before Embed/Encode when burn-in is not required;
 - enable subtitles in HLS video transcoding manifests so text subtitle tracks
   remain visible when the server chooses an HLS direct-stream path;
-- do not rewrite PlaybackInfo subtitle delivery responses locally. BDMV folder
-  PGS delivery failures have been traced to upstream/server path selection, so
-  the client should not synthesize subtitle URLs or override server delivery
-  methods;
+- do not rewrite PlaybackInfo subtitle delivery responses locally, with the one
+  exception described in `Always burn in subtitle on transcoding` below. BDMV
+  folder PGS delivery failures have been traced to upstream/server path
+  selection, so the client should not synthesize subtitle URLs or override
+  server delivery methods to work around a delivery failure;
 - respect Jellyfin's native subtitle burn-in controls. `Burn subtitles` gates
   the client-rendered ASS/SSA/PGS profiles before the server chooses a delivery
   method; `Always burn in subtitle on transcoding` is passed through separately
-  for cases where transcoding is already selected. webOS profile reporting can
-  still make unsupported video formats such as interlaced H264 transcode, and
-  can prefer client-rendered PGS delivery when burn-in is not required, but it
-  must not override the user's burn-in mode;
+  for cases where transcoding is already selected. Client-rendered PGS delivery
+  is only preferred when burn-in is not required, and it may not override the
+  user's burn-in mode;
 - keep the last PlaybackInfo payload available for the playback-start fallback
   window for HDR detection without adding more subtitle delivery heuristics.
 
+#### Always burn in subtitle on transcoding
+
+Problem: with this setting enabled, an ASS/SSA subtitle is burned into a
+transcoded video *and* rendered a second time by Jellyfin Web on top of it.
+
+Cause: the setting reaches the server as `AlwaysBurnInSubtitleWhenTranscoding`,
+and `StreamInfo.ToUrl()` then appends `SubtitleStreamIndex` to the transcoding
+URL even when the device profile resolved that subtitle to `External`. The same
+method only appends `SubtitleMethod` for non-`External` delivery, so the stream
+request carries an index with no method and the server falls back to the
+`SubtitleDeliveryMethod` enum default, `Encode`. Meanwhile the PlaybackInfo
+response still reports the stream as `External` with a `DeliveryUrl`, so
+Jellyfin Web renders it client-side as well. Upstream compensates inside
+`htmlVideoPlayer.setCurrentTrackElement()` by querying `/Sessions` and forcing
+`Encode` when `TranscodingInfo.IsVideoDirect` is false, but that lookup races
+playback start and frequently misses on webOS.
+
+Approach: when the setting is enabled and the PlaybackInfo response shows a real
+video encode (not DirectPlay, DirectStream, or `VideoCodec=copy`), rewrite the
+`External`/`Hls` subtitle streams of that media source to `Encode`. This is the
+same decision upstream makes from `IsVideoDirect`, taken from the payload
+instead of session state, so it cannot race. Audio-only transcode and direct
+play are untouched and keep client-side ASS/PGS rendering, and the device
+profile still advertises the External profiles so no path is forced into a
+transcode it did not need.
+
+The correction has to land before Jellyfin Web reads the response, so it runs on
+both transports. On `fetch` the patched payload is handed back as a new
+`Response`. On `XMLHttpRequest` the listener is registered from `open()`, which
+puts it ahead of the `onreadystatechange`/`onloadend` handler an api client
+assigns between `open()` and `send()`, and it runs on `readystatechange(DONE)`
+because `load`/`loadend` are already too late. A `responseType=json` body is the
+parsed object itself and is edited in place; a text body cannot be replaced, so
+the instance shadows `responseText`/`response` with the rewritten JSON and the
+shadow is cleared on the next `open()`.
+
 Status: active workaround. This fork still advertises client-renderable subtitle
-profiles and keeps the HEVC/H265 video-copy path, but it no longer rewrites
-PlaybackInfo subtitle delivery. PGS timing/main-thread/object-reuse fixes are
-renderer-side patches and are separate from server subtitle delivery.
+profiles and keeps the HEVC/H265 video-copy path. The only PlaybackInfo subtitle
+delivery rewrite left is the burn-in de-duplication described above. PGS
+timing/main-thread/object-reuse fixes are renderer-side patches and are separate
+from server subtitle delivery.
 
 ### Playback decision boundaries
 
 The playback compatibility patches intentionally keep four decisions separate:
 
 - Video transcoding is controlled by video/container capability reporting. The
-  fork only removes known-bad direct-play claims such as DVD/MPEG and interlaced
-  H264 support; it should not use subtitle state to decide video codec support.
+  fork only removes known-bad direct-play claims such as DVD/MPEG; it should not
+  use subtitle state to decide video codec support, and it never *adds* a video
+  capability claim — see the H264 High 10 note below for why that direction was
+  tried and rejected. Everything else about H264/HEVC capability, including the
+  `IsInterlaced` condition, is left to Jellyfin Web's own reporting. If a
+  transcode looks wrong, read `why=` in the diagnostics overlay first; the
+  server records the condition it actually failed on, and guessing from which
+  patch the fork happens to own has already produced one wrong diagnosis.
 - Audio transcoding is controlled by Jellyfin Web's audio capability and
   passthrough profile generation. The fork only allows video codec copy in video
   transcode profiles for codecs that the patched device profile still reports as
@@ -152,7 +195,11 @@ The playback compatibility patches intentionally keep four decisions separate:
   upstream `subtitleburnin` gating for the subtitle profiles it owns: `all`
   prevents the fork from adding or converting ASS/SSA/PGS External delivery,
   `allcomplexformats` prevents ASS/SSA and PGS External delivery, and
-  `onlyimageformats` prevents PGS External delivery. It also does not force
+  `onlyimageformats` prevents PGS External delivery. When
+  `alwaysBurnInSubtitleWhenTranscoding` is enabled the device profile is left
+  alone and only the PlaybackInfo response is corrected, for media sources the
+  response itself shows as a video encode, so the burned-in subtitle is not
+  rendered a second time. It does not force
   `AlwaysBurnInSubtitleWhenTranscoding`, synthesize PlaybackInfo subtitle URLs,
   delete subtitle burn-in query parameters, or clean up unrelated upstream
   subtitle profiles.
@@ -161,6 +208,28 @@ The playback compatibility patches intentionally keep four decisions separate:
   or transcode-with-video-copy (`VideoCodec=copy`). `Static=true` is classified
   as DirectStream. If video delivery is unknown or is a video transcode, the UI
   dim class is not enabled.
+
+#### H264 High 10 (Hi10P) always transcodes — do not try to force it
+
+10-bit H264 sources always transcode on webOS with
+`VideoProfileNotSupported`, because Jellyfin Web only appends `high 10` to the
+H264 `VideoProfile` condition when `!browser.web0s` — a hardcode, not a
+capability probe, so the TV's own `canPlayType` answer is never consulted.
+
+This was tried as a default-off switch that appended `high 10` to that
+condition, and it has been removed again. The condition then passed and the
+server did hand out DirectPlay, but the TV's decoder failed on the stream,
+Jellyfin Web's `onPlaybackError` retried with `EnableDirectPlay: false`, and the
+same item transcoded anyway — now reported as `DirectPlayError`, which
+`StreamBuilder` emits precisely when every profile condition passes but direct
+play was disabled by the client. LG H264 decoding is 8-bit High profile; 10-bit
+on these panels only exists on the HEVC Main10 / VP9 Profile 2 / AV1 paths.
+Upstream's hardcode matches the hardware.
+
+Forcing the claim is therefore strictly worse than leaving it alone: instead of
+going straight to a transcode, every 10-bit item pays a failed direct-play
+attempt, a playback error, and a second PlaybackInfo round trip first. Check
+`why=` in the diagnostics overlay before revisiting this.
 
 The diagnostics overlay prints
 `video=directplay|directstream|copy|transcode|unknown` next to `range=...` so HDR
@@ -392,6 +461,15 @@ Approach:
 - show compact ASS patch/message/clamp counters;
 - show compact PGS patch/media-time/render/main-thread counters and active PGS
   diagnostic switches;
+- show `why=` with the server's own `TranscodeReasons` from the selected media
+  source's transcoding URL (`direct` when there is none), so a transcode
+  complaint can be checked against the reason the server actually recorded
+  instead of a guess, plus `vid=<codec>/<profile>/<bits>/<level>` for the video
+  stream those conditions were evaluated against;
+- show `burn=` with the burn-in de-duplication state: `off` when
+  `alwaysBurnInSubtitleWhenTranscoding` is disabled, otherwise
+  `on/fixed:<transport>` or `on/skip:<transport>` depending on whether the
+  PlaybackInfo response needed correcting;
 - omit static values such as browser user agent, patched script URL, and CSS
   filter details.
 

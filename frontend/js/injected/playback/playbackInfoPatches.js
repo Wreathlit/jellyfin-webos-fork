@@ -202,6 +202,99 @@
         return changed;
     }
 
+    function toArray(value) {
+        return value && Object.prototype.toString.call(value) === '[object Array]' ? value : [];
+    }
+
+    function getMediaSources(payload) {
+        if (!payload || typeof payload !== 'object') {
+            return [];
+        }
+        return toArray(payload.MediaSources || payload.mediaSources);
+    }
+
+    function isSubtitleMediaStream(stream) {
+        if (!stream || typeof stream !== 'object') {
+            return false;
+        }
+
+        var type = Object.prototype.hasOwnProperty.call(stream, 'Type') ? stream.Type : stream.type;
+        if (typeof type === 'number') {
+            return type === 2;
+        }
+        if (type === null || type === undefined || type === '') {
+            return false;
+        }
+        return type.toString().toLowerCase() === 'subtitle' || type.toString() === '2';
+    }
+
+    function isClientRenderedDeliveryMethod(value) {
+        var normalizedValue = value ? value.toString().toLowerCase() : '';
+        return normalizedValue === 'external' || normalizedValue === 'hls';
+    }
+
+    function getMediaSourceVideoDelivery(mediaSource) {
+        var Runtime = window.__JellyfinWebOSPatchRuntime;
+        var decisions = Runtime && Runtime.get ? Runtime.get('playback.hdrDecisions') : null;
+        return decisions && decisions.getPlaybackVideoDeliveryFromMediaSource
+            ? decisions.getPlaybackVideoDeliveryFromMediaSource(mediaSource)
+            : 'unknown';
+    }
+
+    function patchBurnedInSubtitleDelivery(payload, options) {
+        // Jellyfin's StreamInfo.ToUrl() appends SubtitleStreamIndex whenever
+        // AlwaysBurnInSubtitleWhenTranscoding is set, even for a subtitle the
+        // device profile claimed as External, and then omits SubtitleMethod --
+        // which the server reads back as the enum default, Encode. The subtitle
+        // is therefore burned into the video while the same MediaStream is
+        // still advertised as External, so Jellyfin Web renders a second copy
+        // on top. Upstream compensates in htmlVideoPlayer.setCurrentTrackElement
+        // by re-reading the session and forcing Encode when TranscodingInfo says
+        // the video is not direct, but that lookup races playback start on
+        // webOS. Deriving the same answer from the PlaybackInfo payload keeps
+        // the upstream semantics (only a real video encode suppresses client
+        // rendering) without depending on session timing.
+        if (!options || !options.alwaysBurnInSubtitleWhenTranscoding) {
+            return false;
+        }
+
+        var mediaSources = getMediaSources(payload);
+        var patchedStreams = 0;
+        for (var i = 0; i < mediaSources.length; i++) {
+            var mediaSource = mediaSources[i];
+            if (!mediaSource || typeof mediaSource !== 'object') {
+                continue;
+            }
+            if (getMediaSourceVideoDelivery(mediaSource) !== 'transcode') {
+                continue;
+            }
+
+            var streams = toArray(mediaSource.MediaStreams || mediaSource.mediaStreams);
+            for (var j = 0; j < streams.length; j++) {
+                var stream = streams[j];
+                if (!isSubtitleMediaStream(stream)) {
+                    continue;
+                }
+
+                var deliveryMethodKey = Object.prototype.hasOwnProperty.call(stream, 'DeliveryMethod')
+                    ? 'DeliveryMethod'
+                    : 'deliveryMethod';
+                if (!isClientRenderedDeliveryMethod(stream[deliveryMethodKey])) {
+                    continue;
+                }
+
+                stream[deliveryMethodKey] = 'Encode';
+                patchedStreams++;
+            }
+        }
+
+        if (patchedStreams) {
+            debugLog(options, 'Forced Encode subtitle delivery for burned-in video transcode ('
+                + (options.source || '') + '): ' + patchedStreams);
+        }
+        return patchedStreams > 0;
+    }
+
     function looksLikeDeviceProfile(value) {
         return !!(value && typeof value === 'object'
             && (Object.prototype.hasOwnProperty.call(value, 'DirectPlayProfiles')
@@ -310,6 +403,7 @@
         extractItemIdFromPlaybackInfoUrl: extractItemIdFromPlaybackInfoUrl,
         enforceMaxBitrateUrl: enforceMaxBitrateUrl,
         patchPlaybackInfoBitrateObject: patchPlaybackInfoBitrateObject,
+        patchBurnedInSubtitleDelivery: patchBurnedInSubtitleDelivery,
         looksLikeDeviceProfile: looksLikeDeviceProfile,
         patchPlaybackInfoProfileObjects: patchPlaybackInfoProfileObjects,
         enforceMaxBitrateBody: enforceMaxBitrateBody

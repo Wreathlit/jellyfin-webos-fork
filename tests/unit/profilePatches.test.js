@@ -112,10 +112,7 @@ assert(profilePatches, 'playback.profilePatches should register');
     assert.strictEqual(profile.DirectPlayProfiles[0].Container, 'mkv,mp4');
     assert.strictEqual(profile.DirectPlayProfiles[0].VideoCodec, 'hevc,h265,h264');
     assert(!csv(profile.DirectPlayProfiles[0].AudioCodec).includes('pcm_s16le'), 'LPCM should stay disabled by default');
-    assert(profile.CodecProfiles[0].Conditions.some((condition) => condition.Condition === 'NotEquals'
-        && condition.Property === 'IsInterlaced'
-        && condition.Value === 'true'
-        && condition.IsRequired === false));
+    assert.deepStrictEqual(profile.CodecProfiles[0].Conditions, [], 'video capability conditions are left to Jellyfin Web');
     assert.strictEqual(profile.TranscodingProfiles[0].EnableSubtitlesInManifest, true);
     assert(csv(profile.TranscodingProfiles[0].VideoCodec).includes('hevc'), 'HEVC video copy should be allowed when direct play supports HEVC');
     assert(csv(profile.TranscodingProfiles[0].VideoCodec).includes('h265'), 'H265 video copy should be allowed when direct play supports H265');
