@@ -478,6 +478,31 @@ mean the conditional hook was installed into libpgs. They do not mean the switch
 is currently active; use `target=main/auto` and `obj=on/off` for the active test
 case.
 
+### Injected runtime startup
+
+Problem: the overlay stayed invisible after an app restart even with its setting
+enabled and the checkbox showing checked, and only appeared after toggling the
+setting off and on.
+
+Cause: the injected runtime ended in a bare list of init statements, and one of
+them called `initHdrUiInfoObserver()` — a function that stopped existing when
+`hdrUiInfoObserver` was converted to the `createManagedObserver` factory. The
+resulting `ReferenceError` aborted the rest of the list, so the initial
+`updatePlaybackDiagnosticsOverlay()` and `refreshHdrUiDimming('init')` calls
+never ran. Everything registered before that line kept working, which is why the
+setting still persisted and its checkbox still rendered checked. Toggling the
+setting recovered the overlay only because the change handler calls
+`updatePlaybackDiagnosticsOverlay()` directly.
+
+Approach: run each startup step through a named `runInitStep()` wrapper that
+catches and warns. A broken step now costs one feature and leaves a log line
+naming it, instead of silently disabling every feature after it.
+
+Status: fixed. Do not collapse the init table back into bare statements — the
+failure mode it prevents produces no symptom at the failure site, and it cost
+two wrong diagnoses (a stale overlay DOM node, then a missing retry loop) before
+the actual cause was found by elimination.
+
 ## Build and test
 
 Install dependencies:

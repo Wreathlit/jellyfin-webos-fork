@@ -5765,26 +5765,50 @@
         }
     };
 
-    initHeaderPinning();
-    loadPersistedPlaybackDiagnosticsSettings();
-    loadPersistedHdrUiDimBrightness();
-    syncAssRendererOptions();
-    syncMonotonicMediaTimeHelper();
-    syncPgsAsyncStatsHelper();
-    syncPgsMainThreadStatsHelper();
-    syncPgsRenderGuard();
-    syncPgsRendererOptionsHelper();
-    initPointerFirstClickFocusFix();
-    initAssScriptInterception();
-    initAssRendererInterception();
-    applyHdrUiDimSettings();
-    emitFeatureOverridesChanged();
-    initWebOSSettingsInjection();
-    initQualityMenuPatching();
-    setQualityMenuObserverEnabled(true);
-    initPlaybackInfoInterception();
-    initHdrUiInfoObserver();
-    hdrUiInfoObserver.setEnabled(false);
-    updatePlaybackDiagnosticsOverlay();
-    refreshHdrUiDimming('init');
+    // Each step is isolated: this used to be a bare statement list, so a single
+    // throw silently disabled every feature after it. A stale call to a
+    // function that no longer existed took out the diagnostics overlay and the
+    // initial HDR dim pass for a long time, with no symptom other than "the
+    // overlay only appears if you toggle the setting".
+    function runInitStep(name, step) {
+        try {
+            step();
+        } catch (error) {
+            warnLog('webOS init step failed (' + name + '):', error);
+        }
+    }
+
+    var initSteps = [
+        ['header-pinning', initHeaderPinning],
+        ['playback-diagnostics-settings', loadPersistedPlaybackDiagnosticsSettings],
+        ['hdr-ui-dim-brightness', loadPersistedHdrUiDimBrightness],
+        ['ass-renderer-options', syncAssRendererOptions],
+        ['monotonic-media-time', syncMonotonicMediaTimeHelper],
+        ['pgs-async-stats', syncPgsAsyncStatsHelper],
+        ['pgs-main-thread-stats', syncPgsMainThreadStatsHelper],
+        ['pgs-render-guard', syncPgsRenderGuard],
+        ['pgs-renderer-options', syncPgsRendererOptionsHelper],
+        ['pointer-first-click', initPointerFirstClickFocusFix],
+        ['ass-script-interception', initAssScriptInterception],
+        ['ass-renderer-interception', initAssRendererInterception],
+        ['hdr-ui-dim-settings', applyHdrUiDimSettings],
+        ['feature-overrides', emitFeatureOverridesChanged],
+        ['settings-injection', initWebOSSettingsInjection],
+        ['quality-menu-patching', initQualityMenuPatching],
+        ['quality-menu-observer', function () {
+            setQualityMenuObserverEnabled(true);
+        }],
+        ['playbackinfo-interception', initPlaybackInfoInterception],
+        ['hdr-ui-info-observer', function () {
+            hdrUiInfoObserver.setEnabled(false);
+        }],
+        ['playback-diagnostics-overlay', updatePlaybackDiagnosticsOverlay],
+        ['hdr-ui-dimming', function () {
+            refreshHdrUiDimming('init');
+        }]
+    ];
+
+    for (var initStepIndex = 0; initStepIndex < initSteps.length; initStepIndex++) {
+        runInitStep(initSteps[initStepIndex][0], initSteps[initStepIndex][1]);
+    }
 })(window.AppInfo, window.DeviceInfo, window.WebOSFeatureOverrides);
