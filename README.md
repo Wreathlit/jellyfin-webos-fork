@@ -325,7 +325,8 @@ Approach:
   cannot be found, remove any stale injected block;
 - put them under a dedicated `webOS playback fixes` main heading;
 - group them under secondary headings: HDR UI, webOS audio, ASS subtitles, PGS
-  subtitles, and diagnostics;
+  subtitles, and diagnostics. The legacy PGS group is omitted when Jellyfin Web
+  uses the newer `libbitsub` backend;
 - move already-injected controls into the grouped block instead of duplicating
   them;
 - throttle mutation-triggered injection refreshes and ignore mutations inside
@@ -440,8 +441,11 @@ Status: verified workaround. The verified good combination is `target=main`,
 `obj=on`. `target=main`, `obj=off` still flashes, so the object-id reuse fix is
 required. `target=auto`, `obj=on` still flashes on the tested device because the
 active worker/offscreen path does not receive the main-script object-id patch.
-The two PGS switches remain available for future isolation or for evaluating a
-safe non-Blob worker patch.
+The two PGS switches remain available on `libpgs` for future isolation or for
+evaluating a safe non-Blob worker patch. Jellyfin Web 12 replaces `libpgs` with
+`libbitsub`; the injected runtime detects that backend from loaded player and
+renderer scripts, removes these now-inapplicable switches, and does not attempt
+to patch `libbitsub` pending real-device testing of the final Jellyfin 12 build.
 
 ### Playback diagnostics overlay
 
@@ -459,8 +463,10 @@ Approach:
 - show playback state, dynamic range, rAF FPS, `requestVideoFrameCallback` FPS
   when available, long-task stats, video dimensions/time, and dropped frames;
 - show compact ASS patch/message/clamp counters;
-- show compact PGS patch/media-time/render/main-thread counters and active PGS
-  diagnostic switches;
+- show the detected PGS backend and, for `libpgs`, compact
+  patch/media-time/render/main-thread counters and active diagnostic switches;
+- hide the legacy PGS counters when `libbitsub` is detected because they only
+  instrument the old renderer and would otherwise be misleading;
 - show `why=` with the server's own `TranscodeReasons` from the selected media
   source's transcoding URL (`direct` when there is none), so a transcode
   complaint can be checked against the reason the server actually recorded
@@ -473,10 +479,10 @@ Approach:
 - omit static values such as browser user agent, patched script URL, and CSS
   filter details.
 
-Status: active diagnostic tool. PGS patch counters such as `mode1` and `o1`
-mean the conditional hook was installed into libpgs. They do not mean the switch
-is currently active; use `target=main/auto` and `obj=on/off` for the active test
-case.
+Status: active diagnostic tool. On `libpgs`, PGS patch counters such as `mode1`
+and `o1` mean the conditional hook was installed into that renderer. They do not
+mean the switch is currently active; use `target=main/auto` and `obj=on/off` for
+the active test case. On `libbitsub`, only `PGS backend=libbitsub` is shown.
 
 ### Injected runtime startup
 

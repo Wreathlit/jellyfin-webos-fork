@@ -27,6 +27,50 @@ const patches = loadScriptPatches();
 assert(patches, 'subtitles.scriptPatches should register');
 
 {
+    assert.strictEqual(
+        patches.detectPgsRendererBackend('', '/web/libbitsub.abc123.js'),
+        patches.PGS_BACKEND_LIBBITSUB
+    );
+    assert.strictEqual(
+        patches.detectPgsRendererBackend('console.debug("[libbitsub] pgs", event);', '/web/htmlVideoPlayer.js'),
+        patches.PGS_BACKEND_LIBBITSUB
+    );
+    assert.strictEqual(
+        patches.detectPgsRendererBackend('WORKER_FALLBACK;emitEvent({type:"worker-state"});', '/web/chunk.js'),
+        patches.PGS_BACKEND_LIBBITSUB
+    );
+    assert.strictEqual(
+        patches.detectPgsRendererBackend('beginPgs();appendPgs();finishPgs();', '/web/chunk.js'),
+        patches.PGS_BACKEND_LIBBITSUB
+    );
+    assert.strictEqual(patches.shouldShowLegacyPgsFeatures(patches.PGS_BACKEND_LIBBITSUB), false);
+}
+
+{
+    assert.strictEqual(
+        patches.detectPgsRendererBackend('createPgsRenderer();getRendererModeByPlatform();', '/web/chunk.js'),
+        patches.PGS_BACKEND_LIBPGS
+    );
+    assert.strictEqual(
+        patches.detectPgsRendererBackend('getPixelDataFromComposition();isFirstInSequence;', '/web/chunk.js'),
+        patches.PGS_BACKEND_LIBPGS
+    );
+    assert.strictEqual(patches.shouldShowLegacyPgsFeatures(patches.PGS_BACKEND_LIBPGS), true);
+    assert.strictEqual(patches.shouldShowLegacyPgsFeatures(patches.PGS_BACKEND_UNKNOWN), true);
+}
+
+{
+    assert.strictEqual(
+        patches.detectPgsRendererBackend('var renderer = new PgsRenderer(options);', '/web/chunk.js'),
+        patches.PGS_BACKEND_UNKNOWN
+    );
+    assert.strictEqual(
+        patches.detectPgsRendererBackend('replace libpgs with libbitsub', '/web/migration.js'),
+        patches.PGS_BACKEND_LIBBITSUB
+    );
+}
+
+{
     const source = 'var opts={renderAhead:90.0};var opts2={renderAhead:90};';
     const result = patches.patchAssRendererScriptText(source);
 
@@ -115,9 +159,23 @@ assert(patches, 'subtitles.scriptPatches should register');
 
 {
     const source = 'renderAhead:90;e.prototype.render=function(t){this.worker.postMessage({op:"requestSubtitleData",index:t})},e.prototype.onWorkerMessage=function(e){if("subtitleData"===e.data.op){var r=e.data.subtitleData;this.renderer&&this.renderer.draw(r)}else t.prototype.onWorkerMessage.call(this,e)}';
-    const result = patches.patchSubtitleRendererScriptText(source, {});
+    const result = patches.patchSubtitleRendererScriptText(source, {
+        url: '/web/libpgs.js'
+    });
 
     assert.strictEqual(result.patched, true);
     assert.strictEqual(result.ass.patched, true);
     assert.strictEqual(result.pgs.async, true);
+    assert.strictEqual(result.pgsBackend, patches.PGS_BACKEND_LIBPGS);
+}
+
+{
+    const source = 'console.warn("[libbitsub] worker prewarm failed");renderAhead:90;';
+    const result = patches.patchSubtitleRendererScriptText(source, {
+        url: '/web/htmlVideoPlayer.js'
+    });
+
+    assert.strictEqual(result.ass.patched, true);
+    assert.strictEqual(result.pgs.patched, false);
+    assert.strictEqual(result.pgsBackend, patches.PGS_BACKEND_LIBBITSUB);
 }

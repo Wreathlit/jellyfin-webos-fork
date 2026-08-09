@@ -312,6 +312,7 @@
     var pgsScriptObjectPatchCount = 0;
     var pgsScriptModePatchCount = 0;
     var pgsScriptLastPatchInfo = 'none';
+    var pgsRendererBackend = 'unknown';
     var pgsTimeSampleDisplayCount = 0;
     var pgsTimeClampCount = 0;
     var pgsTimeLastClampInfo = 'none';
@@ -944,6 +945,13 @@
             + '/' + pgsMainThreadDropCount.toString();
     }
 
+    function getPlaybackDiagnosticsPgsLine() {
+        if (!shouldShowLegacyPgsFeatures()) {
+            return 'PGS backend=' + pgsRendererBackend;
+        }
+        return 'PGS backend=' + pgsRendererBackend + ' ' + getPlaybackDiagnosticsPgsInfo();
+    }
+
     function updatePlaybackDiagnosticsText(now) {
         var overlay = createPlaybackDiagnosticsOverlay();
         if (!overlay) {
@@ -975,7 +983,7 @@
             'HDR via=' + (playbackDynamicRangeReason || '-') + ' ms=' + formatHdrDetectionHint(hdrDetectionMediaSessionLastHint) + ' pi=' + formatHdrDetectionHint(hdrDetectionPlaybackInfoLastHint) + '/' + hdrDetectionPlaybackInfoCount + ' pend=' + (pendingPlaybackInfoDynamicRange ? formatHdrDetectionHint(pendingPlaybackInfoDynamicRange.hint) : '-') + ' im=' + formatHdrDetectionHint(hdrDetectionItemMetadataLastHint) + ' ui=' + formatHdrDetectionHint(hdrDetectionPlaybackUiLastHint),
             'long=' + formatPlaybackDiagnosticsLongTaskInfo(now) + ' video=' + dimensions + ' t=' + currentTime + ' drop=' + formatPlaybackDiagnosticsNumber(dropped) + '/' + formatPlaybackDiagnosticsNumber(total),
             'ASS canvas=' + getPlaybackDiagnosticsAssCanvasInfo() + ' worker=' + getPlaybackDiagnosticsAssWorkerInfo(),
-            'PGS ' + getPlaybackDiagnosticsPgsInfo(),
+            getPlaybackDiagnosticsPgsLine(),
             'subs pgs=' + pgsSubtitleDeliveryDiagnostic + ' sup=' + pgsSubtitleFetchDiagnostic + ' burn=' + subtitleBurnInFixDiagnostic,
             'why=' + playbackTranscodeReasonsDiagnostic + ' vid=' + playbackVideoStreamDiagnostic
         ].join('\n');
@@ -2090,6 +2098,41 @@
         return null;
     }
 
+    function shouldShowLegacyPgsFeatures() {
+        var patches = getSubtitleScriptPatches();
+        if (patches && patches.shouldShowLegacyPgsFeatures) {
+            return patches.shouldShowLegacyPgsFeatures(pgsRendererBackend);
+        }
+        return pgsRendererBackend !== 'libbitsub';
+    }
+
+    function removeLegacyPgsSettingsGroup() {
+        var group = document.querySelector('.webos-settings-group-pgs');
+        if (group && group.parentNode) {
+            group.parentNode.removeChild(group);
+        }
+    }
+
+    function setPgsRendererBackend(backend, reason) {
+        if (!backend || backend === 'unknown' || backend === pgsRendererBackend) {
+            return;
+        }
+
+        // libbitsub is the Jellyfin 12 replacement. Once positively detected it
+        // wins over a stale or incidental libpgs marker in another bundle.
+        if (pgsRendererBackend === 'libbitsub' && backend !== 'libbitsub') {
+            return;
+        }
+
+        pgsRendererBackend = backend;
+        debugLog('Detected PGS renderer backend:', backend, reason || 'script');
+
+        if (!shouldShowLegacyPgsFeatures()) {
+            removeLegacyPgsSettingsGroup();
+            scheduleSettingsEnsureControls(true);
+        }
+    }
+
     function patchSubtitleRendererScriptText(text, url) {
         var patches = getSubtitleScriptPatches();
         if (!patches || !patches.patchSubtitleRendererScriptText) {
@@ -2098,11 +2141,14 @@
 
         var result = patches.patchSubtitleRendererScriptText(text, {
             forceMainThread: !!pgsForceMainThread,
-            patchObjectReuse: !!pgsPatchObjectReuse
+            patchObjectReuse: !!pgsPatchObjectReuse,
+            url: url || ''
         });
         if (!result || result.text === undefined) {
             return text;
         }
+
+        setPgsRendererBackend(result.pgsBackend, url || 'inline script');
 
         if (result.ass && result.ass.patched) {
             assScriptPatchCount++;
@@ -2200,6 +2246,7 @@
 
         var normalizedSrc = src.toLowerCase();
         return normalizedSrc.indexOf('libass') !== -1
+            || normalizedSrc.indexOf('libbitsub') !== -1
             || /(^|[\/._-])ass([\/._-]|$)/.test(normalizedSrc)
             || normalizedSrc.indexOf('htmlvideoplayer') !== -1
             || normalizedSrc.indexOf('html-video-player') !== -1
@@ -3073,7 +3120,13 @@
         var hdrGroup = ensureWebOSSettingsGroup(settingsRoot, 'webos-settings-group-hdr', 'webOS HDR UI');
         var audioGroup = ensureWebOSSettingsGroup(settingsRoot, 'webos-settings-group-audio', 'webOS audio');
         var assGroup = ensureWebOSSettingsGroup(settingsRoot, 'webos-settings-group-ass', 'webOS ASS subtitles');
-        var pgsGroup = ensureWebOSSettingsGroup(settingsRoot, 'webos-settings-group-pgs', 'webOS PGS subtitles');
+        var showLegacyPgsFeatures = shouldShowLegacyPgsFeatures();
+        var pgsGroup = showLegacyPgsFeatures
+            ? ensureWebOSSettingsGroup(settingsRoot, 'webos-settings-group-pgs', 'webOS PGS subtitles')
+            : null;
+        if (!showLegacyPgsFeatures) {
+            removeLegacyPgsSettingsGroup();
+        }
         var diagnosticsGroup = ensureWebOSSettingsGroup(settingsRoot, 'webos-settings-group-diagnostics', 'webOS diagnostics');
         var hdrDimContainer = getControlContainerBySelector('.webosHdrUiDimSlider');
         var hdrSubtitleOpacityContainer = getControlContainerBySelector('.webosHdrSubtitleOpacitySlider');
@@ -3128,23 +3181,25 @@
             );
         }
 
-        if (!pgsForceMainThreadContainer) {
-            pgsForceMainThreadContainer = createWebOSCheckboxControlContainer(
-                'chkWebOSPgsForceMainThread',
-                getRegisteredFeatureTitle('pgsForceMainThread', 'webOS: Force PGS main-thread renderer'),
-                getRegisteredFeatureDescription('pgsForceMainThread', 'Diagnostic switch for PGS stale-text tests. Restart playback after changing; restart the app for a clean script-load test.')
-            );
-        }
-        appendControlToGroup(pgsGroup, pgsForceMainThreadContainer);
+        if (showLegacyPgsFeatures) {
+            if (!pgsForceMainThreadContainer) {
+                pgsForceMainThreadContainer = createWebOSCheckboxControlContainer(
+                    'chkWebOSPgsForceMainThread',
+                    getRegisteredFeatureTitle('pgsForceMainThread', 'webOS: Force PGS main-thread renderer'),
+                    getRegisteredFeatureDescription('pgsForceMainThread', 'Diagnostic switch for PGS stale-text tests. Restart playback after changing; restart the app for a clean script-load test.')
+                );
+            }
+            appendControlToGroup(pgsGroup, pgsForceMainThreadContainer);
 
-        if (!pgsPatchObjectReuseContainer) {
-            pgsPatchObjectReuseContainer = createWebOSCheckboxControlContainer(
-                'chkWebOSPgsPatchObjectReuse',
-                getRegisteredFeatureTitle('pgsPatchObjectReuse', 'webOS: Patch PGS object reuse'),
-                getRegisteredFeatureDescription('pgsPatchObjectReuse', 'Diagnostic switch for reused PGS object ids. Uses the newest ODS sequence when enabled. Restart playback after changing.')
-            );
+            if (!pgsPatchObjectReuseContainer) {
+                pgsPatchObjectReuseContainer = createWebOSCheckboxControlContainer(
+                    'chkWebOSPgsPatchObjectReuse',
+                    getRegisteredFeatureTitle('pgsPatchObjectReuse', 'webOS: Patch PGS object reuse'),
+                    getRegisteredFeatureDescription('pgsPatchObjectReuse', 'Diagnostic switch for reused PGS object ids. Uses the newest ODS sequence when enabled. Restart playback after changing.')
+                );
+            }
+            appendControlToGroup(pgsGroup, pgsPatchObjectReuseContainer);
         }
-        appendControlToGroup(pgsGroup, pgsPatchObjectReuseContainer);
         appendControlToGroup(diagnosticsGroup, diagnosticsContainer);
 
         var lpcmAudioCopyCheckbox = document.querySelector('.chkWebOSLpcmAudioCopy');
@@ -3225,14 +3280,16 @@
         settingsEnsureLastRunTs = Date.now();
         var hasPlaybackSettingsAnchor = ensureWebOSSettingsControls();
 
+        var legacyPgsControlsReady = !shouldShowLegacyPgsFeatures()
+            || (document.querySelector('.chkWebOSPgsForceMainThread')
+                && document.querySelector('.chkWebOSPgsPatchObjectReuse'));
         if (document.querySelector('.webosHdrUiDimSlider')
             && document.querySelector('.webosHdrSubtitleOpacitySlider')
             && document.querySelector('.chkWebOSLpcmAudioCopy')
             && document.querySelector('.chkWebOSAssTimeSyncFix')
             && document.querySelector('.chkWebOSDisableAssRenderAhead')
             && document.querySelector('.chkWebOSPlaybackDiagnostics')
-            && document.querySelector('.chkWebOSPgsForceMainThread')
-            && document.querySelector('.chkWebOSPgsPatchObjectReuse')) {
+            && legacyPgsControlsReady) {
             settingsEnsureAttemptsLeft = 0;
             return;
         }

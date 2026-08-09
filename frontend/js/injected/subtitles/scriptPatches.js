@@ -1,6 +1,45 @@
 /* global window */
 (function (window) {
     var Runtime = window.__JellyfinWebOSPatchRuntime = window.__JellyfinWebOSPatchRuntime || {};
+    var PGS_BACKEND_UNKNOWN = 'unknown';
+    var PGS_BACKEND_LIBPGS = 'libpgs';
+    var PGS_BACKEND_LIBBITSUB = 'libbitsub';
+
+    function containsAll(text, markers) {
+        for (var i = 0; i < markers.length; i++) {
+            if (text.indexOf(markers[i]) === -1) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function detectPgsRendererBackend(text, url) {
+        var source = typeof text === 'string' ? text : '';
+        var normalizedUrl = typeof url === 'string' ? url.toLowerCase() : '';
+
+        // Check libbitsub first so migration notes or compatibility aliases that
+        // mention both renderer names resolve to the active Jellyfin 12 backend.
+        if (normalizedUrl.indexOf('libbitsub') !== -1
+            || source.indexOf('libbitsub') !== -1
+            || containsAll(source, ['WORKER_FALLBACK', 'worker-state'])
+            || containsAll(source, ['beginPgs', 'appendPgs', 'finishPgs'])) {
+            return PGS_BACKEND_LIBBITSUB;
+        }
+
+        if (normalizedUrl.indexOf('libpgs') !== -1
+            || containsAll(source, ['createPgsRenderer', 'getRendererModeByPlatform'])
+            || containsAll(source, ['getPixelDataFromComposition', 'isFirstInSequence'])
+            || containsAll(source, ['requestSubtitleData', 'getSubtitleAtIndex'])) {
+            return PGS_BACKEND_LIBPGS;
+        }
+
+        return PGS_BACKEND_UNKNOWN;
+    }
+
+    function shouldShowLegacyPgsFeatures(backend) {
+        return backend !== PGS_BACKEND_LIBBITSUB;
+    }
 
     function buildAssRenderAheadReplacement(originalValue) {
         return 'renderAhead:(window.WebOSAssRendererOptions&&window.WebOSAssRendererOptions.limitRenderAhead?window.WebOSAssRendererOptions.renderAheadMiB:' + originalValue + ')';
@@ -161,11 +200,17 @@
             text: pgs.text,
             ass: ass,
             pgs: pgs,
+            pgsBackend: detectPgsRendererBackend(text, options && options.url),
             patched: pgs.text !== text
         };
     }
 
     Runtime.define('subtitles.scriptPatches', {
+        PGS_BACKEND_UNKNOWN: PGS_BACKEND_UNKNOWN,
+        PGS_BACKEND_LIBPGS: PGS_BACKEND_LIBPGS,
+        PGS_BACKEND_LIBBITSUB: PGS_BACKEND_LIBBITSUB,
+        detectPgsRendererBackend: detectPgsRendererBackend,
+        shouldShowLegacyPgsFeatures: shouldShowLegacyPgsFeatures,
         buildAssRenderAheadReplacement: buildAssRenderAheadReplacement,
         buildPgsRenderAtVideoTimestampReplacement: buildPgsRenderAtVideoTimestampReplacement,
         buildPgsAsyncSubtitleDataGuardReplacement: buildPgsAsyncSubtitleDataGuardReplacement,
