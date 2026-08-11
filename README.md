@@ -69,7 +69,9 @@ Approach:
 
 - add extra high bitrate menu entries: `120 Mbps`, `100 Mbps`, `95 Mbps`, and `80 Mbps`;
 - force PlaybackInfo `MaxStreamingBitrate` / `maxStreamingBitrate` in both URL
-  query strings and request bodies for every PlaybackInfo request;
+  query strings and request bodies only during the short playback-start window;
+- clear that startup force as soon as the user selects a quality value, and
+  preserve lower bitrate values on later PlaybackInfo requests;
 - raise device profile `MaxStreamingBitrate` and `MaxStaticBitrate` to the
   highest local bitrate option so direct play is not rejected by the profile's
   static bitrate cap;
@@ -80,9 +82,9 @@ Approach:
 - keep the quality-menu observer active so late-created action sheets are still
   patched.
 
-Status: active workaround. Do not narrow this back to `PLAYING` state only; that
-reintroduces the startup race where a newly opened video can keep the upstream
-`60 Mbps` cap until the user manually changes quality.
+Status: active workaround. The startup window must remain armed before
+`PLAYING`, but it must not become a permanent minimum: explicit quality changes
+made by the user take precedence.
 
 ### Audio-only transcode with client-rendered subtitles
 

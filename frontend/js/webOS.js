@@ -3078,6 +3078,15 @@
 
         for (var i = 0; i < selects.length; i++) {
             var select = selects[i];
+            if (select.getAttribute('data-webos-quality-change-hooked') !== 'true') {
+                select.addEventListener('change', function () {
+                    var selectedBitrate = parsePositiveInteger(this.value);
+                    if (selectedBitrate) {
+                        clearPlaybackStartMaxBitrateForce('manual-native-quality-' + selectedBitrate);
+                    }
+                });
+                select.setAttribute('data-webos-quality-change-hooked', 'true');
+            }
             var patchedBefore = select.getAttribute('data-webos-quality-patched') === 'true';
             var storedValue = getStoredNativeVideoQualityValue(select);
             var currentValue = select.value;
@@ -3814,6 +3823,21 @@
             return false;
         }
 
+        if (dialog.getAttribute('data-webos-quality-click-hooked') !== 'true') {
+            dialog.addEventListener('click', function (event) {
+                var item = event && event.target ? event.target : null;
+                while (item && item !== dialog
+                    && (!item.classList || !item.classList.contains('actionSheetMenuItem'))) {
+                    item = item.parentNode;
+                }
+                var selectedBitrate = item && item !== dialog ? getMenuItemBitrate(item) : 0;
+                if (selectedBitrate) {
+                    clearPlaybackStartMaxBitrateForce('manual-action-sheet-quality-' + selectedBitrate);
+                }
+            }, true);
+            dialog.setAttribute('data-webos-quality-click-hooked', 'true');
+        }
+
         var bitrateIds = {};
         var templateButton = null;
         var listParent = null;
@@ -4492,17 +4516,21 @@
             };
         }
 
-        var patched = patches.enforceMaxBitrateUrl(url, getHighestKnownBitrateOption(), PLAYBACK_INFO_MAX_BITRATE_PARAM);
-        var playbackInfoItemId = patched.itemId;
+        var playbackInfoItemId = extractItemIdFromPlaybackInfoUrl(url);
         if (!shouldForcePlaybackStartMaxBitrate()
             && playbackInfoItemId
             && playbackInfoItemId !== currentMediaSessionItemId
             && playbackInfoItemId !== lastPlaybackInfoMaxBitrateItemId) {
-            lastPlaybackInfoMaxBitrateItemId = playbackInfoItemId;
             startPlaybackStartMaxBitrateForce('playbackinfo-item-change-' + source);
         }
+        if (playbackInfoItemId) {
+            lastPlaybackInfoMaxBitrateItemId = playbackInfoItemId;
+        }
 
-        if (shouldForcePlaybackStartMaxBitrate()) {
+        var shouldForce = shouldForcePlaybackStartMaxBitrate();
+        var minimumBitrate = shouldForce ? getHighestKnownBitrateOption() : 0;
+        var patched = patches.enforceMaxBitrateUrl(url, minimumBitrate, PLAYBACK_INFO_MAX_BITRATE_PARAM);
+        if (shouldForce) {
             markPlaybackStartMaxBitrateForced(source, patched.targetBitrate);
         }
 
@@ -5283,7 +5311,7 @@
     }
 
     function createFetchRequestFromPatchedBody(input, init, url, targetBitrate) {
-        if (!isFetchRequest(input) || initHasBody(init) || !targetBitrate) {
+        if (!isFetchRequest(input) || initHasBody(init)) {
             return null;
         }
 
@@ -5360,7 +5388,7 @@
                         url = enforcedFetchBitrate.url;
                     }
 
-                    if (enforcedFetchBitrate.targetBitrate && nextInit && typeof nextInit === 'object' && initHasBody(nextInit)) {
+                    if (nextInit && typeof nextInit === 'object' && initHasBody(nextInit)) {
                         nextInit = cloneShallowObject(nextInit);
                         nextInit.body = enforcePlaybackInfoMaxBitrateBody(nextInit.body, enforcedFetchBitrate.targetBitrate, 'fetch');
                     }
@@ -5466,7 +5494,7 @@
 
                 xhrProto.send = function () {
                     var sendArgs = arguments;
-                    if (isPlaybackInfoUrl(this.__webOsPlaybackInfoUrl) && this.__webOsPlaybackInfoMaxBitrate && arguments.length) {
+                    if (isPlaybackInfoUrl(this.__webOsPlaybackInfoUrl) && arguments.length) {
                         var sendArgsCopy = [];
                         for (var i = 0; i < arguments.length; i++) {
                             sendArgsCopy[i] = arguments[i];

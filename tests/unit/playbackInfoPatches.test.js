@@ -117,8 +117,38 @@ assert.strictEqual(patches.extractItemIdFromPlaybackInfoUrl('/Items/abc/Images/P
     assert.strictEqual(result.itemId, null);
 }
 
+{
+    const result = patches.enforceMaxBitrateUrl('/Items/abc/PlaybackInfo?maxStreamingBitrate=20000000&foo=1', 0);
+
+    assert.strictEqual(result.targetBitrate, 20000000, 'a user-selected bitrate should be preserved when no startup minimum is active');
+    assert(result.url.indexOf('MaxStreamingBitrate=20000000') !== -1);
+    assert(result.url.indexOf('maxStreamingBitrate=20000000') !== -1);
+}
+
+{
+    const url = '/Items/abc/PlaybackInfo?foo=1';
+    const result = patches.enforceMaxBitrateUrl(url, 0);
+
+    assert.strictEqual(result.url, url, 'a missing bitrate should not be rewritten as zero');
+    assert.strictEqual(result.targetBitrate, 0);
+    assert.strictEqual(result.itemId, 'abc');
+}
+
 assert.strictEqual(patches.enforceMaxBitrateBody('not json', 120000000, {}), 'not json');
 assert.strictEqual(patches.enforceMaxBitrateBody('[{"MaxStreamingBitrate":1}]', 120000000, {}), '[{"MaxStreamingBitrate":1}]');
+
+{
+    const body = '{"MaxStreamingBitrate":20000000,"DeviceProfile":{"DirectPlayProfiles":[]}}';
+    const patched = patches.enforceMaxBitrateBody(body, 0, {
+        patchProfile: function (profile) {
+            profile.TranscodingProfiles = [{ Type: 'Video' }];
+        }
+    });
+    const parsed = JSON.parse(patched);
+
+    assert.strictEqual(parsed.MaxStreamingBitrate, 20000000, 'profile-only patching should not raise a selected bitrate');
+    assert.deepStrictEqual(parsed.DeviceProfile.TranscodingProfiles, [{ Type: 'Video' }]);
+}
 
 {
     const body = '{"MaxStreamingBitrate":60000000,"PlaybackInfo":{"maxStaticBitrate":1},"DeviceProfile":{"DirectPlayProfiles":[]}}';

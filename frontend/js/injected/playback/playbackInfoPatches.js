@@ -128,6 +128,14 @@
             targetBitrate = existingCamelCaseBitrate;
         }
 
+        if (!targetBitrate) {
+            return {
+                url: url,
+                targetBitrate: 0,
+                itemId: extractItemIdFromPlaybackInfoUrl(url)
+            };
+        }
+
         var patchedUrl = setQueryParameterValue(url, bitrateParamName || DEFAULT_MAX_BITRATE_PARAM, targetBitrate);
         patchedUrl = setQueryParameterValue(patchedUrl, DEFAULT_MAX_BITRATE_PARAM, targetBitrate);
         patchedUrl = setQueryParameterValue(patchedUrl, 'maxStreamingBitrate', targetBitrate);
@@ -359,7 +367,7 @@
 
     function enforceMaxBitrateBody(body, targetBitrate, options) {
         var normalizedTarget = parsePositiveInteger(targetBitrate);
-        if (!normalizedTarget || body === null || body === undefined) {
+        if (body === null || body === undefined) {
             return body;
         }
 
@@ -375,7 +383,9 @@
                     return body;
                 }
 
-                var changed = patchPlaybackInfoBitrateObject(parsed, normalizedTarget, options);
+                var changed = normalizedTarget
+                    ? patchPlaybackInfoBitrateObject(parsed, normalizedTarget, options)
+                    : false;
                 changed = patchPlaybackInfoProfileObjects(parsed, options) || changed;
                 if (!changed) {
                     return body;
@@ -387,7 +397,9 @@
         }
 
         if (typeof body === 'object') {
-            patchPlaybackInfoBitrateObject(body, normalizedTarget, options);
+            if (normalizedTarget) {
+                patchPlaybackInfoBitrateObject(body, normalizedTarget, options);
+            }
             patchPlaybackInfoProfileObjects(body, options);
         }
 
