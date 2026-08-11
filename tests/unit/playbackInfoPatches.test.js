@@ -298,6 +298,26 @@ function videoTranscodeSource(subtitleStreams) {
 }
 
 {
+    // Jellyfin 10.11 normally writes the target video codec into the URL even
+    // when EncodingHelper will select stream copy at request time. Audio-only
+    // TranscodeReasons plus a matching source codec identify that path.
+    const payload = burnInPayload({
+        Id: 'source-1',
+        PlayMethod: 'Transcode',
+        TranscodingUrl: '/videos/abc/master.m3u8?VideoCodec=hevc&AudioCodec=aac&SubtitleStreamIndex=3&TranscodeReasons=AudioCodecNotSupported',
+        MediaStreams: [
+            { Index: 0, Type: 'Video', Codec: 'hevc' },
+            { Index: 3, Type: 'Subtitle', Codec: 'ass', DeliveryMethod: 'External' }
+        ]
+    });
+
+    assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {
+        alwaysBurnInSubtitleWhenTranscoding: true
+    }), false, 'implicit video copy must not suppress client-side rendering');
+    assert.strictEqual(payload.MediaSources[0].MediaStreams[1].DeliveryMethod, 'External');
+}
+
+{
     const payload = burnInPayload({
         Id: 'source-1',
         SupportsDirectPlay: true,

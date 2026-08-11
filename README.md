@@ -133,23 +133,31 @@ transcoded video *and* rendered a second time by Jellyfin Web on top of it.
 Cause: the setting reaches the server as `AlwaysBurnInSubtitleWhenTranscoding`,
 and `StreamInfo.ToUrl()` then appends `SubtitleStreamIndex` to the transcoding
 URL even when the device profile resolved that subtitle to `External`. The same
-method only appends `SubtitleMethod` for non-`External` delivery, so the stream
-request carries an index with no method and the server falls back to the
-`SubtitleDeliveryMethod` enum default, `Encode`. Meanwhile the PlaybackInfo
-response still reports the stream as `External` with a `DeliveryUrl`, so
-Jellyfin Web renders it client-side as well. Upstream compensates inside
+method only appends `SubtitleMethod` for non-`External` delivery. When the video
+is actually encoded, `EncodingHelper` burns the selected subtitle because the
+always-burn flag is set, while the PlaybackInfo response still reports the
+stream as `External` with a `DeliveryUrl`, so Jellyfin Web renders it
+client-side as well. Upstream compensates inside
 `htmlVideoPlayer.setCurrentTrackElement()` by querying `/Sessions` and forcing
 `Encode` when `TranscodingInfo.IsVideoDirect` is false, but that lookup races
 playback start and frequently misses on webOS.
 
 Approach: when the setting is enabled and the PlaybackInfo response shows a real
-video encode (not DirectPlay, DirectStream, or `VideoCodec=copy`), rewrite the
-`External`/`Hls` subtitle streams of that media source to `Encode`. This is the
+video encode (not DirectPlay, DirectStream, explicit `VideoCodec=copy`, or an
+inferred video-copy path), rewrite the `External`/`Hls` subtitle streams of that
+media source to `Encode`. This is the
 same decision upstream makes from `IsVideoDirect`, taken from the payload
 instead of session state, so it cannot race. Audio-only transcode and direct
-play are untouched and keep client-side ASS/PGS rendering, and the device
-profile still advertises the External profiles so no path is forced into a
-transcode it did not need.
+play are untouched and keep client-side ASS/PGS rendering. Jellyfin 10.11 does
+not always serialize an eventual video copy as `VideoCodec=copy`: its HLS URL
+normally carries the target codec list, and `EncodingHelper` selects `copy`
+only when the request begins. The fork therefore recognizes an implicit copy
+only when video stream copy is allowed, every reported reason belongs to
+Jellyfin's `DirectStreamReasons`, and the source video codec appears in that
+target list. This prevents an audio-only transcode from being mistaken for a
+video encode and having its only client-rendered subtitle suppressed. The
+device profile remains unchanged so no path is forced into a transcode it did
+not need.
 
 The correction has to land before Jellyfin Web reads the response, so it runs on
 both transports. On `fetch` the patched payload is handed back as a new

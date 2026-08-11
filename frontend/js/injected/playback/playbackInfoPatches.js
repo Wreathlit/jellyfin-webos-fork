@@ -244,16 +244,16 @@
     function patchBurnedInSubtitleDelivery(payload, options) {
         // Jellyfin's StreamInfo.ToUrl() appends SubtitleStreamIndex whenever
         // AlwaysBurnInSubtitleWhenTranscoding is set, even for a subtitle the
-        // device profile claimed as External, and then omits SubtitleMethod --
-        // which the server reads back as the enum default, Encode. The subtitle
-        // is therefore burned into the video while the same MediaStream is
-        // still advertised as External, so Jellyfin Web renders a second copy
-        // on top. Upstream compensates in htmlVideoPlayer.setCurrentTrackElement
-        // by re-reading the session and forcing Encode when TranscodingInfo says
-        // the video is not direct, but that lookup races playback start on
-        // webOS. Deriving the same answer from the PlaybackInfo payload keeps
-        // the upstream semantics (only a real video encode suppresses client
-        // rendering) without depending on session timing.
+        // device profile claimed as External. For a real video encode,
+        // EncodingHelper then burns the subtitle because the always-burn flag
+        // is set, while the PlaybackInfo MediaStream is still advertised as
+        // External, so Jellyfin Web renders a second copy on top. Upstream
+        // compensates in htmlVideoPlayer.setCurrentTrackElement by re-reading
+        // the session and forcing Encode when TranscodingInfo says the video is
+        // not direct, but that lookup races playback start on webOS. Deriving
+        // the same answer from the PlaybackInfo payload keeps the upstream
+        // semantics (only a real video encode suppresses client rendering)
+        // without depending on session timing.
         if (!options || !options.alwaysBurnInSubtitleWhenTranscoding) {
             return false;
         }

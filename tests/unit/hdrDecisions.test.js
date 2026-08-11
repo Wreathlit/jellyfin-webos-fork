@@ -180,6 +180,34 @@ assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
     TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=copy'
 }), 'copy', 'TranscodingUrl should still identify video-copy transcodes');
 assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc&AudioCodec=aac&TranscodeReasons=AudioCodecNotSupported',
+    MediaStreams: [
+        { Type: 'Video', Codec: 'hevc' }
+    ]
+}), 'copy', 'audio-only transcode should identify the server\'s implicit video stream copy');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=h264&AudioCodec=aac&TranscodeReasons=AudioCodecNotSupported',
+    MediaStreams: [
+        { Type: 'Video', Codec: 'hevc' }
+    ]
+}), 'transcode', 'implicit stream copy requires the source codec in the target codec list');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc&AudioCodec=aac&AllowVideoStreamCopy=false&TranscodeReasons=AudioCodecNotSupported',
+    MediaStreams: [
+        { Type: 'Video', Codec: 'hevc' }
+    ]
+}), 'transcode', 'an explicit stream-copy disable must force video transcode classification');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc&AudioCodec=aac&TranscodeReasons=AudioCodecNotSupported,VideoBitDepthNotSupported',
+    MediaStreams: [
+        { Type: 'Video', Codec: 'hevc' }
+    ]
+}), 'transcode', 'a video incompatibility must force video transcode classification');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
     SupportsDirectPlay: true,
     TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=h264'
 }), 'transcode', 'TranscodingUrl should win over capability flags');

@@ -667,6 +667,132 @@
         return videoCodec.toString().toLowerCase() === 'copy' ? 'copy' : 'transcode';
     }
 
+    function getFirstQueryParameterValue(url, names) {
+        for (var i = 0; i < names.length; i++) {
+            var value = getQueryParameterValue(url, names[i]);
+            if (value !== null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    function isExplicitFalsePlaybackQueryValue(value) {
+        if (value === false) {
+            return true;
+        }
+        if (value === true || value === null || value === undefined || value === '') {
+            return false;
+        }
+
+        var normalizedValue = value.toString().toLowerCase();
+        return normalizedValue === '0'
+            || normalizedValue === 'false'
+            || normalizedValue === 'no'
+            || normalizedValue === 'off';
+    }
+
+    function parseNormalizedCommaSeparatedList(value) {
+        if (!value || typeof value !== 'string') {
+            return [];
+        }
+
+        var parts = value.split(',');
+        var result = [];
+        for (var i = 0; i < parts.length; i++) {
+            var normalizedPart = parts[i].replace(/^\s+|\s+$/g, '').toLowerCase();
+            if (normalizedPart) {
+                result.push(normalizedPart);
+            }
+        }
+        return result;
+    }
+
+    function hasOnlyDirectStreamTranscodeReasons(url) {
+        // Keep this allow-list aligned with Jellyfin 10.11 StreamBuilder's
+        // DirectStreamReasons. These failures can change the container/audio
+        // while leaving the video bitstream untouched.
+        var directStreamReasons = {
+            containernotsupported: true,
+            videocodectagnotsupported: true,
+            audiocodecnotsupported: true,
+            audiobitratenotsupported: true,
+            audiochannelsnotsupported: true,
+            audioprofilenotsupported: true,
+            audiosampleratenotsupported: true,
+            secondaryaudionotsupported: true,
+            audiobitdepthnotsupported: true,
+            audioisexternal: true
+        };
+        var reasons = parseNormalizedCommaSeparatedList(getFirstQueryParameterValue(url, [
+            'TranscodeReasons',
+            'transcodeReasons',
+            'transcodereasons'
+        ]));
+        if (!reasons.length) {
+            return false;
+        }
+
+        for (var i = 0; i < reasons.length; i++) {
+            if (!directStreamReasons[reasons[i]]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function getMediaSourceVideoCodec(mediaSource) {
+        var streams = toArray(mediaSource && (mediaSource.MediaStreams || mediaSource.mediaStreams));
+        for (var i = 0; i < streams.length; i++) {
+            var stream = streams[i];
+            if (!isVideoMediaStream(stream)) {
+                continue;
+            }
+
+            var codec = stream && (stream.Codec || stream.codec);
+            if (codec) {
+                return codec.toString().toLowerCase();
+            }
+        }
+        return '';
+    }
+
+    function isImplicitVideoStreamCopy(mediaSource, url) {
+        // PlaybackInfo always serializes a target VideoCodec list for the HLS
+        // transcode endpoint. With AllowVideoStreamCopy enabled (the default),
+        // EncodingHelper replaces that target with `copy` at request time when
+        // the only incompatibilities are DirectStreamReasons and the source
+        // video codec occurs in the target list. The URL itself therefore does
+        // not necessarily contain VideoCodec=copy even though the session later
+        // reports IsVideoDirect=true.
+        var allowVideoStreamCopy = getFirstQueryParameterValue(url, [
+            'AllowVideoStreamCopy',
+            'allowVideoStreamCopy',
+            'allowvideostreamcopy'
+        ]);
+        if (isExplicitFalsePlaybackQueryValue(allowVideoStreamCopy)
+            || !hasOnlyDirectStreamTranscodeReasons(url)) {
+            return false;
+        }
+
+        var sourceVideoCodec = getMediaSourceVideoCodec(mediaSource);
+        if (!sourceVideoCodec) {
+            return false;
+        }
+
+        var targetVideoCodecs = parseNormalizedCommaSeparatedList(getFirstQueryParameterValue(url, [
+            'VideoCodec',
+            'videoCodec',
+            'videocodec'
+        ]));
+        for (var i = 0; i < targetVideoCodecs.length; i++) {
+            if (targetVideoCodecs[i] === sourceVideoCodec) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     function getLowerName(value) {
         return value ? value.toString().toLowerCase() : '';
     }
@@ -679,6 +805,9 @@
         var transcodingUrl = mediaSource.TranscodingUrl || mediaSource.transcodingUrl;
         var transcodingUrlDelivery = getPlaybackVideoDeliveryFromTranscodingUrl(transcodingUrl);
         if (transcodingUrlDelivery !== 'unknown') {
+            if (transcodingUrlDelivery === 'transcode' && isImplicitVideoStreamCopy(mediaSource, transcodingUrl)) {
+                return 'copy';
+            }
             return transcodingUrlDelivery;
         }
 
