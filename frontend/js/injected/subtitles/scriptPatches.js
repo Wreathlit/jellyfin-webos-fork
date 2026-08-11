@@ -18,10 +18,10 @@
         var source = typeof text === 'string' ? text : '';
         var normalizedUrl = typeof url === 'string' ? url.toLowerCase() : '';
 
-        // Check libbitsub first so migration notes or compatibility aliases that
-        // mention both renderer names resolve to the active Jellyfin 12 backend.
+        // Check strong libbitsub signatures first. A bare library name is not
+        // enough because migration notes can mention both old and new backends.
         if (normalizedUrl.indexOf('libbitsub') !== -1
-            || source.indexOf('libbitsub') !== -1
+            || source.indexOf('[libbitsub]') !== -1
             || containsAll(source, ['WORKER_FALLBACK', 'worker-state'])
             || containsAll(source, ['beginPgs', 'appendPgs', 'finishPgs'])) {
             return PGS_BACKEND_LIBBITSUB;
@@ -69,6 +69,22 @@
         return 'createPgsRenderer=function(' + optionsName + '){var ' + modeName + ';switch(window.WebOSPgsRendererOptions&&window.WebOSPgsRendererOptions.forceMainThread?"mainThread":null!==(' + modeName + '=' + optionsName + '.mode)&&void 0!==' + modeName + '?' + modeName + ':' + modeHelperName + '.getRendererModeByPlatform()){';
     }
 
+    function createPgsPatchResult(text) {
+        return {
+            text: text,
+            patched: false,
+            time: false,
+            async: false,
+            render: false,
+            mainThread: false,
+            objectData: false,
+            mode: false,
+            mayPatchMode: false,
+            mayPatchObjectData: false,
+            criticalMissing: false
+        };
+    }
+
     function patchAssRendererScriptText(text) {
         var result = {
             text: text,
@@ -93,19 +109,7 @@
     }
 
     function patchPgsRendererScriptText(text, options) {
-        var result = {
-            text: text,
-            patched: false,
-            time: false,
-            async: false,
-            render: false,
-            mainThread: false,
-            objectData: false,
-            mode: false,
-            mayPatchMode: false,
-            mayPatchObjectData: false,
-            criticalMissing: false
-        };
+        var result = createPgsPatchResult(text);
 
         if (!text || typeof text !== 'string') {
             return result;
@@ -193,14 +197,17 @@
     }
 
     function patchSubtitleRendererScriptText(text, options) {
+        var pgsBackend = detectPgsRendererBackend(text, options && options.url);
         var ass = patchAssRendererScriptText(text, options);
-        var pgs = patchPgsRendererScriptText(ass.text, options);
+        var pgs = pgsBackend === PGS_BACKEND_LIBBITSUB
+            ? createPgsPatchResult(ass.text)
+            : patchPgsRendererScriptText(ass.text, options);
 
         return {
             text: pgs.text,
             ass: ass,
             pgs: pgs,
-            pgsBackend: detectPgsRendererBackend(text, options && options.url),
+            pgsBackend: pgsBackend,
             patched: pgs.text !== text
         };
     }

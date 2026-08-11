@@ -2454,6 +2454,10 @@
 
     function fetchAndInjectPatchedScript(parent, script, refNode, originalInsert) {
         var src = script.src || script.getAttribute('src');
+        var patches = getSubtitleScriptPatches();
+        if (patches && patches.detectPgsRendererBackend) {
+            setPgsRendererBackend(patches.detectPgsRendererBackend('', src), src);
+        }
         var speculative = !isLikelySubtitleRendererScriptUrl(src)
             && playbackState !== PlaybackState.PLAYING
             && !shouldForcePlaybackStartMaxBitrate()

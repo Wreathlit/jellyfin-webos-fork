@@ -459,8 +459,10 @@ active worker/offscreen path does not receive the main-script object-id patch.
 The two PGS switches remain available on `libpgs` for future isolation or for
 evaluating a safe non-Blob worker patch. Jellyfin Web 12 replaces `libpgs` with
 `libbitsub`; the injected runtime detects that backend from loaded player and
-renderer scripts, removes these now-inapplicable switches, and does not attempt
-to patch `libbitsub` pending real-device testing of the final Jellyfin 12 build.
+renderer scripts before applying PGS rewrites, removes these now-inapplicable
+switches, and does not attempt to patch `libbitsub` pending real-device testing
+of the final Jellyfin 12 build. ASS rewriting remains independent and can still
+apply when both subtitle implementations share a bundle.
 
 ### Playback diagnostics overlay
 

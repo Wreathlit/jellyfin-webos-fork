@@ -66,7 +66,11 @@ assert(patches, 'subtitles.scriptPatches should register');
     );
     assert.strictEqual(
         patches.detectPgsRendererBackend('replace libpgs with libbitsub', '/web/migration.js'),
-        patches.PGS_BACKEND_LIBBITSUB
+        patches.PGS_BACKEND_UNKNOWN
+    );
+    assert.strictEqual(
+        patches.detectPgsRendererBackend('replace libpgs with libbitsub;createPgsRenderer();getRendererModeByPlatform();', '/web/migration.js'),
+        patches.PGS_BACKEND_LIBPGS
     );
 }
 
@@ -170,12 +174,27 @@ assert(patches, 'subtitles.scriptPatches should register');
 }
 
 {
-    const source = 'console.warn("[libbitsub] worker prewarm failed");renderAhead:90;';
+    const legacyPgsNeedle = 'e.prototype.render=function(t){this.worker.postMessage({op:"requestSubtitleData",index:t})},e.prototype.onWorkerMessage=function(e){if("subtitleData"===e.data.op){var r=e.data.subtitleData;this.renderer&&this.renderer.draw(r)}else t.prototype.onWorkerMessage.call(this,e)}';
+    const source = 'console.warn("[libbitsub] worker prewarm failed");renderAhead:90;' + legacyPgsNeedle;
     const result = patches.patchSubtitleRendererScriptText(source, {
         url: '/web/htmlVideoPlayer.js'
     });
 
     assert.strictEqual(result.ass.patched, true);
     assert.strictEqual(result.pgs.patched, false);
+    assert.strictEqual(result.pgs.async, false, 'legacy libpgs hooks must be skipped for libbitsub');
+    assert.strictEqual(result.text.indexOf('window.WebOSPgsRenderGuard'), -1);
+    assert(result.text.indexOf(legacyPgsNeedle) !== -1, 'the libpgs-shaped text must remain untouched');
     assert.strictEqual(result.pgsBackend, patches.PGS_BACKEND_LIBBITSUB);
+}
+
+{
+    const source = 'e.prototype.render=function(t){this.worker.postMessage({op:"requestSubtitleData",index:t})},e.prototype.onWorkerMessage=function(e){if("subtitleData"===e.data.op){var r=e.data.subtitleData;this.renderer&&this.renderer.draw(r)}else t.prototype.onWorkerMessage.call(this,e)}';
+    const result = patches.patchSubtitleRendererScriptText(source, {
+        url: '/web/libbitsub.abc123.js'
+    });
+
+    assert.strictEqual(result.pgsBackend, patches.PGS_BACKEND_LIBBITSUB);
+    assert.strictEqual(result.pgs.patched, false, 'a libbitsub URL should gate legacy PGS patching before source inspection');
+    assert.strictEqual(result.text, source);
 }
