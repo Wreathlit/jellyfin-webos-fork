@@ -249,6 +249,27 @@
             : 'unknown';
     }
 
+    function mediaSourceAlwaysBurnsSubtitleWhenTranscoding(mediaSource) {
+        if (!mediaSource || typeof mediaSource !== 'object') {
+            return false;
+        }
+
+        var transcodingUrl = mediaSource.TranscodingUrl || mediaSource.transcodingUrl;
+        var value = getQueryParameterValue(transcodingUrl, 'alwaysBurnInSubtitleWhenTranscoding');
+        value = value === null || value === undefined ? '' : value.toString().toLowerCase();
+        return value === 'true' || value === '1';
+    }
+
+    function hasAlwaysBurnInSubtitleTranscodingUrl(payload) {
+        var mediaSources = getMediaSources(payload);
+        for (var i = 0; i < mediaSources.length; i++) {
+            if (mediaSourceAlwaysBurnsSubtitleWhenTranscoding(mediaSources[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     function patchBurnedInSubtitleDelivery(payload, options) {
         // Jellyfin's StreamInfo.ToUrl() appends SubtitleStreamIndex whenever
         // AlwaysBurnInSubtitleWhenTranscoding is set, even for a subtitle the
@@ -258,19 +279,19 @@
         // External, so Jellyfin Web renders a second copy on top. Upstream
         // compensates in htmlVideoPlayer.setCurrentTrackElement by re-reading
         // the session and forcing Encode when TranscodingInfo says the video is
-        // not direct, but that lookup races playback start on webOS. Deriving
-        // the same answer from the PlaybackInfo payload keeps the upstream
-        // semantics (only a real video encode suppresses client rendering)
-        // without depending on session timing.
-        if (!options || !options.alwaysBurnInSubtitleWhenTranscoding) {
-            return false;
-        }
+        // not direct, but that lookup races playback start on webOS. Jellyfin
+        // 10.11 copies the request flag into each applicable TranscodingUrl.
+        // Reading that response fact avoids racing a later settings change and
+        // keeps the decision local to the media source it actually describes.
 
         var mediaSources = getMediaSources(payload);
         var patchedStreams = 0;
         for (var i = 0; i < mediaSources.length; i++) {
             var mediaSource = mediaSources[i];
             if (!mediaSource || typeof mediaSource !== 'object') {
+                continue;
+            }
+            if (!mediaSourceAlwaysBurnsSubtitleWhenTranscoding(mediaSource)) {
                 continue;
             }
             if (getMediaSourceVideoDelivery(mediaSource) !== 'transcode') {
@@ -415,6 +436,8 @@
         extractItemIdFromPlaybackInfoUrl: extractItemIdFromPlaybackInfoUrl,
         enforceMaxBitrateUrl: enforceMaxBitrateUrl,
         patchPlaybackInfoBitrateObject: patchPlaybackInfoBitrateObject,
+        mediaSourceAlwaysBurnsSubtitleWhenTranscoding: mediaSourceAlwaysBurnsSubtitleWhenTranscoding,
+        hasAlwaysBurnInSubtitleTranscodingUrl: hasAlwaysBurnInSubtitleTranscodingUrl,
         patchBurnedInSubtitleDelivery: patchBurnedInSubtitleDelivery,
         looksLikeDeviceProfile: looksLikeDeviceProfile,
         patchPlaybackInfoProfileObjects: patchPlaybackInfoProfileObjects,

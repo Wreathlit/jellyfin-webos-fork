@@ -5048,14 +5048,15 @@
             return false;
         }
 
-        var burnInEnabled = getNativeAlwaysBurnInSubtitleWhenTranscoding();
+        var burnInEnabled = patches.hasAlwaysBurnInSubtitleTranscodingUrl
+            ? patches.hasAlwaysBurnInSubtitleTranscodingUrl(payload)
+            : false;
         if (!burnInEnabled) {
             subtitleBurnInFixDiagnostic = 'off';
             return false;
         }
 
         var changed = patches.patchBurnedInSubtitleDelivery(payload, {
-            alwaysBurnInSubtitleWhenTranscoding: true,
             source: source,
             debugLog: debugLog
         });
@@ -5627,23 +5628,6 @@
             subtitleBurnInMode: getNativeSubtitleBurnInMode(),
             debugLog: debugLog
         });
-    }
-
-    function getNativeAlwaysBurnInSubtitleWhenTranscoding() {
-        // Jellyfin Web stores this one through appSettings, so the key has no
-        // user id prefix, same as `subtitleburnin`.
-        try {
-            var storage = window.localStorage;
-            if (!storage) {
-                return false;
-            }
-
-            var value = storage.getItem('alwaysBurnInSubtitleWhenTranscoding');
-            return value ? value.toString().toLowerCase() === 'true' : false;
-        } catch (error) {
-            debugLog('Failed to read Jellyfin always-burn-in subtitle setting:', error && error.message ? error.message : error);
-            return false;
-        }
     }
 
     function getNativeSubtitleBurnInMode() {

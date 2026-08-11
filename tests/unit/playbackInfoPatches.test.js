@@ -272,7 +272,7 @@ function burnInPayload(mediaSource) {
 function videoTranscodeSource(subtitleStreams) {
     return {
         Id: 'source-1',
-        TranscodingUrl: '/videos/abc/master.m3u8?VideoCodec=h264&AudioCodec=aac&SubtitleStreamIndex=3',
+        TranscodingUrl: '/videos/abc/master.m3u8?VideoCodec=h264&AudioCodec=aac&SubtitleStreamIndex=3&alwaysBurnInSubtitleWhenTranscoding=true',
         MediaStreams: subtitleStreams
     };
 }
@@ -286,7 +286,6 @@ function videoTranscodeSource(subtitleStreams) {
     ]));
 
     assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {
-        alwaysBurnInSubtitleWhenTranscoding: true,
         source: 'fetch',
         debugLog: function () {}
     }), true, 'a real video transcode should force Encode delivery');
@@ -300,22 +299,9 @@ function videoTranscodeSource(subtitleStreams) {
 }
 
 {
-    const payload = burnInPayload(videoTranscodeSource([
-        { Index: 3, Type: 'Subtitle', Codec: 'ass', DeliveryMethod: 'External' }
-    ]));
-
-    assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {
-        alwaysBurnInSubtitleWhenTranscoding: false
-    }), false, 'the setting must gate the patch');
-    assert.strictEqual(payload.MediaSources[0].MediaStreams[0].DeliveryMethod, 'External');
-}
-
-{
-    // Audio-only transcode keeps the video stream intact, so the server cannot
-    // burn subtitles in and Jellyfin Web must keep rendering them.
     const payload = burnInPayload({
         Id: 'source-1',
-        TranscodingUrl: '/videos/abc/master.m3u8?VideoCodec=copy&AudioCodec=aac&SubtitleStreamIndex=3',
+        TranscodingUrl: '/videos/abc/master.m3u8?VideoCodec=h264&SubtitleStreamIndex=3',
         MediaStreams: [
             { Index: 3, Type: 'Subtitle', Codec: 'ass', DeliveryMethod: 'External' }
         ]
@@ -323,7 +309,33 @@ function videoTranscodeSource(subtitleStreams) {
 
     assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {
         alwaysBurnInSubtitleWhenTranscoding: true
-    }), false, 'video copy must not suppress client-side rendering');
+    }), false, 'the response URL must gate the patch');
+    assert.strictEqual(payload.MediaSources[0].MediaStreams[0].DeliveryMethod, 'External');
+}
+
+{
+    const payload = burnInPayload(videoTranscodeSource([
+        { Index: 3, Type: 'Subtitle', Codec: 'ass', DeliveryMethod: 'External' }
+    ]));
+
+    assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {
+        alwaysBurnInSubtitleWhenTranscoding: false
+    }), true, 'the response URL should remain authoritative after a later setting change');
+    assert.strictEqual(payload.MediaSources[0].MediaStreams[0].DeliveryMethod, 'Encode');
+}
+
+{
+    // Audio-only transcode keeps the video stream intact, so the server cannot
+    // burn subtitles in and Jellyfin Web must keep rendering them.
+    const payload = burnInPayload({
+        Id: 'source-1',
+        TranscodingUrl: '/videos/abc/master.m3u8?VideoCodec=copy&AudioCodec=aac&SubtitleStreamIndex=3&alwaysBurnInSubtitleWhenTranscoding=true',
+        MediaStreams: [
+            { Index: 3, Type: 'Subtitle', Codec: 'ass', DeliveryMethod: 'External' }
+        ]
+    });
+
+    assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {}), false, 'video copy must not suppress client-side rendering');
     assert.strictEqual(payload.MediaSources[0].MediaStreams[0].DeliveryMethod, 'External');
 }
 
@@ -334,16 +346,14 @@ function videoTranscodeSource(subtitleStreams) {
     const payload = burnInPayload({
         Id: 'source-1',
         PlayMethod: 'Transcode',
-        TranscodingUrl: '/videos/abc/master.m3u8?VideoCodec=hevc&AudioCodec=aac&SubtitleStreamIndex=3&TranscodeReasons=AudioCodecNotSupported',
+        TranscodingUrl: '/videos/abc/master.m3u8?VideoCodec=hevc&AudioCodec=aac&SubtitleStreamIndex=3&TranscodeReasons=AudioCodecNotSupported&alwaysBurnInSubtitleWhenTranscoding=true',
         MediaStreams: [
             { Index: 0, Type: 'Video', Codec: 'hevc' },
             { Index: 3, Type: 'Subtitle', Codec: 'ass', DeliveryMethod: 'External' }
         ]
     });
 
-    assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {
-        alwaysBurnInSubtitleWhenTranscoding: true
-    }), false, 'implicit video copy must not suppress client-side rendering');
+    assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {}), false, 'implicit video copy must not suppress client-side rendering');
     assert.strictEqual(payload.MediaSources[0].MediaStreams[1].DeliveryMethod, 'External');
 }
 
@@ -365,20 +375,35 @@ function videoTranscodeSource(subtitleStreams) {
 {
     const payload = burnInPayload({
         Id: 'source-1',
-        transcodingUrl: '/videos/abc/master.m3u8?VideoCodec=h264',
+        transcodingUrl: '/videos/abc/master.m3u8?VideoCodec=h264&alwaysBurnInSubtitleWhenTranscoding=1',
         mediaStreams: [
             { Index: 3, type: 2, codec: 'ssa', deliveryMethod: 'external' }
         ]
     });
 
-    assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {
-        alwaysBurnInSubtitleWhenTranscoding: true
-    }), true, 'camelCase payloads should be handled');
+    assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {}), true, 'camelCase payloads should be handled');
     assert.strictEqual(payload.mediaSources, undefined);
     assert.strictEqual(payload.MediaSources[0].mediaStreams[0].deliveryMethod, 'Encode');
 }
 
-assert.strictEqual(patches.patchBurnedInSubtitleDelivery(null, {
-    alwaysBurnInSubtitleWhenTranscoding: true
-}), false);
+{
+    const enabledSource = videoTranscodeSource([
+        { Index: 3, Type: 'Subtitle', Codec: 'ass', DeliveryMethod: 'External' }
+    ]);
+    const disabledSource = {
+        Id: 'source-2',
+        TranscodingUrl: '/videos/def/master.m3u8?VideoCodec=h264&alwaysBurnInSubtitleWhenTranscoding=false',
+        MediaStreams: [
+            { Index: 3, Type: 'Subtitle', Codec: 'ass', DeliveryMethod: 'External' }
+        ]
+    };
+    const payload = { MediaSources: [enabledSource, disabledSource] };
+
+    assert.strictEqual(patches.hasAlwaysBurnInSubtitleTranscodingUrl(payload), true);
+    assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {}), true);
+    assert.strictEqual(enabledSource.MediaStreams[0].DeliveryMethod, 'Encode', 'the enabled media source should be corrected');
+    assert.strictEqual(disabledSource.MediaStreams[0].DeliveryMethod, 'External', 'a sibling source without the response flag must be untouched');
+}
+
+assert.strictEqual(patches.patchBurnedInSubtitleDelivery(null, {}), false);
 assert.strictEqual(patches.patchBurnedInSubtitleDelivery({}, null), false);

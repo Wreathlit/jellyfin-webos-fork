@@ -207,9 +207,11 @@ The playback compatibility patches intentionally keep four decisions separate:
   `allcomplexformats` prevents ASS/SSA and PGS External delivery, and
   `onlyimageformats` prevents PGS External delivery. When
   `alwaysBurnInSubtitleWhenTranscoding` is enabled the device profile is left
-  alone and only the PlaybackInfo response is corrected, for media sources the
-  response itself shows as a video encode, so the burned-in subtitle is not
-  rendered a second time. It does not force
+  alone and only the PlaybackInfo response is corrected, for media sources
+  whose returned transcoding URL carries that request flag and whose response
+  shows a real video encode, so the burned-in subtitle is not rendered a second
+  time. Reading the returned URL instead of current local settings also keeps a
+  later settings change from altering an in-flight response. It does not force
   `AlwaysBurnInSubtitleWhenTranscoding`, synthesize PlaybackInfo subtitle URLs,
   delete subtitle burn-in query parameters, or clean up unrelated upstream
   subtitle profiles.
@@ -482,8 +484,8 @@ Approach:
   complaint can be checked against the reason the server actually recorded
   instead of a guess, plus `vid=<codec>/<profile>/<bits>/<level>` for the video
   stream those conditions were evaluated against;
-- show `burn=` with the burn-in de-duplication state: `off` when
-  `alwaysBurnInSubtitleWhenTranscoding` is disabled, otherwise
+- show `burn=` with the burn-in de-duplication state: `off` when the returned
+  media-source URL does not enable `alwaysBurnInSubtitleWhenTranscoding`, otherwise
   `on/fixed:<transport>` or `on/skip:<transport>` depending on whether the
   PlaybackInfo response needed correcting;
 - omit static values such as browser user agent, patched script URL, and CSS
