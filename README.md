@@ -4,6 +4,9 @@ This fork carries local webOS fixes on top of Jellyfin for webOS. It is aimed at
 real LG webOS devices where the hosted Jellyfin Web UI exposes TV-specific
 problems that are hard to solve from the server alone.
 
+This fork targets webOS 5.0 and later. Older webOS JavaScript service runtimes
+are intentionally outside its compatibility boundary.
+
 The main local patch surface is:
 
 - `frontend/js/index.js`
@@ -26,6 +29,10 @@ fetch/XHR interception, playback-start force windows, and diagnostics stay in
 `webOS.js`. `subtitles/scriptPatches.js` owns pure ASS/PGS renderer script text
 replacement and reports which patch families matched; script interception,
 runtime counters, warning policy, and DOM/XHR behavior stay in `webOS.js`.
+The same asset registers a separate `subtitles.assTimeSync` pure module for the
+ASS worker clock-sample decision, so pause/resume transitions and small
+playing-time rollbacks are covered without loading the full injected runtime
+in tests.
 `playback/hdrDecisions.js` owns pure HDR/Dolby Vision and video-delivery
 decisions used by the dimming logic; DOM scanning, playback state, and the
 actual dim class stay in `webOS.js`.
@@ -289,12 +296,17 @@ before the Luna callback finishes, HDR/DV flags can be injected as `null`.
 
 Approach:
 
-- wait for `webOS.deviceInfo()` before assigning the Jellyfin Web iframe URL;
+- wait for `webOS.deviceInfo()` before assigning the Jellyfin Web iframe URL,
+  but continue with conservative defaults after a bounded timeout;
+- accept shell-control messages only from the iframe origin and per-document
+  bridge token established by the current handoff, and invalidate both on
+  document unload or handoff cleanup;
 - focus the content iframe after handoff so normal TV navigation starts inside
   Jellyfin Web.
 
 Status: active workaround. The device-info wait is based on upstream PR #331,
-and iframe focus follows upstream PR #332.
+and iframe focus follows upstream PR #332. A stalled device-info callback no
+longer leaves the app on a permanent blank screen.
 
 ### Pointer click activation
 
@@ -528,21 +540,23 @@ the actual cause was found by elimination.
 
 ## Build and test
 
-Install dependencies:
+Use Node.js 22 or 24, then install dependencies:
 
 ```sh
 npm install
 ```
 
-Run the unit tests and injected-asset checks (pure Node, no TV required):
+Run the unit tests, injected-asset checks, and JavaScript syntax checks (pure
+Node, no TV required):
 
 ```sh
 npm test
 ```
 
-This runs `npm run check:assets` (injected-runtime asset manifest + load-order check) and
-`npm run test:unit` (the pure decision-module unit tests under `tests/unit/`). Run it
-before pushing — CI runs the same command.
+This runs `npm run check:assets` (injected-runtime asset manifest + load-order
+check), `npm run check:syntax` (all project JavaScript), and
+`npm run test:unit` (the unit tests under `tests/unit/`). Run it before pushing
+— CI runs the same command on Node.js 22 and 24.
 
 Validate the IPK package structure (requires the webOS CLI):
 

@@ -190,12 +190,14 @@ function sendScanResults(server_id) {
 				var res = Object.create(null);
 				res[server_id] = scanresult[server_id];
 				s.respond({
+					returnValue: true,
 					results: res
 				});
 			} else {
-			s.respond({
-				results: scanresult,
-			});
+				s.respond({
+					returnValue: true,
+					results: scanresult,
+				});
 			}
 		}
 	}
@@ -301,10 +303,13 @@ function createInterval() {
 
 var discover = service.register("discover");
 discover.on("request", function (message) {
-	sendScanResults();
-	var uniqueToken = message.uniqueToken;
+	pruneScanResults();
+	message.respond({
+		returnValue: true,
+		results: scanresult
+	});
 
-	sendJellyfinDiscovery();
+	var uniqueToken = message.uniqueToken;
 
 	if (message.isSubscription) {
 		subscriptions[uniqueToken] = message;
@@ -312,6 +317,8 @@ discover.on("request", function (message) {
 			createInterval();
 		}
 	}
+
+	sendJellyfinDiscovery();
 });
 discover.on("cancel", function (message) {
 	var uniqueToken = message.uniqueToken;

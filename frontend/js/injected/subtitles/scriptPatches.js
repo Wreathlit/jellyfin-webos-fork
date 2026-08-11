@@ -5,6 +5,65 @@
     var PGS_BACKEND_LIBPGS = 'libpgs';
     var PGS_BACKEND_LIBBITSUB = 'libbitsub';
 
+    function getAssPredictedTime(entry, now) {
+        if (!entry || typeof entry.lastPostedCurrentTime !== 'number') {
+            return null;
+        }
+
+        if (entry.lastPostedPaused) {
+            return entry.lastPostedCurrentTime;
+        }
+
+        var elapsedSeconds = Math.max(0, (now - entry.lastPostedAt) / 1000);
+        return entry.lastPostedCurrentTime + elapsedSeconds * entry.lastPostedRate;
+    }
+
+    function evaluateAssVideoTimeSample(entry, message, now, options) {
+        entry = entry || {};
+        message = message || {};
+        options = options || {};
+
+        var hasCurrentTime = typeof message.currentTime === 'number' && !isNaN(message.currentTime);
+        var hasPaused = typeof message.isPaused === 'boolean';
+        var hasRate = typeof message.rate === 'number' && message.rate > 0;
+        var nextPaused = hasPaused ? message.isPaused : !!entry.lastPostedPaused;
+        var nextRate = hasRate ? message.rate : (entry.lastPostedRate || 1);
+        var nextCurrentTime = hasCurrentTime ? message.currentTime : null;
+        var predictedTime = hasCurrentTime ? getAssPredictedTime(entry, now) : null;
+        var resetAnchor = !hasCurrentTime && (
+            (hasPaused && nextPaused !== !!entry.lastPostedPaused)
+            || (hasRate && nextRate !== entry.lastPostedRate)
+        );
+        var tolerance = typeof options.backwardToleranceSeconds === 'number' ? options.backwardToleranceSeconds : 0.03;
+        var seekThreshold = typeof options.seekBackSeconds === 'number' ? options.seekBackSeconds : 0.75;
+        var clamped = false;
+
+        // Extrapolation is valid only across consecutive playing samples. A
+        // pause transition is an authoritative clock stop, not a small rollback.
+        if (hasCurrentTime
+            && options.enabled
+            && entry.lastPostedPaused === false
+            && nextPaused === false
+            && typeof predictedTime === 'number'
+            && nextCurrentTime + tolerance < predictedTime) {
+            var backwardsBy = predictedTime - nextCurrentTime;
+            if (backwardsBy < seekThreshold) {
+                nextCurrentTime = predictedTime;
+                clamped = true;
+            }
+        }
+
+        return {
+            hasCurrentTime: hasCurrentTime,
+            currentTime: nextCurrentTime,
+            isPaused: nextPaused,
+            rate: nextRate,
+            predictedTime: predictedTime,
+            resetAnchor: resetAnchor,
+            clamped: clamped
+        };
+    }
+
     function containsAll(text, markers) {
         for (var i = 0; i < markers.length; i++) {
             if (text.indexOf(markers[i]) === -1) {
@@ -211,6 +270,11 @@
             patched: pgs.text !== text
         };
     }
+
+    Runtime.define('subtitles.assTimeSync', {
+        getPredictedTime: getAssPredictedTime,
+        evaluateVideoTimeSample: evaluateAssVideoTimeSample
+    });
 
     Runtime.define('subtitles.scriptPatches', {
         PGS_BACKEND_UNKNOWN: PGS_BACKEND_UNKNOWN,

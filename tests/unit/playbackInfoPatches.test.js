@@ -37,8 +37,116 @@ assert.strictEqual(patches.isPlaybackInfoUrl('/Users/abc/Items'), false);
 assert.strictEqual(patches.isPlaybackInfoUrl('/Items/abc/Images/Primary?next=/PlaybackInfo'), false);
 assert.strictEqual(patches.isPlaybackInfoUrl('/Items/abc/PlaybackInformation'), false);
 assert.strictEqual(patches.isPlaybackInfoUrl('/Items/abc/PlaybackInfoExtra'), false);
+assert.strictEqual(patches.isPlaybackInfoUrl('/Items/abc/PlaybackInfo/UnrelatedAction'), false);
+assert.strictEqual(patches.isPlaybackInfoUrl('/Users/u/Items?next=/Items/victim/PlaybackInfo'), false);
+assert.strictEqual(patches.isPlaybackInfoUrl('/Users/u#next=/Items/hashVictim/PlaybackInfo'), false);
+assert.strictEqual(patches.isPlaybackInfoUrl('/Items/abc/PlaybackInfo/'), true);
+assert.strictEqual(patches.isPlaybackInfoUrl('Items/abc/PlaybackInfo'), true);
+assert.strictEqual(patches.isPlaybackInfoUrl('./Items/abc/PlaybackInfo'), true);
+assert.strictEqual(patches.isPlaybackInfoUrl('/base/Items/abc/PlaybackInfo'), true);
+assert.strictEqual(patches.isPlaybackInfoUrl('//server.example/base/Items/abc/PlaybackInfo'), true);
+assert.strictEqual(patches.isPlaybackInfoUrl('https://server.example/jellyfin/Items/abc/PlaybackInfo?x=1'), true);
+assert.strictEqual(patches.isPlaybackInfoUrl('https://Items/id/PlaybackInfo'), false, 'authority text must not be matched as a path');
+assert.strictEqual(patches.isPlaybackInfoUrl('http:///Items/id/PlaybackInfo'), false, 'an empty absolute authority must be rejected');
+assert.strictEqual(patches.isPlaybackInfoUrl('http:////Items/id/PlaybackInfo'), false, 'extra authority slashes must be rejected');
+assert.strictEqual(patches.isPlaybackInfoUrl('http:/Items/id/PlaybackInfo'), false, 'a malformed scheme URL must be rejected');
+assert.strictEqual(patches.isPlaybackInfoUrl('http:Items/id/PlaybackInfo'), false, 'an opaque scheme URL must not be treated as a path');
+assert.strictEqual(patches.isPlaybackInfoUrl('////Items/id/PlaybackInfo'), false, 'an empty protocol-relative authority must be rejected');
+assert.strictEqual(patches.isPlaybackInfoUrl(' https://Items/id/PlaybackInfo'), false, 'leading spaces must not hide an authority');
+assert.strictEqual(patches.isPlaybackInfoUrl('\thttps://Items/id/PlaybackInfo'), false, 'leading tabs must not hide an authority');
+assert.strictEqual(patches.isPlaybackInfoUrl('h\tttps://Items/id/PlaybackInfo'), false, 'tabs inside a scheme must be preprocessed');
+assert.strictEqual(patches.isPlaybackInfoUrl(' https://server.example/base/Items/id/PlaybackInfo \r\n'), true);
+assert.strictEqual(patches.isPlaybackInfoUrl('/Items/foo\\bar/PlaybackInfo'), false, 'a raw backslash changes the normalized HTTP path');
+assert.strictEqual(patches.isPlaybackInfoUrl('https://server.example/Items/foo\\bar/PlaybackInfo'), false);
+assert.strictEqual(patches.isPlaybackInfoUrl('https://server.example\\base/Items/foo/PlaybackInfo'), false, 'authority-adjacent backslashes must fail closed');
+assert.strictEqual(patches.isPlaybackInfoUrl('//server.example\\base/Items/foo/PlaybackInfo'), false, 'protocol-relative backslashes must fail closed');
+assert.strictEqual(patches.isPlaybackInfoUrl('/Items/foo/PlaybackInfo?next=\\other'), true, 'query backslashes must not change endpoint classification');
+assert.strictEqual(patches.isPlaybackInfoUrl('/Items/foo/PlaybackInfo#next=\\other'), true, 'fragment backslashes must not change endpoint classification');
+assert.strictEqual(patches.isPlaybackInfoUrl('/Items/./PlaybackInfo'), false);
+assert.strictEqual(patches.isPlaybackInfoUrl('/Items/../PlaybackInfo'), false);
+assert.strictEqual(patches.isPlaybackInfoUrl('/Items/%2e/PlaybackInfo'), false);
+assert.strictEqual(patches.isPlaybackInfoUrl('/Items/%2e%2e/PlaybackInfo'), false);
+assert.strictEqual(patches.isPlaybackInfoUrl('/Items/.%2e/PlaybackInfo'), false);
+assert.strictEqual(patches.isPlaybackInfoUrl('/Items/%2e./PlaybackInfo'), false);
+assert.strictEqual(patches.extractItemIdFromPlaybackInfoUrl('/Items/.../PlaybackInfo'), '...');
+assert.strictEqual(patches.extractItemIdFromPlaybackInfoUrl('/Items/foo%5Cbar/PlaybackInfo'), 'foo\\bar');
+assert.strictEqual(patches.extractItemIdFromPlaybackInfoUrl('/Items/id value/PlaybackInfo'), 'id value');
 assert.strictEqual(patches.extractItemIdFromPlaybackInfoUrl('/Items/abc%201/PlaybackInfo?x=1'), 'abc 1');
 assert.strictEqual(patches.extractItemIdFromPlaybackInfoUrl('/Items/abc/Images/Primary'), null);
+
+{
+    const result = patches.enforceMaxBitrateUrl(
+        ' https://server.example/base/Items/id/PlaybackInfo \r\n',
+        120000000
+    );
+    assert.strictEqual(
+        result.url,
+        'https://server.example/base/Items/id/PlaybackInfo?MaxStreamingBitrate=120000000&maxStreamingBitrate=120000000'
+    );
+    assert.strictEqual(result.itemId, 'id');
+}
+
+assert.strictEqual(
+    patches.getHighestQueryParameterInteger('/Items/id/PlaybackInfo#?MaxStreamingBitrate=999999999', 'MaxStreamingBitrate'),
+    0,
+    'fragment text must not be read as a query parameter'
+);
+assert.strictEqual(
+    patches.getHighestQueryParameterInteger('/base&MaxStreamingBitrate=999999999/Items/id/PlaybackInfo', 'MaxStreamingBitrate'),
+    0,
+    'path text must not be read as a query parameter'
+);
+assert.strictEqual(
+    patches.getQueryParameterValue('/Items/id/PlaybackInfo?next=/x?alwaysBurnInSubtitleWhenTranscoding=true', 'alwaysBurnInSubtitleWhenTranscoding'),
+    null,
+    'a nested question mark inside a query value is not a parameter separator'
+);
+assert.strictEqual(
+    patches.getQueryParameterValue('/Items/id/PlaybackInfo#route?alwaysBurnInSubtitleWhenTranscoding=true', 'alwaysBurnInSubtitleWhenTranscoding'),
+    null
+);
+assert.strictEqual(
+    patches.getQueryParameterValue('/Items/id/PlaybackInfo?foo=1&alwaysBurnInSubtitleWhenTranscoding=true#frag', 'alwaysBurnInSubtitleWhenTranscoding'),
+    'true'
+);
+
+{
+    const result = patches.enforceMaxBitrateUrl(
+        '/base&MaxStreamingBitrate=999999999/Items/id/PlaybackInfo?foo=1',
+        120000000
+    );
+    assert.strictEqual(result.targetBitrate, 120000000);
+    assert.strictEqual(
+        result.url,
+        '/base&MaxStreamingBitrate=999999999/Items/id/PlaybackInfo?foo=1&MaxStreamingBitrate=120000000&maxStreamingBitrate=120000000',
+        'query rewriting must not modify a lookalike parameter in the path'
+    );
+}
+
+{
+    const result = patches.enforceMaxBitrateUrl(
+        '/Items/id/PlaybackInfo?next=/x?MaxStreamingBitrate=999999999#frag',
+        120000000
+    );
+    assert.strictEqual(result.targetBitrate, 120000000);
+    assert.strictEqual(
+        result.url,
+        '/Items/id/PlaybackInfo?next=/x?MaxStreamingBitrate=999999999&MaxStreamingBitrate=120000000&maxStreamingBitrate=120000000#frag',
+        'a nested query value must remain untouched while real parameters are appended'
+    );
+}
+
+{
+    const result = patches.enforceMaxBitrateUrl(
+        '/Items/id/PlaybackInfo#?MaxStreamingBitrate=999999999',
+        120000000
+    );
+    assert.strictEqual(result.targetBitrate, 120000000);
+    assert.strictEqual(
+        result.url,
+        '/Items/id/PlaybackInfo?MaxStreamingBitrate=120000000&maxStreamingBitrate=120000000#?MaxStreamingBitrate=999999999'
+    );
+}
 
 {
     const result = patches.enforceMaxBitrateUrl('/Items/abc%201/PlaybackInfo?foo=bar#frag', 120000000);

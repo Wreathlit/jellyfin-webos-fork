@@ -178,7 +178,9 @@ Completed migration steps:
   windows, and diagnostic side effects.
 - `frontend/js/injected/subtitles/scriptPatches.js` owns pure ASS/PGS renderer
   script text replacement and match metadata, while `webOS.js` keeps script
-  interception, runtime helpers, counters, warnings, and diagnostics.
+  interception, runtime helpers, counters, warnings, and diagnostics. The same
+  asset also registers the pure `subtitles.assTimeSync` clock-sample module so
+  pause/resume transitions can be tested without loading the full runtime.
 
 Continue to prefer narrow behavior-preserving changes. Only reconsider a full
 client rewrite if the iframe-based patch model itself becomes the blocker.

@@ -15,6 +15,39 @@
         return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
+    function normalizeUrlInput(url) {
+        // Match the WHATWG URL parser's input preprocessing: remove ASCII
+        // tabs/newlines anywhere, then strip leading/trailing C0 controls and
+        // spaces. Keep internal spaces because they are part of the path.
+        return url
+            .replace(/[\u0009\u000A\u000D]/g, '')
+            .replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '');
+    }
+
+    function splitUrlComponents(url) {
+        url = normalizeUrlInput(url);
+
+        var hash = '';
+        var hashIndex = url.indexOf('#');
+        if (hashIndex !== -1) {
+            hash = url.substring(hashIndex);
+            url = url.substring(0, hashIndex);
+        }
+
+        var query = '';
+        var queryIndex = url.indexOf('?');
+        if (queryIndex !== -1) {
+            query = url.substring(queryIndex + 1);
+            url = url.substring(0, queryIndex);
+        }
+
+        return {
+            base: url,
+            query: query,
+            hash: hash
+        };
+    }
+
     function isPlaybackInfoUrl(url) {
         return extractItemIdFromPlaybackInfoUrl(url) !== null;
     }
@@ -24,8 +57,9 @@
             return null;
         }
 
-        var pattern = new RegExp('[?&]' + escapeRegExp(name) + '=([^&#]*)');
-        var match = pattern.exec(url);
+        var query = splitUrlComponents(url).query;
+        var pattern = new RegExp('(?:^|&)' + escapeRegExp(name) + '=([^&]*)');
+        var match = pattern.exec(query);
         if (!match || match.length < 2) {
             return null;
         }
@@ -42,10 +76,11 @@
             return 0;
         }
 
-        var pattern = new RegExp('[?&]' + escapeRegExp(name) + '=([^&#]*)', 'g');
+        var query = splitUrlComponents(url).query;
+        var pattern = new RegExp('(?:^|&)' + escapeRegExp(name) + '=([^&]*)', 'g');
         var highest = 0;
         var match;
-        while ((match = pattern.exec(url)) !== null) {
+        while ((match = pattern.exec(query)) !== null) {
             var value = match.length > 1 ? match[1] : '';
             try {
                 value = decodeURIComponent(value.replace(/\+/g, '%20'));
@@ -66,24 +101,19 @@
             return url;
         }
 
-        var hash = '';
-        var hashIndex = url.indexOf('#');
-        if (hashIndex !== -1) {
-            hash = url.substring(hashIndex);
-            url = url.substring(0, hashIndex);
-        }
-
+        var components = splitUrlComponents(url);
+        var query = components.query;
         var encodedValue = encodeURIComponent(value.toString());
         var encodedName = encodeURIComponent(name);
-        var pattern = new RegExp('([?&])' + escapeRegExp(encodedName) + '=.*?(?=&|$)', 'g');
+        var pattern = new RegExp('(^|&)' + escapeRegExp(encodedName) + '=.*?(?=&|$)', 'g');
 
-        if (pattern.test(url)) {
-            url = url.replace(pattern, '$1' + name + '=' + encodedValue);
+        if (pattern.test(query)) {
+            query = query.replace(pattern, '$1' + encodedName + '=' + encodedValue);
         } else {
-            url += (url.indexOf('?') === -1 ? '?' : '&') + name + '=' + encodedValue;
+            query += (query ? '&' : '') + encodedName + '=' + encodedValue;
         }
 
-        return url + hash;
+        return components.base + '?' + query + components.hash;
     }
 
     function extractItemIdFromPlaybackInfoUrl(url) {
@@ -91,7 +121,43 @@
             return null;
         }
 
-        var match = /\/Items\/([^\/\?#]+)\/PlaybackInfo(?:[\/\?#]|$)/i.exec(url);
+        url = normalizeUrlInput(url);
+        // Match the endpoint path only. Query values and hash routes may contain
+        // another URL, and treating those as the outer request used to send
+        // unrelated fetch/XHR calls through the PlaybackInfo interceptors.
+        var queryIndex = url.indexOf('?');
+        var hashIndex = url.indexOf('#');
+        var pathEnd = url.length;
+        if (queryIndex !== -1 && queryIndex < pathEnd) {
+            pathEnd = queryIndex;
+        }
+        if (hashIndex !== -1 && hashIndex < pathEnd) {
+            pathEnd = hashIndex;
+        }
+
+        var pathname = url.substring(0, pathEnd);
+        // HTTP(S) URL parsing treats a raw backslash as a path separator. Do
+        // not classify a different normalized path using the raw string.
+        if (pathname.indexOf('\\') !== -1) {
+            return null;
+        }
+        var hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(pathname);
+        var isProtocolRelative = pathname.indexOf('//') === 0;
+        var authorityMatch = null;
+        if (hasScheme) {
+            authorityMatch = /^[a-z][a-z0-9+.-]*:\/\/([^\/\s]+)(\/.*)?$/i.exec(pathname);
+            if (!authorityMatch) {
+                return null;
+            }
+            pathname = authorityMatch[2] || '/';
+        } else if (isProtocolRelative) {
+            authorityMatch = /^\/\/([^\/\s]+)(\/.*)?$/.exec(pathname);
+            if (!authorityMatch) {
+                return null;
+            }
+            pathname = authorityMatch[2] || '/';
+        }
+        var match = /(?:^|\/)Items\/([^\/\?#]+)\/PlaybackInfo\/?$/i.exec(pathname);
         if (!match || !match[1]) {
             return null;
         }
@@ -101,6 +167,9 @@
             itemId = decodeURIComponent(itemId);
         } catch (error) {
             // Ignore malformed URI fragments and use raw value.
+        }
+        if (itemId === '.' || itemId === '..') {
+            return null;
         }
         return itemId;
     }

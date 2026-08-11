@@ -36,11 +36,15 @@
     var webOSPlaybackInfoPatches = webOSPatchRuntime && webOSPatchRuntime.get
         ? webOSPatchRuntime.get('playback.playbackInfoPatches')
         : null;
+    var webOSAssTimeSync = webOSPatchRuntime && webOSPatchRuntime.get
+        ? webOSPatchRuntime.get('subtitles.assTimeSync')
+        : null;
     var webOSSubtitleScriptPatches = webOSPatchRuntime && webOSPatchRuntime.get
         ? webOSPatchRuntime.get('subtitles.scriptPatches')
         : null;
     var hdrDecisionModuleWarned = false;
     var playbackInfoPatchModuleWarned = false;
+    var assTimeSyncModuleWarned = false;
     var subtitleScriptPatchModuleWarned = false;
 
     function getRegisteredFeatureStorageKey(key, fallback) {
@@ -440,7 +444,8 @@
     function postMessage(type, data) {
         window.top.postMessage({
             type: type,
-            data: data
+            data: data,
+            webOSBridgeToken: window.WebOSBridgeToken || ''
         }, '*');
     }
 
@@ -2592,17 +2597,28 @@
         }
     }
 
-    function getPredictedAssWorkerTime(entry, now) {
-        if (!entry || typeof entry.lastPostedCurrentTime !== 'number') {
-            return null;
+    function evaluateAssWorkerVideoTimeSample(entry, message, now) {
+        if (webOSAssTimeSync && webOSAssTimeSync.evaluateVideoTimeSample) {
+            return webOSAssTimeSync.evaluateVideoTimeSample(entry, message, now, {
+                enabled: assTimeSyncFixEnabled,
+                backwardToleranceSeconds: ASS_TIME_SYNC_BACKWARD_TOLERANCE_SECONDS,
+                seekBackSeconds: ASS_TIME_SYNC_SEEK_BACK_SECONDS
+            });
         }
 
-        if (entry.lastPostedPaused) {
-            return entry.lastPostedCurrentTime;
+        if (!assTimeSyncModuleWarned) {
+            assTimeSyncModuleWarned = true;
+            warnLog('ASS time-sync module is unavailable; rollback correction is disabled.');
         }
 
-        var elapsedSeconds = Math.max(0, (now - entry.lastPostedAt) / 1000);
-        return entry.lastPostedCurrentTime + elapsedSeconds * entry.lastPostedRate;
+        return {
+            hasCurrentTime: typeof message.currentTime === 'number' && !isNaN(message.currentTime),
+            currentTime: message.currentTime,
+            isPaused: typeof message.isPaused === 'boolean' ? message.isPaused : entry.lastPostedPaused,
+            rate: typeof message.rate === 'number' && message.rate > 0 ? message.rate : entry.lastPostedRate,
+            resetAnchor: false,
+            clamped: false
+        };
     }
 
     function patchAssWorkerVideoMessage(worker, message) {
@@ -2613,39 +2629,30 @@
         var entry = getAssWorkerVideoStateEntry(worker);
         var now = Date.now();
         var patched = message;
-        var hasCurrentTime = typeof message.currentTime === 'number' && !isNaN(message.currentTime);
-        var nextPaused = typeof message.isPaused === 'boolean' ? message.isPaused : entry.lastPostedPaused;
-        var nextRate = typeof message.rate === 'number' && message.rate > 0 ? message.rate : entry.lastPostedRate;
+        var timeSample = evaluateAssWorkerVideoTimeSample(entry, message, now);
 
         updateAssWorkerVideoMessageStats(now);
 
-        if (hasCurrentTime) {
-            var nextCurrentTime = message.currentTime;
-            // Clamp samples that fall behind the worker's smooth extrapolation, not just
-            // raw backwards samples — under load most regressions look like "behind by 20-80ms"
-            // rather than a literal numeric decrease. Clamp to predictedTime so the worker's
-            // clock advances monotonically; pinning to lastPostedCurrentTime would re-anchor
-            // it on a stale value.
-            var predictedTime = getPredictedAssWorkerTime(entry, now);
-            if (assTimeSyncFixEnabled
-                && typeof predictedTime === 'number'
-                && nextCurrentTime + ASS_TIME_SYNC_BACKWARD_TOLERANCE_SECONDS < predictedTime) {
-                var backwardsBy = predictedTime - nextCurrentTime;
-                if (backwardsBy < ASS_TIME_SYNC_SEEK_BACK_SECONDS) {
-                    patched = cloneShallowObject(message);
-                    patched.currentTime = predictedTime;
-                    nextCurrentTime = predictedTime;
-                    assWorkerTimeSyncClampCount++;
-                    assWorkerVideoMessagePatchCount++;
-                }
+        if (timeSample.hasCurrentTime) {
+            if (timeSample.clamped) {
+                patched = cloneShallowObject(message);
+                patched.currentTime = timeSample.currentTime;
+                assWorkerTimeSyncClampCount++;
+                assWorkerVideoMessagePatchCount++;
             }
 
-            entry.lastPostedCurrentTime = nextCurrentTime;
+            entry.lastPostedCurrentTime = timeSample.currentTime;
+            entry.lastPostedAt = now;
+        } else if (timeSample.resetAnchor) {
+            // A control-only pause/rate change has no authoritative switch
+            // timestamp. Let the next real time sample establish a new anchor
+            // instead of applying the new clock slope to the previous period.
+            entry.lastPostedCurrentTime = null;
             entry.lastPostedAt = now;
         }
 
-        entry.lastPostedPaused = nextPaused;
-        entry.lastPostedRate = nextRate;
+        entry.lastPostedPaused = timeSample.isPaused;
+        entry.lastPostedRate = timeSample.rate;
 
         return patched;
     }
@@ -4452,30 +4459,9 @@
         return null;
     }
 
-    function fallbackExtractItemIdFromPlaybackInfoUrl(url) {
-        if (!url || typeof url !== 'string') {
-            return null;
-        }
-
-        var match = /\/Items\/([^\/\?#]+)\/PlaybackInfo(?:[\/\?#]|$)/i.exec(url);
-        if (!match || !match[1]) {
-            return null;
-        }
-
-        var itemId = match[1];
-        try {
-            itemId = decodeURIComponent(itemId);
-        } catch (error) {
-            // Ignore malformed URI fragments and use raw value.
-        }
-        return itemId;
-    }
-
     function isPlaybackInfoUrl(url) {
         var patches = getPlaybackInfoPatches();
-        return patches && patches.isPlaybackInfoUrl
-            ? patches.isPlaybackInfoUrl(url)
-            : fallbackExtractItemIdFromPlaybackInfoUrl(url) !== null;
+        return !!(patches && patches.isPlaybackInfoUrl && patches.isPlaybackInfoUrl(url));
     }
 
     function parsePositiveInteger(value) {
@@ -4559,7 +4545,7 @@
         var patches = getPlaybackInfoPatches();
         return patches && patches.extractItemIdFromPlaybackInfoUrl
             ? patches.extractItemIdFromPlaybackInfoUrl(url)
-            : fallbackExtractItemIdFromPlaybackInfoUrl(url);
+            : null;
     }
 
     function createPlaybackInfoRequestContext(url) {

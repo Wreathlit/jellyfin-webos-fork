@@ -2,8 +2,12 @@
   "name": "org.jellyfin.webos",
   "version": "1.2.2",
   "description": "Jellyfin WebOS client",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Wreathlit/jellyfin-webos-fork.git"
+  },
   "scripts": {
-    "check": "ares-package --check",
+    "check": "ares-package --check services frontend",
     "package": "ares-package --no-minify --outdir build/ services frontend",
     "clean": "node -e \"require('fs').rmSync('build', { recursive: true, force: true })\"",
     "deploy": "ares-install build/org.jellyfin.webos_${npm_package_version}_all.ipk",
@@ -11,13 +15,14 @@
     "manifest": "node tools/gen-manifest.js build/org.jellyfin.webos.manifest.json",
     "version": "node tools/sync-version.js && git add frontend/appinfo.json",
     "check:assets": "node tools/check-injected-assets.js",
+    "check:syntax": "node tools/check-js-syntax.js",
     "test:unit": "node tests/run.js",
-    "test": "npm run check:assets && npm run test:unit"
+    "test": "npm run check:assets && npm run check:syntax && npm run test:unit"
   },
   "author": "Jellyfin contributors",
   "license": "MPL-2.0",
   "engines": {
-    "node": ">=14.15.1"
+    "node": ">=22"
   },
   "devDependencies": {
     "@webos-tools/cli": "^3.2.3"

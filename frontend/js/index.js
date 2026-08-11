@@ -43,6 +43,8 @@ function debugJsonLog(prefix, data) {
 var deviceInfo;
 var deviceInfoReady = false;
 var deviceInfoCallbacks = [];
+var deviceInfoTimeout = null;
+var DEVICE_INFO_WAIT_TIMEOUT_MS = 5000;
 
 function flushDeviceInfoCallbacks() {
     var callbacks = deviceInfoCallbacks;
@@ -62,11 +64,39 @@ function waitForDeviceInfo(callback) {
     deviceInfoCallbacks.push(callback);
 }
 
-webOS.deviceInfo(function (info) {
-    deviceInfo = info;
+function completeDeviceInfo(info) {
+    deviceInfo = info && typeof info === 'object' ? info : {};
+
+    // A real callback may arrive after the fallback fired. Keep the newer
+    // information for future handoffs, but only flush the waiters once.
+    if (deviceInfoReady) {
+        return;
+    }
+
     deviceInfoReady = true;
+    if (deviceInfoTimeout !== null) {
+        clearTimeout(deviceInfoTimeout);
+        deviceInfoTimeout = null;
+    }
     flushDeviceInfoCallbacks();
-});
+}
+
+deviceInfoTimeout = setTimeout(function () {
+    deviceInfoTimeout = null;
+    if (window.console && console.warn) {
+        console.warn('webOS deviceInfo timed out; continuing with conservative capabilities.');
+    }
+    completeDeviceInfo({});
+}, DEVICE_INFO_WAIT_TIMEOUT_MS);
+
+try {
+    webOS.deviceInfo(completeDeviceInfo);
+} catch (error) {
+    if (window.console && console.warn) {
+        console.warn('webOS deviceInfo failed; continuing with conservative capabilities.', error);
+    }
+    completeDeviceInfo({});
+}
 
 //Adds .includes to string to do substring matching
 if (!String.prototype.includes) {
@@ -570,6 +600,9 @@ function loadUrl(url, success, failure) {
 
 var injectBundleCache = null;
 var activeHandoffCleanup = null;
+var activeHandoffMessageOrigin = '';
+var activeHandoffMessageToken = '';
+var handoffMessageTokenSequence = 0;
 var HANDOFF_INJECTION_TIMEOUT_MS = 45000;
 var injectedScriptUrls = [
     'js/injected/core/runtime.js',
@@ -653,6 +686,51 @@ function getHandoffUrlOrigin(value) {
         return '';
     }
     return parsed.protocol + '//' + parsed.host;
+}
+
+function createHandoffMessageToken() {
+    handoffMessageTokenSequence++;
+
+    var cryptoObject = window.crypto || window.msCrypto;
+    if (cryptoObject && cryptoObject.getRandomValues && typeof Uint32Array !== 'undefined') {
+        try {
+            var values = new Uint32Array(4);
+            cryptoObject.getRandomValues(values);
+            return 'webos-' + handoffMessageTokenSequence + '-'
+                + values[0].toString(16) + '-'
+                + values[1].toString(16) + '-'
+                + values[2].toString(16) + '-'
+                + values[3].toString(16);
+        } catch (error) {
+            debugLog('Unable to generate bridge token with crypto:', error);
+        }
+    }
+
+    return 'webos-' + handoffMessageTokenSequence + '-'
+        + new Date().getTime().toString(36) + '-'
+        + Math.floor(Math.random() * 0x100000000).toString(16) + '-'
+        + Math.floor(Math.random() * 0x100000000).toString(16);
+}
+
+function setActiveHandoffMessageAuthorization(origin, token) {
+    activeHandoffMessageOrigin = origin && token ? origin : '';
+    activeHandoffMessageToken = origin && token ? token : '';
+}
+
+function clearActiveHandoffMessageAuthorization() {
+    activeHandoffMessageOrigin = '';
+    activeHandoffMessageToken = '';
+}
+
+function isMessageFromActiveHandoff(event, contentFrame) {
+    var message = event && event.data;
+    return !!contentFrame
+        && !!activeHandoffMessageOrigin
+        && !!activeHandoffMessageToken
+        && event.source === contentFrame.contentWindow
+        && event.origin === activeHandoffMessageOrigin
+        && message && typeof message === 'object'
+        && message.webOSBridgeToken === activeHandoffMessageToken;
 }
 
 function getHandoffDocumentHref(contentDocument) {
@@ -930,6 +1008,9 @@ function handoff(url, bundle, expectedServerId) {
         if (!acceptedHandoffOrigin) {
             acceptedHandoffOrigin = currentOrigin;
         }
+        var documentMessageToken = createHandoffMessageToken();
+        injectScriptText(contentDocument, 'window.WebOSBridgeToken = ' + JSON.stringify(documentMessageToken) + ';');
+        setActiveHandoffMessageAuthorization(currentOrigin, documentMessageToken);
         addUnloadListener();
 
         injectScriptText(contentDocument, 'window.AppInfo = ' + JSON.stringify(appInfo) + ';');
@@ -946,6 +1027,9 @@ function handoff(url, bundle, expectedServerId) {
     }
 
     function onUnload() {
+        if (activeHandoffCleanup === cleanupHandoff) {
+            clearActiveHandoffMessageAuthorization();
+        }
         removeUnloadListener();
         clearLoadPollTimer();
         ensureLoadPollTimer();
@@ -964,6 +1048,7 @@ function handoff(url, bundle, expectedServerId) {
         removeUnloadListener();
         contentFrame.removeEventListener('load', onFrameLoad);
         if (activeHandoffCleanup === cleanupHandoff) {
+            clearActiveHandoffMessageAuthorization();
             activeHandoffCleanup = null;
         }
     }
@@ -982,6 +1067,7 @@ function handoff(url, bundle, expectedServerId) {
 
     // In the case of "loading" and "interactive" are not caught
     contentFrame.addEventListener('load', onFrameLoad);
+    scheduleInjectionFailureTimer("Failed to load Jellyfin Web in the webOS frame. The server did not finish loading in time.");
 
     waitForDeviceInfo(function () {
         if (handoffCleanedUp) {
@@ -992,13 +1078,12 @@ function handoff(url, bundle, expectedServerId) {
         contentFrame.style.display = '';
         contentFrame.src = url;
         contentFrame.focus();
-        scheduleInjectionFailureTimer("Failed to load Jellyfin Web in the webOS frame. The server did not finish loading in time.");
     });
 }
 
 window.addEventListener('message', function (event) {
     var contentFrame = document.querySelector('#contentFrame');
-    if (!contentFrame || event.source !== contentFrame.contentWindow) {
+    if (!isMessageFromActiveHandoff(event, contentFrame)) {
         return;
     }
 

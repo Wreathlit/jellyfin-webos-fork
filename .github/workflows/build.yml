@@ -2,10 +2,14 @@ name: Build
 
 on:
   push:
+  pull_request:
   workflow_dispatch:
   release:
     types:
       - published
+
+permissions:
+  contents: read
 
 jobs:
   check:
@@ -14,8 +18,8 @@ jobs:
       fail-fast: false
       matrix:
         node-version:
-          - 16.x
-          - 18.x
+          - 22.x
+          - 24.x
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -31,7 +35,7 @@ jobs:
       - name: Check packaging
         run: npm run check
 
-      - name: Run injected-asset and unit tests
+      - name: Run asset, syntax, and unit tests
         run: npm test
 
   build:
@@ -41,10 +45,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Use Node.js 16.x
+      - name: Use Node.js 24.x
         uses: actions/setup-node@v6
         with:
-          node-version: 16.x
+          node-version: 24.x
 
       - name: Install dependencies
         run: npm ci
@@ -62,9 +66,21 @@ jobs:
           path: |
             ${{github.workspace}}/build/*
 
+  release:
+    needs: build
+    if: ${{ github.event_name == 'release' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download built artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: jellyfin_webos
+          path: build
+
       - name: Upload GitHub Release Artifacts
         uses: shogo82148/actions-upload-release-asset@v1
-        if: ${{ github.event_name == 'release' }}
         with:
           upload_url: ${{ github.event.release.upload_url }}
           asset_path: 'build/*'
