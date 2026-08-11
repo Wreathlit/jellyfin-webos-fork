@@ -208,6 +208,42 @@ assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
     ]
 }), 'transcode', 'a video incompatibility must force video transcode classification');
 assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=h264&AudioCodec=aac&RequireAvc=true&TranscodeReasons=AudioCodecNotSupported',
+    MediaStreams: [
+        { Type: 'Video', Codec: 'h264', IsAVC: false }
+    ]
+}), 'transcode', 'RequireAvc must reject a non-AVC H264 source even when the reason list is audio-only');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc&AudioCodec=aac&hevc-deinterlace=true&TranscodeReasons=AudioCodecNotSupported',
+    MediaStreams: [
+        { Type: 'Video', Codec: 'hevc', IsInterlaced: true }
+    ]
+}), 'transcode', 'a requested deinterlace prevents stream copy');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc&AudioCodec=aac&RequireNonAnamorphic=True&TranscodeReasons=AudioCodecNotSupported',
+    MediaStreams: [
+        { Type: 'Video', Codec: 'hevc', IsAnamorphic: true }
+    ]
+}), 'transcode', 'a non-anamorphic requirement prevents copying an anamorphic source');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc&AudioCodec=aac&SubtitleStreamIndex=3&SubtitleMethod=Encode&TranscodeReasons=AudioCodecNotSupported',
+    MediaStreams: [
+        { Type: 'Video', Codec: 'hevc' }
+    ]
+}), 'transcode', 'a subtitle encode request requires a real video encode');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
+    Container: 'avi',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=h264&AudioCodec=aac&TranscodeReasons=ContainerNotSupported',
+    MediaStreams: [
+        { Type: 'Video', Codec: 'h264' }
+    ]
+}), 'transcode', 'non-AVC H264 in AVI follows the server stream-copy rejection');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
     SupportsDirectPlay: true,
     TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=h264'
 }), 'transcode', 'TranscodingUrl should win over capability flags');

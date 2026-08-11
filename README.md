@@ -156,7 +156,10 @@ normally carries the target codec list, and `EncodingHelper` selects `copy`
 only when the request begins. The fork therefore recognizes an implicit copy
 only when video stream copy is allowed, every reported reason belongs to
 Jellyfin's `DirectStreamReasons`, and the source video codec appears in that
-target list. This prevents an audio-only transcode from being mistaken for a
+target list. It also mirrors the remaining request-time blockers that can still
+prevent the server from copying that source: required AVC framing,
+non-anamorphic output, deinterlacing, subtitle encoding, and non-AVC H264 in an
+AVI container. This prevents an audio-only transcode from being mistaken for a
 video encode and having its only client-rendered subtitle suppressed. The
 device profile remains unchanged so no path is forced into a transcode it did
 not need.

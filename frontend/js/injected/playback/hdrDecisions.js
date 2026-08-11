@@ -741,7 +741,20 @@
         return true;
     }
 
-    function getMediaSourceVideoCodec(mediaSource) {
+    function getFirstObjectField(value, names) {
+        if (!value || typeof value !== 'object') {
+            return null;
+        }
+
+        for (var i = 0; i < names.length; i++) {
+            if (Object.prototype.hasOwnProperty.call(value, names[i])) {
+                return value[names[i]];
+            }
+        }
+        return null;
+    }
+
+    function getMediaSourceVideoStream(mediaSource) {
         var streams = toArray(mediaSource && (mediaSource.MediaStreams || mediaSource.mediaStreams));
         for (var i = 0; i < streams.length; i++) {
             var stream = streams[i];
@@ -749,12 +762,88 @@
                 continue;
             }
 
-            var codec = stream && (stream.Codec || stream.codec);
-            if (codec) {
-                return codec.toString().toLowerCase();
-            }
+            return stream;
         }
-        return '';
+        return null;
+    }
+
+    function getMediaSourceVideoCodec(mediaSource) {
+        var stream = getMediaSourceVideoStream(mediaSource);
+        var codec = stream && (stream.Codec || stream.codec);
+        return codec ? codec.toString().toLowerCase() : '';
+    }
+
+    function getCodecOptionQueryValue(url, codec, option) {
+        var qualifiers = [codec];
+        if (codec === 'hevc') {
+            qualifiers.push('h265');
+        } else if (codec === 'h265') {
+            qualifiers.push('hevc');
+        } else if (codec === 'h264') {
+            qualifiers.push('avc');
+        } else if (codec === 'avc') {
+            qualifiers.push('h264');
+        }
+
+        var names = [];
+        for (var i = 0; i < qualifiers.length; i++) {
+            names.push(qualifiers[i] + '-' + option);
+        }
+        names.push(option);
+        return getFirstQueryParameterValue(url, names);
+    }
+
+    function hasStreamCopyBlockingRequest(mediaSource, videoStream, sourceVideoCodec, url) {
+        var isInterlaced = getFirstObjectField(videoStream, ['IsInterlaced', 'isInterlaced']);
+        var deInterlace = getFirstQueryParameterValue(url, ['DeInterlace', 'deInterlace', 'deinterlace']);
+        if (isTruthyPlaybackQueryValue(isInterlaced)
+            && (isTruthyPlaybackQueryValue(deInterlace)
+                || isTruthyPlaybackQueryValue(getCodecOptionQueryValue(url, sourceVideoCodec, 'deinterlace')))) {
+            return true;
+        }
+
+        var isAnamorphic = getFirstObjectField(videoStream, ['IsAnamorphic', 'isAnamorphic']);
+        var requireNonAnamorphic = getFirstQueryParameterValue(url, [
+            'RequireNonAnamorphic',
+            'requireNonAnamorphic',
+            'requirenonanamorphic'
+        ]);
+        if (isTruthyPlaybackQueryValue(isAnamorphic)
+            && isTruthyPlaybackQueryValue(requireNonAnamorphic)) {
+            return true;
+        }
+
+        var subtitleStreamIndex = parseInt(getFirstQueryParameterValue(url, [
+            'SubtitleStreamIndex',
+            'subtitleStreamIndex',
+            'subtitlestreamindex'
+        ]), 10);
+        var subtitleMethod = getFirstQueryParameterValue(url, [
+            'SubtitleMethod',
+            'subtitleMethod',
+            'subtitlemethod'
+        ]);
+        if (!isNaN(subtitleStreamIndex) && subtitleStreamIndex >= 0
+            && subtitleMethod && subtitleMethod.toString().toLowerCase() === 'encode') {
+            return true;
+        }
+
+        var isAvc = getFirstObjectField(videoStream, ['IsAVC', 'isAVC', 'IsAvc', 'isAvc']);
+        var requireAvc = getFirstQueryParameterValue(url, ['RequireAvc', 'requireAvc', 'requireavc']);
+        if (sourceVideoCodec === 'h264'
+            && isExplicitFalsePlaybackQueryValue(isAvc)
+            && isTruthyPlaybackQueryValue(requireAvc)) {
+            return true;
+        }
+
+        var container = mediaSource.Container || mediaSource.container || '';
+        if (sourceVideoCodec === 'h264'
+            && container.toString().toLowerCase() === 'avi'
+            && !isTruthyPlaybackQueryValue(isAvc)) {
+            return true;
+        }
+
+        return false;
     }
 
     function isImplicitVideoStreamCopy(mediaSource, url) {
@@ -775,8 +864,10 @@
             return false;
         }
 
+        var videoStream = getMediaSourceVideoStream(mediaSource);
         var sourceVideoCodec = getMediaSourceVideoCodec(mediaSource);
-        if (!sourceVideoCodec) {
+        if (!videoStream || !sourceVideoCodec
+            || hasStreamCopyBlockingRequest(mediaSource, videoStream, sourceVideoCodec, url)) {
             return false;
         }
 
