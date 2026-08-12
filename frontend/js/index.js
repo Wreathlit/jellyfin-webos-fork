@@ -64,12 +64,32 @@ function waitForDeviceInfo(callback) {
     deviceInfoCallbacks.push(callback);
 }
 
+function updateFrameDeviceInfo(info) {
+    // A deviceInfo callback that lands after the 5s fallback already injected
+    // an empty window.DeviceInfo into the frame: re-inject the real one so the
+    // session does not run with degraded capability data. The injected runtime
+    // has to read window.DeviceInfo at use time for this to be worth anything —
+    // it is bound as an argument when the bundle runs, so a plain reassignment
+    // is invisible to anything that captured it. See getLiveDeviceInfo() in
+    // webOS.js.
+    try {
+        var contentFrame = document.querySelector('#contentFrame');
+        var contentDocument = contentFrame && contentFrame.contentDocument;
+        if (contentDocument && contentDocument.head) {
+            injectScriptText(contentDocument, 'window.DeviceInfo = ' + JSON.stringify(info) + ';');
+        }
+    } catch (error) {
+        // Ignore cross-origin or detached document errors.
+    }
+}
+
 function completeDeviceInfo(info) {
     deviceInfo = info && typeof info === 'object' ? info : {};
 
     // A real callback may arrive after the fallback fired. Keep the newer
     // information for future handoffs, but only flush the waiters once.
     if (deviceInfoReady) {
+        updateFrameDeviceInfo(deviceInfo);
         return;
     }
 
@@ -685,7 +705,20 @@ function getHandoffUrlOrigin(value) {
     if (!parsed.protocol || !parsed.host) {
         return '';
     }
-    return parsed.protocol + '//' + parsed.host;
+
+    // MessageEvent.origin follows WHATWG origin serialization, which omits
+    // default ports ('https://host:443' -> 'https://host'), while anchor.host
+    // preserves an explicit ':443'/':80'. Normalize here so the origin stored
+    // at setActiveHandoffMessageAuthorization matches the frame's event.origin
+    // even when the saved server URL spells out the default port.
+    var host = parsed.host;
+    if (parsed.protocol === 'https:' && host.slice(-4) === ':443') {
+        host = host.slice(0, -4);
+    } else if (parsed.protocol === 'http:' && host.slice(-3) === ':80') {
+        host = host.slice(0, -3);
+    }
+
+    return parsed.protocol + '//' + host;
 }
 
 function createHandoffMessageToken() {
@@ -1067,13 +1100,15 @@ function handoff(url, bundle, expectedServerId) {
 
     // In the case of "loading" and "interactive" are not caught
     contentFrame.addEventListener('load', onFrameLoad);
-    scheduleInjectionFailureTimer("Failed to load Jellyfin Web in the webOS frame. The server did not finish loading in time.");
 
     waitForDeviceInfo(function () {
         if (handoffCleanedUp) {
             return;
         }
         frameNavigationStarted = true;
+        // Arm the injection failure timer from navigation start so the 45s
+        // budget is not shortened by the device-info wait above.
+        scheduleInjectionFailureTimer("Failed to load Jellyfin Web in the webOS frame. The server did not finish loading in time.");
         addUnloadListener();
         contentFrame.style.display = '';
         contentFrame.src = url;

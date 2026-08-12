@@ -10,6 +10,15 @@
         return parsed;
     }
 
+    function parseStrictInteger(value) {
+        // Reject partial parses like '3abc' or '3.5' that parseInt would accept.
+        if (value === null || value === undefined || value === '') {
+            return NaN;
+        }
+        var text = value.toString();
+        return /^\d+$/.test(text) ? parseInt(text, 10) : NaN;
+    }
+
     function normalizeDynamicRangeText(value) {
         if (!value || typeof value !== 'string') {
             return '';
@@ -813,11 +822,11 @@
             return true;
         }
 
-        var subtitleStreamIndex = parseInt(getFirstQueryParameterValue(url, [
+        var subtitleStreamIndex = parseStrictInteger(getFirstQueryParameterValue(url, [
             'SubtitleStreamIndex',
             'subtitleStreamIndex',
             'subtitlestreamindex'
-        ]), 10);
+        ]));
         var subtitleMethod = getFirstQueryParameterValue(url, [
             'SubtitleMethod',
             'subtitleMethod',

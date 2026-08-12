@@ -407,6 +407,10 @@ function videoTranscodeSource(subtitleStreams) {
 }
 
 {
+    // A server that does not announce the flag cannot burn the subtitle in
+    // either: 10.9 and older have no AlwaysBurnInSubtitleWhenTranscoding at
+    // all. Forcing Encode from the client setting alone would leave no
+    // subtitle at all, so the response has to gate the patch.
     const payload = burnInPayload({
         Id: 'source-1',
         TranscodingUrl: '/videos/abc/master.m3u8?VideoCodec=h264&SubtitleStreamIndex=3',
@@ -417,7 +421,7 @@ function videoTranscodeSource(subtitleStreams) {
 
     assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {
         alwaysBurnInSubtitleWhenTranscoding: true
-    }), false, 'the response URL must gate the patch');
+    }), false, 'the client setting must not stand in for a server that never burns in');
     assert.strictEqual(payload.MediaSources[0].MediaStreams[0].DeliveryMethod, 'External');
 }
 
@@ -508,9 +512,11 @@ function videoTranscodeSource(subtitleStreams) {
     const payload = { MediaSources: [enabledSource, disabledSource] };
 
     assert.strictEqual(patches.hasAlwaysBurnInSubtitleTranscodingUrl(payload), true);
-    assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {}), true);
+    assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {
+        alwaysBurnInSubtitleWhenTranscoding: true
+    }), true);
     assert.strictEqual(enabledSource.MediaStreams[0].DeliveryMethod, 'Encode', 'the enabled media source should be corrected');
-    assert.strictEqual(disabledSource.MediaStreams[0].DeliveryMethod, 'External', 'a sibling source without the response flag must be untouched');
+    assert.strictEqual(disabledSource.MediaStreams[0].DeliveryMethod, 'External', 'the decision stays per media source, never payload-wide');
 }
 
 assert.strictEqual(patches.patchBurnedInSubtitleDelivery(null, {}), false);

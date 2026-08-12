@@ -64,6 +64,18 @@ assert(patches, 'subtitles.scriptPatches should register');
         patches.detectPgsRendererBackend('var renderer = new PgsRenderer(options);', '/web/chunk.js'),
         patches.PGS_BACKEND_UNKNOWN
     );
+    // Content markers beat URL hints: a libpgs bundle served from a
+    // 'libbitsub'-named URL must classify as libpgs.
+    assert.strictEqual(
+        patches.detectPgsRendererBackend('createPgsRenderer();getRendererModeByPlatform();', '/web/libbitsub.abc123.js'),
+        patches.PGS_BACKEND_LIBPGS
+    );
+    // A real libbitsub bundle keeps winning even when compat shims carry
+    // incidental libpgs-shaped strings.
+    assert.strictEqual(
+        patches.detectPgsRendererBackend('WORKER_FALLBACK;emitEvent({type:"worker-state"});createPgsRenderer();getRendererModeByPlatform();', '/web/libbitsub.abc123.js'),
+        patches.PGS_BACKEND_LIBBITSUB
+    );
     assert.strictEqual(
         patches.detectPgsRendererBackend('replace libpgs with libbitsub', '/web/migration.js'),
         patches.PGS_BACKEND_UNKNOWN

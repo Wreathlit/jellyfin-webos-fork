@@ -76,22 +76,39 @@ Approach:
 
 - add extra high bitrate menu entries: `120 Mbps`, `100 Mbps`, `95 Mbps`, and `80 Mbps`;
 - force PlaybackInfo `MaxStreamingBitrate` / `maxStreamingBitrate` in both URL
-  query strings and request bodies only during the short playback-start window;
-- clear that startup force as soon as the user selects a quality value, and
-  preserve lower bitrate values on later PlaybackInfo requests;
+  query strings and request bodies, on every request from a user who has never
+  picked a quality — playback start and mid-session renegotiations like track
+  switches alike;
+- read that condition from the setting itself rather than inferring it from the
+  requested bitrate. Jellyfin Web writes
+  `enableautobitratebitrate-Video-<isInNetwork>` from one place only,
+  `playbackManager.setMaxStreamingBitrate`, so the key is absent until the user
+  picks something and then records `true` for `Auto` or `false` for a concrete
+  bitrate. Automatic detection rewrites `maxbitrate-*` by itself, so the
+  requested bitrate carries no intent and must not be used as a proxy — an
+  earlier version compared it against a hardcoded 60 Mbps "default", which both
+  overrode users who had deliberately chosen 60 Mbps and went silently inert
+  whenever bandwidth detection happened to return anything else;
+- treat any in-session selection as a pick immediately, ahead of Jellyfin Web
+  persisting it, so requests issued in between are not forced;
 - raise device profile `MaxStreamingBitrate` and `MaxStaticBitrate` to the
   highest local bitrate option so direct play is not rejected by the profile's
-  static bitrate cap;
-- arm that force window from explicit playback-start signals and from new
-  PlaybackInfo item ids for diagnostics and compatibility with older traces;
+  static bitrate cap. This stays unconditional: the server's
+  `MediaOptions.GetMaxBitrate` returns the request's `MaxBitrate` before it ever
+  consults either profile field, so a raised ceiling cannot outgrow an explicit
+  user selection, while leaving Jellyfin Web's hardcoded `MaxStaticBitrate` in
+  place is what rejects a high bitrate remux for direct play;
+- keep arming the playback-start window from explicit playback-start signals and
+  from new PlaybackInfo item ids. It no longer gates the bitrate force; it now
+  only guards the per-item re-arm and marks scripts worth fetching
+  speculatively before a renderer bundle has been classified;
 - patch only bitrate-shaped menu items inside the action-sheet scroller to avoid
   false positives;
 - keep the quality-menu observer active so late-created action sheets are still
   patched.
 
-Status: active workaround. The startup window must remain armed before
-`PLAYING`, but it must not become a permanent minimum: explicit quality changes
-made by the user take precedence.
+Status: active workaround. The force must never become a permanent minimum:
+any quality the user has actually chosen, `Auto` included, takes precedence.
 
 ### Audio-only transcode with client-rendered subtitles
 
@@ -151,12 +168,24 @@ client-side as well. Upstream compensates inside
 `Encode` when `TranscodingInfo.IsVideoDirect` is false, but that lookup races
 playback start and frequently misses on webOS.
 
-Approach: when the setting is enabled and the PlaybackInfo response shows a real
-video encode (not DirectPlay, DirectStream, explicit `VideoCodec=copy`, or an
-inferred video-copy path), rewrite the `External`/`Hls` subtitle streams of that
-media source to `Encode`. This is the
+Approach: when the media source's own `TranscodingUrl` says the server is going
+to burn the subtitle in, and the PlaybackInfo response shows a real video encode
+(not DirectPlay, DirectStream, explicit `VideoCodec=copy`, or an inferred
+video-copy path), rewrite the `External`/`Hls` subtitle streams of that media
+source to `Encode`. This is the
 same decision upstream makes from `IsVideoDirect`, taken from the payload
-instead of session state, so it cannot race. Audio-only transcode and direct
+instead of session state, so it cannot race.
+
+The gate is the server's own announcement, not the client setting: since 10.10
+`MediaInfoHelper` appends `&alwaysBurnInSubtitleWhenTranscoding=true` to each
+`TranscodingUrl` it builds under `if (streamInfo.AlwaysBurnInSubtitleWhenTranscoding)`.
+Do not add a localStorage fallback for servers that do not send it. 10.9 and
+older have no `AlwaysBurnInSubtitleWhenTranscoding` at all — the property is
+absent from `MediaOptions` — so they never burn the subtitle in and there is
+nothing to de-duplicate. On those servers forcing `Encode` from the client
+setting would drop the client-side render with nothing burned in behind it, and
+the subtitle would disappear entirely. Only a server that announces the flag can
+produce the duplicate. Audio-only transcode and direct
 play are untouched and keep client-side ASS/PGS rendering. Jellyfin 10.11 does
 not always serialize an eventual video copy as `VideoCodec=copy`: its HLS URL
 normally carries the target codec list, and `EncodingHelper` selects `copy`
@@ -298,6 +327,14 @@ Approach:
 
 - wait for `webOS.deviceInfo()` before assigning the Jellyfin Web iframe URL,
   but continue with conservative defaults after a bounded timeout;
+- re-inject `window.DeviceInfo` if the real callback lands after that timeout,
+  and read it back through `getLiveDeviceInfo()` in the injected runtime rather
+  than the value bound when the bundle ran. Both halves are required: the bundle
+  receives `DeviceInfo` as an IIFE argument, so a shell-side reassignment on its
+  own is invisible to everything that captured it. Capability data is consumed
+  at playback start, which is normally late enough for the late answer to count;
+- arm the injection failure timeout from navigation start rather than from
+  handoff entry, so the device-info wait does not eat into its budget;
 - accept shell-control messages only from the iframe origin and per-document
   bridge token established by the current handoff, and invalidate both on
   document unload or handoff cleanup;
@@ -475,6 +512,14 @@ renderer scripts before applying PGS rewrites, removes these now-inapplicable
 switches, and does not attempt to patch `libbitsub` pending real-device testing
 of the final Jellyfin 12 build. ASS rewriting remains independent and can still
 apply when both subtitle implementations share a bundle.
+
+Backend classification prefers bundle content over the script URL, because a
+hashed or mislabeled filename must not outrank the code actually loaded, and it
+latches: once `libbitsub` is confirmed from content, an incidental `libpgs`
+marker in some other bundle cannot flip it back. A URL-hint-only classification
+is provisional and the same script's fetched content may still correct it — so
+content that merely *confirms* the current backend has to promote the hint to
+confirmed, otherwise the latch never closes and stays overridable forever.
 
 ### Playback diagnostics overlay
 

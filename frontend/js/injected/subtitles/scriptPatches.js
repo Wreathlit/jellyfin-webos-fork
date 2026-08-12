@@ -39,11 +39,14 @@
         var clamped = false;
 
         // Extrapolation is valid only across consecutive playing samples. A
-        // pause transition is an authoritative clock stop, not a small rollback.
+        // pause transition is an authoritative clock stop, not a small rollback,
+        // and a sample that carries a rate change spans a non-uniform interval
+        // (part old rate, part new), so its extrapolated clock is unreliable.
         if (hasCurrentTime
             && options.enabled
             && entry.lastPostedPaused === false
             && nextPaused === false
+            && !(hasRate && nextRate !== entry.lastPostedRate)
             && typeof predictedTime === 'number'
             && nextCurrentTime + tolerance < predictedTime) {
             var backwardsBy = predictedTime - nextCurrentTime;
@@ -77,19 +80,29 @@
         var source = typeof text === 'string' ? text : '';
         var normalizedUrl = typeof url === 'string' ? url.toLowerCase() : '';
 
-        // Check strong libbitsub signatures first. A bare library name is not
-        // enough because migration notes can mention both old and new backends.
-        if (normalizedUrl.indexOf('libbitsub') !== -1
-            || source.indexOf('[libbitsub]') !== -1
-            || containsAll(source, ['WORKER_FALLBACK', 'worker-state'])
-            || containsAll(source, ['beginPgs', 'appendPgs', 'finishPgs'])) {
-            return PGS_BACKEND_LIBBITSUB;
+        // Actual bundle content is the strongest signal; check strong
+        // libbitsub signatures first. A bare library name is not enough
+        // because migration notes can mention both old and new backends.
+        // URL hints only fill the gap when the content has no recognizable
+        // markers, so a mislabeled script URL cannot misclassify the renderer
+        // the bundle actually contains.
+        if (source) {
+            if (source.indexOf('[libbitsub]') !== -1
+                || containsAll(source, ['WORKER_FALLBACK', 'worker-state'])
+                || containsAll(source, ['beginPgs', 'appendPgs', 'finishPgs'])) {
+                return PGS_BACKEND_LIBBITSUB;
+            }
+            if (containsAll(source, ['createPgsRenderer', 'getRendererModeByPlatform'])
+                || containsAll(source, ['getPixelDataFromComposition', 'isFirstInSequence'])
+                || containsAll(source, ['requestSubtitleData', 'getSubtitleAtIndex'])) {
+                return PGS_BACKEND_LIBPGS;
+            }
         }
 
-        if (normalizedUrl.indexOf('libpgs') !== -1
-            || containsAll(source, ['createPgsRenderer', 'getRendererModeByPlatform'])
-            || containsAll(source, ['getPixelDataFromComposition', 'isFirstInSequence'])
-            || containsAll(source, ['requestSubtitleData', 'getSubtitleAtIndex'])) {
+        if (normalizedUrl.indexOf('libbitsub') !== -1) {
+            return PGS_BACKEND_LIBBITSUB;
+        }
+        if (normalizedUrl.indexOf('libpgs') !== -1) {
             return PGS_BACKEND_LIBPGS;
         }
 

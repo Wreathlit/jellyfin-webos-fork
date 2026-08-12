@@ -237,6 +237,13 @@ assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
 }), 'transcode', 'a subtitle encode request requires a real video encode');
 assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
     PlayMethod: 'Transcode',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc&AudioCodec=aac&SubtitleStreamIndex=3abc&SubtitleMethod=Encode&TranscodeReasons=AudioCodecNotSupported',
+    MediaStreams: [
+        { Type: 'Video', Codec: 'hevc' }
+    ]
+}), 'copy', 'a malformed SubtitleStreamIndex must not block implicit video stream copy');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
     Container: 'avi',
     TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=h264&AudioCodec=aac&TranscodeReasons=ContainerNotSupported',
     MediaStreams: [

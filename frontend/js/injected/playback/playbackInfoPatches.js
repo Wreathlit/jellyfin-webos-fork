@@ -348,10 +348,21 @@
         // External, so Jellyfin Web renders a second copy on top. Upstream
         // compensates in htmlVideoPlayer.setCurrentTrackElement by re-reading
         // the session and forcing Encode when TranscodingInfo says the video is
-        // not direct, but that lookup races playback start on webOS. Jellyfin
-        // 10.11 copies the request flag into each applicable TranscodingUrl.
-        // Reading that response fact avoids racing a later settings change and
-        // keeps the decision local to the media source it actually describes.
+        // not direct, but that lookup races playback start on webOS.
+        //
+        // The response says so itself: since 10.10, MediaInfoHelper appends
+        // `&alwaysBurnInSubtitleWhenTranscoding=true` to every TranscodingUrl
+        // it builds under `if (streamInfo.AlwaysBurnInSubtitleWhenTranscoding)`.
+        // Reading that avoids racing a later settings change and keeps the
+        // decision local to the media source it actually describes.
+        //
+        // Do not add a localStorage fallback for servers that do not echo it.
+        // 10.9 and older have no AlwaysBurnInSubtitleWhenTranscoding at all
+        // (the property is absent from MediaOptions), so they never burn the
+        // subtitle in and there is nothing to de-duplicate; forcing Encode
+        // there would drop the client-side render and leave no subtitle at all.
+        // The only servers that can produce the duplicate are the ones that
+        // announce it here.
 
         var mediaSources = getMediaSources(payload);
         var patchedStreams = 0;

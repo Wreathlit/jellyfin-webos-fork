@@ -135,6 +135,12 @@
     var qualityMenuObserverActive = false;
     var qualityMenuPatchTimer = null;
     var QUALITY_MENU_EXTRA_BITRATES = [120000000, 100000000, 95000000, 80000000];
+    // Jellyfin Web's appSettings key for "did the user pick a quality", one per
+    // network context. The doubled word is upstream's spelling, not a typo here.
+    var QUALITY_SELECTION_SETTING_KEYS = [
+        'enableautobitratebitrate-Video-true',
+        'enableautobitratebitrate-Video-false'
+    ];
     var QUALITY_MENU_LEGACY_CAP_BITRATE = 60000000;
     var PLAYBACK_INFO_MAX_BITRATE_PARAM = 'MaxStreamingBitrate';
     var PLAYBACK_START_MAX_BITRATE_FORCE_WINDOW_MS = 15000;
@@ -142,6 +148,10 @@
     var forcePlaybackStartMaxBitrateUntil = 0;
     var forcePlaybackStartMaxBitrateRequestsLeft = 0;
     var lastPlaybackInfoMaxBitrateItemId = null;
+    // Set as soon as the user explicitly picks any quality value (including
+    // 'Auto') in the current session, before Jellyfin Web has persisted it.
+    // From the next app start hasStoredPlaybackQualitySelection() carries it.
+    var userSelectedPlaybackQualityInSession = false;
     var settingsInjectionObserver = null;
     var settingsInjectionObserverActive = false;
     var settingsEnsureTimer = null;
@@ -317,6 +327,10 @@
     var pgsScriptModePatchCount = 0;
     var pgsScriptLastPatchInfo = 'none';
     var pgsRendererBackend = 'unknown';
+    // How the current backend was classified: 'url' (script URL hint before the
+    // content was fetched) or 'text' (actual bundle content). A URL-hint-only
+    // libbitsub latch may be corrected by the fetched content.
+    var pgsRendererBackendSource = '';
     var pgsTimeSampleDisplayCount = 0;
     var pgsTimeClampCount = 0;
     var pgsTimeLastClampInfo = 'none';
@@ -475,6 +489,11 @@
     }
 
     function shouldForcePlaybackStartMaxBitrate() {
+        // This window no longer gates the bitrate force itself — see
+        // shouldForcePlaybackMaxBitrate(), which reads the user's quality
+        // selection instead. What is left is a "playback is starting up" signal:
+        // it guards the per-item re-arm and tells the script interceptor that an
+        // early, not-yet-classified bundle is worth fetching speculatively.
         if (!forcePlaybackStartMaxBitrateUntil || forcePlaybackStartMaxBitrateRequestsLeft <= 0) {
             return false;
         }
@@ -2118,18 +2137,35 @@
         }
     }
 
-    function setPgsRendererBackend(backend, reason) {
-        if (!backend || backend === 'unknown' || backend === pgsRendererBackend) {
+    function setPgsRendererBackend(backend, reason, source) {
+        if (!backend || backend === 'unknown') {
             return;
         }
 
-        // libbitsub is the Jellyfin 12 replacement. Once positively detected it
-        // wins over a stale or incidental libpgs marker in another bundle.
-        if (pgsRendererBackend === 'libbitsub' && backend !== 'libbitsub') {
+        var normalizedSource = source === 'url' ? 'url' : 'text';
+        if (backend === pgsRendererBackend) {
+            // Content that confirms the current backend hardens a URL-hint-only
+            // classification. Without this the marker would stay 'url' forever
+            // and keep the escape hatch below open, so an incidental libpgs
+            // marker in some later bundle could still flip a confirmed
+            // libbitsub away.
+            if (pgsRendererBackendSource === 'url' && normalizedSource === 'text') {
+                pgsRendererBackendSource = 'text';
+            }
+            return;
+        }
+
+        // libbitsub is the Jellyfin 12 replacement. Once positively detected
+        // from bundle content it wins over a stale or incidental libpgs marker
+        // in another bundle. A URL-hint-only classification may still be
+        // corrected by the fetched content of the same script.
+        if (pgsRendererBackend === 'libbitsub' && backend !== 'libbitsub'
+            && !(pgsRendererBackendSource === 'url' && normalizedSource === 'text')) {
             return;
         }
 
         pgsRendererBackend = backend;
+        pgsRendererBackendSource = normalizedSource;
         debugLog('Detected PGS renderer backend:', backend, reason || 'script');
 
         if (!shouldShowLegacyPgsFeatures()) {
@@ -2153,7 +2189,7 @@
             return text;
         }
 
-        setPgsRendererBackend(result.pgsBackend, url || 'inline script');
+        setPgsRendererBackend(result.pgsBackend, url || 'inline script', 'text');
 
         if (result.ass && result.ass.patched) {
             assScriptPatchCount++;
@@ -2461,7 +2497,7 @@
         var src = script.src || script.getAttribute('src');
         var patches = getSubtitleScriptPatches();
         if (patches && patches.detectPgsRendererBackend) {
-            setPgsRendererBackend(patches.detectPgsRendererBackend('', src), src);
+            setPgsRendererBackend(patches.detectPgsRendererBackend('', src), src, 'url');
         }
         var speculative = !isLikelySubtitleRendererScriptUrl(src)
             && playbackState !== PlaybackState.PLAYING
@@ -3091,10 +3127,15 @@
             var select = selects[i];
             if (select.getAttribute('data-webos-quality-change-hooked') !== 'true') {
                 select.addEventListener('change', function () {
+                    // Any explicit quality selection ends the force, including
+                    // 'Auto' (not an integer). Jellyfin Web persists the same
+                    // fact a moment later; this latch just makes it effective
+                    // for requests that go out before the write lands.
+                    userSelectedPlaybackQualityInSession = true;
                     var selectedBitrate = parsePositiveInteger(this.value);
-                    if (selectedBitrate) {
-                        clearPlaybackStartMaxBitrateForce('manual-native-quality-' + selectedBitrate);
-                    }
+                    clearPlaybackStartMaxBitrateForce(selectedBitrate
+                        ? 'manual-native-quality-' + selectedBitrate
+                        : 'manual-native-quality-auto');
                 });
                 select.setAttribute('data-webos-quality-change-hooked', 'true');
             }
@@ -3841,9 +3882,16 @@
                     && (!item.classList || !item.classList.contains('actionSheetMenuItem'))) {
                     item = item.parentNode;
                 }
-                var selectedBitrate = item && item !== dialog ? getMenuItemBitrate(item) : 0;
-                if (selectedBitrate) {
-                    clearPlaybackStartMaxBitrateForce('manual-action-sheet-quality-' + selectedBitrate);
+                var selectedItem = item && item !== dialog ? item : null;
+                if (selectedItem) {
+                    // Any explicit quality selection ends the force, including
+                    // 'Auto'. This runs in the capture phase, ahead of Jellyfin
+                    // Web persisting the same fact.
+                    userSelectedPlaybackQualityInSession = true;
+                    var selectedBitrate = getMenuItemBitrate(selectedItem);
+                    clearPlaybackStartMaxBitrateForce(selectedBitrate
+                        ? 'manual-action-sheet-quality-' + selectedBitrate
+                        : 'manual-action-sheet-quality-auto');
                 }
             }, true);
             dialog.setAttribute('data-webos-quality-click-hooked', 'true');
@@ -4497,6 +4545,43 @@
         return clone;
     }
 
+    function hasStoredPlaybackQualitySelection() {
+        // Jellyfin Web writes `enableautobitratebitrate-<mediaType>-<isInNetwork>`
+        // from exactly one place, playbackManager.setMaxStreamingBitrate, which
+        // only runs when the user picks something in the quality menu: 'Auto'
+        // stores 'true', a concrete bitrate stores 'false'. Nothing else writes
+        // it, and the key is absent until the first pick. Automatic detection
+        // rewrites `maxbitrate-*` on its own, so the stored bitrate says nothing
+        // about intent and only this key does.
+        //
+        // The endpoint's IsInNetwork value is not knowable here, so a pick made
+        // in either network context counts as a pick. That errs toward leaving
+        // the user's choice alone, which is the safe direction.
+        try {
+            var storage = window.localStorage;
+            if (!storage) {
+                return false;
+            }
+
+            for (var i = 0; i < QUALITY_SELECTION_SETTING_KEYS.length; i++) {
+                if (storage.getItem(QUALITY_SELECTION_SETTING_KEYS[i]) !== null) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (error) {
+            debugLog('Failed to read Jellyfin quality selection setting:', error && error.message ? error.message : error);
+            return false;
+        }
+    }
+
+    function shouldForcePlaybackMaxBitrate() {
+        // The fork only supplies a ceiling for users who have never expressed a
+        // preference. Any expressed preference wins, including 'Auto', because
+        // 'Auto' means "detect my bandwidth", not "no opinion".
+        return !userSelectedPlaybackQualityInSession && !hasStoredPlaybackQualitySelection();
+    }
+
     function enforcePlaybackInfoMaxBitrateUrl(url, source) {
         var patches = getPlaybackInfoPatches();
         if (!patches || !patches.enforceMaxBitrateUrl || !patches.isPlaybackInfoUrl || !patches.isPlaybackInfoUrl(url)) {
@@ -4511,13 +4596,17 @@
             && playbackInfoItemId
             && playbackInfoItemId !== currentMediaSessionItemId
             && playbackInfoItemId !== lastPlaybackInfoMaxBitrateItemId) {
+            // Record only when the re-arm fires: a speculative PlaybackInfo for
+            // the next item (prefetch) must not mark that item as already
+            // handled, or its startup force would never fire.
+            lastPlaybackInfoMaxBitrateItemId = playbackInfoItemId;
             startPlaybackStartMaxBitrateForce('playbackinfo-item-change-' + source);
         }
-        if (playbackInfoItemId) {
-            lastPlaybackInfoMaxBitrateItemId = playbackInfoItemId;
-        }
 
-        var shouldForce = shouldForcePlaybackStartMaxBitrate();
+        // Every request from a user who has never picked a quality gets the
+        // ceiling raised, whether it is playback start or a mid-session
+        // renegotiation like a track switch. A picked quality is left alone.
+        var shouldForce = shouldForcePlaybackMaxBitrate();
         var minimumBitrate = shouldForce ? getHighestKnownBitrateOption() : 0;
         var patched = patches.enforceMaxBitrateUrl(url, minimumBitrate, PLAYBACK_INFO_MAX_BITRATE_PARAM);
         if (shouldForce) {
@@ -5038,10 +5127,16 @@
             return false;
         }
 
-        var burnInEnabled = patches.hasAlwaysBurnInSubtitleTranscodingUrl
+        // The returned TranscodingUrl is the only honest signal here: a server
+        // that can burn the subtitle in announces it (10.10+ MediaInfoHelper
+        // appends `&alwaysBurnInSubtitleWhenTranscoding=true`), and a server
+        // that does not announce it cannot burn it in either, so there is
+        // nothing to de-duplicate. Reading the localStorage setting instead
+        // would force Encode on those servers and leave no subtitle at all.
+        var burnInFromResponse = patches.hasAlwaysBurnInSubtitleTranscodingUrl
             ? patches.hasAlwaysBurnInSubtitleTranscodingUrl(payload)
             : false;
-        if (!burnInEnabled) {
+        if (!burnInFromResponse) {
             subtitleBurnInFixDiagnostic = 'off';
             return false;
         }
@@ -5602,6 +5697,20 @@
         hdrUiInfoObserver.setEnabled(shouldUseHdrUiInfoObserver());
     }
 
+    function getLiveDeviceInfo() {
+        // `deviceInfo` is bound once, when the shell invokes this bundle. If
+        // webOS.deviceInfo() misses the shell's 5s wait, the shell continues
+        // with an empty object and re-injects `window.DeviceInfo` when the real
+        // callback lands. Read the global so a late answer is still picked up:
+        // capability data is only consumed at playback start, which is almost
+        // always later than that.
+        var live = window.DeviceInfo;
+        if (live && typeof live === 'object') {
+            return live;
+        }
+        return deviceInfo || null;
+    }
+
     function applyPlaybackCompatibilityProfilePatches(profile) {
         if (!profile || typeof profile !== 'object') {
             return profile;
@@ -5613,6 +5722,13 @@
         }
 
         return webOSProfilePatches.applyPlaybackCompatibilityProfilePatches(profile, {
+            // The profile bitrate fields are a ceiling, not a request: the
+            // server's MediaOptions.GetMaxBitrate returns the request's
+            // MaxBitrate before it ever looks at MaxStreamingBitrate or
+            // MaxStaticBitrate, so raising them here cannot outgrow an explicit
+            // user selection. Leaving them alone does hurt, because Jellyfin
+            // Web hardcodes MaxStaticBitrate and that cap is what rejects a
+            // high bitrate remux for direct play. Raise unconditionally.
             maxBitrate: getHighestKnownBitrateOption(),
             lpcmAudioCopyEnabled: lpcmAudioCopyEnabled,
             subtitleBurnInMode: getNativeSubtitleBurnInMode(),
@@ -5696,13 +5812,14 @@
 
             getDeviceProfile: function (profileBuilder) {
                 postMessage('AppHost.getDeviceProfile');
+                var info = getLiveDeviceInfo();
                 var profile = profileBuilder({
                     enableMkvProgressive: false,
                     enableSsaRender: true,
                     supportsDts: null,
-                    supportsDolbyAtmos: deviceInfo ? deviceInfo.dolbyAtmos : null,
-                    supportsDolbyVision: deviceInfo ? deviceInfo.dolbyVision : null,
-                    supportsHdr10: deviceInfo ? deviceInfo.hdr10 : null
+                    supportsDolbyAtmos: info ? info.dolbyAtmos : null,
+                    supportsDolbyVision: info ? info.dolbyVision : null,
+                    supportsHdr10: info ? info.hdr10 : null
                 });
 
                 return applyPlaybackCompatibilityProfilePatches(profile);
@@ -5725,9 +5842,10 @@
             },
 
             screen: function () {
-                return deviceInfo ? {
-                    width: deviceInfo.screenWidth,
-                    height: deviceInfo.screenHeight
+                var info = getLiveDeviceInfo();
+                return info ? {
+                    width: info.screenWidth,
+                    height: info.screenHeight
                 } : null;
             }
         },

@@ -282,14 +282,55 @@ function sendShellMessage(shell, origin, token, type, data) {
 }
 
 {
+    // The 5s fallback injects an empty DeviceInfo. A real answer arriving after
+    // that must reach the already-running frame, otherwise the whole session
+    // reports no HDR10/Dolby Vision/Atmos support.
+    const shell = loadShell();
+    const trustedUrl = 'https://trusted.example/web/index.html';
+
+    shell.getDeviceInfoCallback()({});
+    shell.context.handoff(trustedUrl, { js: '', css: '' }, 'server-id');
+
+    const contentDocument = createContentDocument(trustedUrl);
+    shell.setContentDocument(contentDocument);
+    shell.contentFrame.dispatchTestEvent('load');
+
+    const prefix = 'window.DeviceInfo = ';
+    const injectedBefore = contentDocument.injectedScripts.filter(function (script) {
+        return script.indexOf(prefix) === 0;
+    });
+    assert.strictEqual(injectedBefore.length, 1, 'the handoff injects DeviceInfo once');
+    assert.deepStrictEqual(JSON.parse(injectedBefore[0].slice(prefix.length, -1)), {});
+
+    shell.getDeviceInfoCallback()({ hdr10: true, dolbyVision: true });
+
+    const injectedAfter = contentDocument.injectedScripts.filter(function (script) {
+        return script.indexOf(prefix) === 0;
+    });
+    assert.strictEqual(injectedAfter.length, 2, 'a late device callback should re-inject DeviceInfo');
+    assert.deepStrictEqual(
+        JSON.parse(injectedAfter[1].slice(prefix.length, -1)),
+        { hdr10: true, dolbyVision: true },
+        'the re-injected value should carry the real capabilities'
+    );
+}
+
+{
     const shell = loadShell();
 
     shell.context.handoff('https://trusted.example/web/index.html', { js: '', css: '' }, 'server-id');
 
+    assert(!shell.timers.some(function (timer) {
+        return timer.delay === 45000;
+    }), 'the injection timeout must not consume its budget while device info is pending');
+    assert.strictEqual(shell.contentFrame.src, '', 'navigation should still wait for device info');
+
+    shell.getDeviceInfoCallback()({ hdr10: true });
+
     assert(shell.timers.some(function (timer) {
         return timer.delay === 45000;
-    }), 'the total handoff timeout should start before device info is ready');
-    assert.strictEqual(shell.contentFrame.src, '', 'navigation should still wait for device info');
+    }), 'the total handoff timeout should be armed from navigation start, not handoff entry');
+    assert.strictEqual(shell.contentFrame.src, 'https://trusted.example/web/index.html');
 }
 
 {

@@ -178,3 +178,37 @@ function applyVideoTimeMessage(entry, message, now) {
     assert.strictEqual(nextSample.clamped, false);
     assert.strictEqual(entry.lastPostedCurrentTime, 10.2);
 }
+
+{
+    const entry = {
+        lastPostedCurrentTime: 10,
+        lastPostedAt: 0,
+        lastPostedPaused: false,
+        lastPostedRate: 2
+    };
+    const result = timeSync.evaluateVideoTimeSample(entry, {
+        currentTime: 10.1,
+        isPaused: false,
+        rate: 1
+    }, 100, options);
+
+    assert.strictEqual(result.clamped, false, 'a sample carrying a rate change must not be clamped across the non-uniform interval');
+    assert.strictEqual(result.currentTime, 10.1);
+}
+
+{
+    const entry = {
+        lastPostedCurrentTime: 10,
+        lastPostedAt: 0,
+        lastPostedPaused: false,
+        lastPostedRate: 2
+    };
+    const result = timeSync.evaluateVideoTimeSample(entry, {
+        currentTime: 10.05,
+        isPaused: false,
+        rate: 2
+    }, 100, options);
+
+    assert.strictEqual(result.clamped, true, 'a re-posted unchanged rate must not defeat the backward clamp');
+    assert.strictEqual(result.currentTime, 10.2);
+}
