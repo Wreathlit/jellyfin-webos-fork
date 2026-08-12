@@ -14,50 +14,39 @@ The main local patch surface is:
 - `frontend/js/webOS.js`
 - `frontend/css/webOS.css`
 
-`frontend/js/injected/` is the behavior-preserving modular runtime used by the
-iframe injection path. Its current `core/features.js` registry owns boolean and
-numeric setting metadata such as storage keys, defaults, ranges, and settings
-text. Boolean feature overrides still use the existing postMessage whitelist;
-HDR brightness and subtitle opacity remain local numeric display settings.
-`playback/profilePatches.js` owns the pure device profile compatibility
-transforms: bitrate caps, known-bad video capability reporting, audio-transcode
-video-copy allowance, subtitle delivery profile reporting, and the optional
-LPCM/PCM DirectPlay audio copy expansion. `webOS.js` keeps the runtime hooks and
-passes the current settings into that module. `playback/playbackInfoPatches.js`
-owns pure PlaybackInfo URL/body bitrate and nested device-profile body patching;
-fetch/XHR interception, playback-start force windows, and diagnostics stay in
-`webOS.js`. `subtitles/scriptPatches.js` owns pure ASS/PGS renderer script text
-replacement and reports which patch families matched; script interception,
-runtime counters, warning policy, and DOM/XHR behavior stay in `webOS.js`.
-The same asset registers a separate `subtitles.assTimeSync` pure module for the
-ASS worker clock-sample decision, so pause/resume transitions and small
-playing-time rollbacks are covered without loading the full injected runtime
-in tests.
-`playback/hdrDecisions.js` owns pure HDR/Dolby Vision and video-delivery
-decisions used by the dimming logic; DOM scanning, playback state, and the
-actual dim class stay in `webOS.js`.
+`frontend/js/injected/` is the modular runtime injected into the iframe. The
+split is uniform: each module owns pure decisions and text transforms, and
+`webOS.js` keeps everything impure — DOM scanning, fetch/XHR and script
+interception, playback state, runtime counters, diagnostics — and passes the
+current settings in. That is also what makes the modules testable without a TV.
+
+- `core/features.js` — boolean and numeric setting metadata: storage keys,
+  defaults, ranges, settings text. Boolean overrides go through the existing
+  postMessage whitelist; HDR brightness and subtitle opacity stay local.
+- `playback/profilePatches.js` — device profile compatibility transforms:
+  bitrate caps, known-bad video capability reporting, audio-transcode video-copy
+  allowance, subtitle delivery profiles, optional LPCM/PCM DirectPlay expansion.
+- `playback/playbackInfoPatches.js` — PlaybackInfo URL/body bitrate and nested
+  device-profile body patching, plus burned-in subtitle de-duplication.
+- `playback/hdrDecisions.js` — HDR/Dolby Vision and video-delivery decisions
+  used by the dimming logic.
+- `subtitles/scriptPatches.js` — ASS/PGS renderer script text replacement, and
+  which patch families matched.
+- `subtitles.assTimeSync` — registered from the same asset; the ASS worker
+  clock-sample decision, split out so it is testable on its own.
 
 ## Why this fork exists
 
-The upstream webOS app is mostly a wrapper around Jellyfin Web. On recent LG
-TVs, several playback behaviors still need webOS-side intervention:
-
-- playback startup can ignore high bitrate intent before the player reaches the
-  normal `PLAYING` state;
-- iframe handoff can race async webOS device information and can lose TV remote
-  focus;
-- Jellyfin Web quality action sheets changed enough that old menu injection can
-  attach to the wrong DOM or not attach at all;
-- pointer-mode clicks can be consumed by TV focus handling before the intended
-  card/button action runs;
-- complex ASS subtitles can stutter or visually jump when webOS reports small
-  backward media-time samples to the subtitle renderer;
-- complex PGS subtitles can flash stale text when libpgs reuses object ids in
-  worker/offscreen paths that this fork cannot safely patch in-place;
-- debugging real-device playback needs an on-screen overlay because DevTools is
-  not always available during TV testing.
+The upstream webOS app is mostly a wrapper around Jellyfin Web, so anything the
+TV gets wrong about playback has to be corrected on the webOS side: bitrate
+intent, device capability handoff, subtitle delivery and rendering, HDR UI
+brightness, pointer and focus behavior. DevTools is not reliably available
+during TV testing, which is why there is an on-screen diagnostics overlay.
 
 ## Local problem log
+
+Each entry records the cause and the reasoning that settled it, including
+approaches that were tried and rejected. Several of those looked correct.
 
 ### Playback bitrate and quality menu
 
@@ -65,11 +54,12 @@ Problem: new playback sessions can fall back to Jellyfin Web's upstream
 `60 Mbps` cap, and the quality action sheet can miss the locally injected
 high-bitrate entries.
 
-Cause: real-device traces showed that Jellyfin Web can issue PlaybackInfo
-requests and create quality action sheets before the webOS adapter reaches the
-normal `PLAYING` / media-session state. Upstream UI changes also made the old
-menu injection too dependent on one action-sheet DOM shape. High-bitrate HDR
-files can also hit the upstream device profile's static-playback bitrate limit
+Cause: Jellyfin Web derives the request bitrate from its own bandwidth
+detection, which underestimates badly on these panels. Upstream UI changes also
+made the old menu injection too dependent on one action-sheet DOM shape, and
+real-device traces showed action sheets being created before the webOS adapter
+reaches the normal `PLAYING` / media-session state. High-bitrate HDR files can
+additionally hit the upstream device profile's static-playback bitrate limit
 even when the PlaybackInfo request bitrate was raised.
 
 Approach:
@@ -79,29 +69,28 @@ Approach:
   query strings and request bodies, on every request from a user who has never
   picked a quality — playback start and mid-session renegotiations like track
   switches alike;
-- read that condition from the setting itself rather than inferring it from the
+- read "has the user picked a quality" from the setting itself, never from the
   requested bitrate. Jellyfin Web writes
   `enableautobitratebitrate-Video-<isInNetwork>` from one place only,
-  `playbackManager.setMaxStreamingBitrate`, so the key is absent until the user
-  picks something and then records `true` for `Auto` or `false` for a concrete
-  bitrate. Automatic detection rewrites `maxbitrate-*` by itself, so the
-  requested bitrate carries no intent and must not be used as a proxy — an
-  earlier version compared it against a hardcoded 60 Mbps "default", which both
-  overrode users who had deliberately chosen 60 Mbps and went silently inert
-  whenever bandwidth detection happened to return anything else;
+  `playbackManager.setMaxStreamingBitrate`, so the key is absent until the first
+  pick and then records `true` for `Auto` or `false` for a concrete bitrate.
+  Bandwidth detection rewrites `maxbitrate-*` on its own, so the requested
+  bitrate carries no intent — inferring one from it, as an earlier version did
+  by comparing against a hardcoded 60 Mbps "default", both overrides users who
+  deliberately chose 60 Mbps and goes silently inert whenever detection returns
+  anything else;
 - treat any in-session selection as a pick immediately, ahead of Jellyfin Web
   persisting it, so requests issued in between are not forced;
 - raise device profile `MaxStreamingBitrate` and `MaxStaticBitrate` to the
-  highest local bitrate option so direct play is not rejected by the profile's
-  static bitrate cap. This stays unconditional: the server's
+  highest local bitrate option, unconditionally. The server's
   `MediaOptions.GetMaxBitrate` returns the request's `MaxBitrate` before it ever
   consults either profile field, so a raised ceiling cannot outgrow an explicit
   user selection, while leaving Jellyfin Web's hardcoded `MaxStaticBitrate` in
   place is what rejects a high bitrate remux for direct play;
-- keep arming the playback-start window from explicit playback-start signals and
-  from new PlaybackInfo item ids. It no longer gates the bitrate force; it now
-  only guards the per-item re-arm and marks scripts worth fetching
-  speculatively before a renderer bundle has been classified;
+- keep arming the playback-start window from playback-start signals and new
+  PlaybackInfo item ids. It no longer gates the force — it now only guards the
+  per-item re-arm and marks scripts worth fetching speculatively before a
+  renderer bundle has been classified;
 - patch only bitrate-shaped menu items inside the action-sheet scroller to avoid
   false positives;
 - keep the quality-menu observer active so late-created action sheets are still
@@ -172,9 +161,9 @@ Approach: when the media source's own `TranscodingUrl` says the server is going
 to burn the subtitle in, and the PlaybackInfo response shows a real video encode
 (not DirectPlay, DirectStream, explicit `VideoCodec=copy`, or an inferred
 video-copy path), rewrite the `External`/`Hls` subtitle streams of that media
-source to `Encode`. This is the
-same decision upstream makes from `IsVideoDirect`, taken from the payload
-instead of session state, so it cannot race.
+source to `Encode`. This is the same decision upstream makes from
+`IsVideoDirect`, taken from the payload instead of session state, so it cannot
+race.
 
 The gate is the server's own announcement, not the client setting: since 10.10
 `MediaInfoHelper` appends `&alwaysBurnInSubtitleWhenTranscoding=true` to each
@@ -185,20 +174,21 @@ absent from `MediaOptions` — so they never burn the subtitle in and there is
 nothing to de-duplicate. On those servers forcing `Encode` from the client
 setting would drop the client-side render with nothing burned in behind it, and
 the subtitle would disappear entirely. Only a server that announces the flag can
-produce the duplicate. Audio-only transcode and direct
-play are untouched and keep client-side ASS/PGS rendering. Jellyfin 10.11 does
-not always serialize an eventual video copy as `VideoCodec=copy`: its HLS URL
-normally carries the target codec list, and `EncodingHelper` selects `copy`
-only when the request begins. The fork therefore recognizes an implicit copy
-only when video stream copy is allowed, every reported reason belongs to
-Jellyfin's `DirectStreamReasons`, and the source video codec appears in that
-target list. It also mirrors the remaining request-time blockers that can still
-prevent the server from copying that source: required AVC framing,
-non-anamorphic output, deinterlacing, subtitle encoding, and non-AVC H264 in an
-AVI container. This prevents an audio-only transcode from being mistaken for a
-video encode and having its only client-rendered subtitle suppressed. The
-device profile remains unchanged so no path is forced into a transcode it did
-not need.
+produce the duplicate.
+
+Audio-only transcode and direct play are untouched and keep client-side ASS/PGS
+rendering, which needs care because the server does not always serialize an
+eventual video copy as `VideoCodec=copy`: the HLS URL normally carries the
+target codec list and `EncodingHelper` selects `copy` only when the request
+begins. The fork therefore recognizes an implicit copy only when video stream
+copy is allowed, every reported reason belongs to Jellyfin's
+`DirectStreamReasons`, and the source video codec appears in that target list.
+It also mirrors the remaining request-time blockers that can still prevent the
+server from copying that source: required AVC framing, non-anamorphic output,
+deinterlacing, subtitle encoding, and non-AVC H264 in an AVI container. This
+prevents an audio-only transcode from being mistaken for a video encode and
+having its only client-rendered subtitle suppressed. The device profile remains
+unchanged so no path is forced into a transcode it did not need.
 
 The correction has to land before Jellyfin Web reads the response, so it runs on
 both transports. On `fetch` the patched payload is handed back as a new
@@ -210,11 +200,8 @@ parsed object itself and is edited in place; a text body cannot be replaced, so
 the instance shadows `responseText`/`response` with the rewritten JSON and the
 shadow is cleared on the next `open()`.
 
-Status: active workaround. This fork still advertises client-renderable subtitle
-profiles and keeps the HEVC/H265 video-copy path. The only PlaybackInfo subtitle
-delivery rewrite left is the burn-in de-duplication described above. PGS
-timing/main-thread/object-reuse fixes are renderer-side patches and are separate
-from server subtitle delivery.
+Status: active workaround. This is the only PlaybackInfo subtitle delivery
+rewrite in the fork.
 
 ### Playback decision boundaries
 
@@ -244,16 +231,11 @@ The playback compatibility patches intentionally keep four decisions separate:
   upstream `subtitleburnin` gating for the subtitle profiles it owns: `all`
   prevents the fork from adding or converting ASS/SSA/PGS External delivery,
   `allcomplexformats` prevents ASS/SSA and PGS External delivery, and
-  `onlyimageformats` prevents PGS External delivery. When
-  `alwaysBurnInSubtitleWhenTranscoding` is enabled the device profile is left
-  alone and only the PlaybackInfo response is corrected, for media sources
-  whose returned transcoding URL carries that request flag and whose response
-  shows a real video encode, so the burned-in subtitle is not rendered a second
-  time. Reading the returned URL instead of current local settings also keeps a
-  later settings change from altering an in-flight response. It does not force
-  `AlwaysBurnInSubtitleWhenTranscoding`, synthesize PlaybackInfo subtitle URLs,
-  delete subtitle burn-in query parameters, or clean up unrelated upstream
-  subtitle profiles.
+  `onlyimageformats` prevents PGS External delivery.
+  `alwaysBurnInSubtitleWhenTranscoding` is handled entirely in the PlaybackInfo
+  response, as described above; the device profile is left alone. The fork never
+  forces that flag, synthesizes PlaybackInfo subtitle URLs, deletes burn-in query
+  parameters, or cleans up unrelated upstream subtitle profiles.
 - HDR/DV UI dimming is applied only when the detected playback range is HDR/DV
   and PlaybackInfo indicates that the video stream is DirectPlay, DirectStream,
   or transcode-with-video-copy (`VideoCodec=copy`). `Static=true` is classified
@@ -281,10 +263,6 @@ Forcing the claim is therefore strictly worse than leaving it alone: instead of
 going straight to a transcode, every 10-bit item pays a failed direct-play
 attempt, a playback error, and a second PlaybackInfo round trip first. Check
 `why=` in the diagnostics overlay before revisiting this.
-
-The diagnostics overlay prints
-`video=directplay|directstream|copy|transcode|unknown` next to `range=...` so HDR
-dimming issues can be separated from codec, audio, and subtitle routing.
 
 ### LPCM/PCM audio copy option
 
@@ -502,10 +480,8 @@ Approach:
   `webOS.js`.
 
 Status: verified workaround. The verified good combination is `target=main`,
-`obj=on`. `target=main`, `obj=off` still flashes, so the object-id reuse fix is
-required. `target=auto`, `obj=on` still flashes on the tested device because the
-active worker/offscreen path does not receive the main-script object-id patch.
-The two PGS switches remain available on `libpgs` for future isolation or for
+`obj=on`; the isolation matrix behind that is under `Real-device notes`. Both
+PGS switches remain available on `libpgs` for future isolation or for
 evaluating a safe non-Blob worker patch. Jellyfin Web 12 replaces `libpgs` with
 `libbitsub`; the injected runtime detects that backend from loaded player and
 renderer scripts before applying PGS rewrites, removes these now-inapplicable
@@ -650,18 +626,14 @@ ares-launch -d tv org.jellyfin.webos
   counters mean libpgs is using the forced main-thread renderer and the delayed
   draw guard is active. If `main` drop stays zero, the delayed draw guard did
   not contribute to the observed fix.
-- The verified good PGS combination is `target=main`, `obj=on`.
-- The verified isolation results are:
+- PGS isolation matrix, as measured on the tested device:
+  - `target=main`, `obj=on`: verified good.
   - `target=main`, `obj=off`: still flashes stale text, so the object-id reuse
     fix is required.
-  - `target=auto`, `obj=on`: still flashes stale text on the tested device,
-    because the active worker/offscreen path does not receive the main-script
-    object-id patch.
-  - `target=auto`, `obj=off`: upstream-like baseline and expected to reproduce
-    the stale-text flash.
+  - `target=auto`, `obj=on`: still flashes, because the active worker/offscreen
+    path does not receive the main-script object-id patch.
+  - `target=auto`, `obj=off`: upstream-like baseline, expected to flash.
 
 ## Upstream README
 
-See the upstream project documentation:
-
-https://github.com/jellyfin/jellyfin-webos/blob/master/README.md
+[Upstream project documentation](https://github.com/jellyfin/jellyfin-webos/blob/master/README.md)
