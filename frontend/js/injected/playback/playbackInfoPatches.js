@@ -216,6 +216,27 @@
         };
     }
 
+    function hasStoredConcreteVideoQualitySelection(storage) {
+        // Jellyfin Web stores one automatic-detection flag per network
+        // context. The key suffix is IsInNetwork; the value is "true" for
+        // Auto and "false" for a concrete bitrate.
+        if (!storage || typeof storage.getItem !== 'function') {
+            return false;
+        }
+
+        var keys = [
+            'enableautobitratebitrate-Video-true',
+            'enableautobitratebitrate-Video-false'
+        ];
+        for (var i = 0; i < keys.length; i++) {
+            if (storage.getItem(keys[i]) === 'false') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     function debugLog(options) {
         if (!options || typeof options.debugLog !== 'function') {
             return;
@@ -515,6 +536,7 @@
         setQueryParameterValue: setQueryParameterValue,
         extractItemIdFromPlaybackInfoUrl: extractItemIdFromPlaybackInfoUrl,
         enforceMaxBitrateUrl: enforceMaxBitrateUrl,
+        hasStoredConcreteVideoQualitySelection: hasStoredConcreteVideoQualitySelection,
         patchPlaybackInfoBitrateObject: patchPlaybackInfoBitrateObject,
         mediaSourceAlwaysBurnsSubtitleWhenTranscoding: mediaSourceAlwaysBurnsSubtitleWhenTranscoding,
         hasAlwaysBurnInSubtitleTranscodingUrl: hasAlwaysBurnInSubtitleTranscodingUrl,

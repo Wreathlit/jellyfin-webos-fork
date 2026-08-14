@@ -66,21 +66,21 @@ Approach:
 
 - add extra high bitrate menu entries: `120 Mbps`, `100 Mbps`, `95 Mbps`, and `80 Mbps`;
 - force PlaybackInfo `MaxStreamingBitrate` / `maxStreamingBitrate` in both URL
-  query strings and request bodies, on every request from a user who has never
-  picked a quality — playback start and mid-session renegotiations like track
-  switches alike;
-- read "has the user picked a quality" from the setting itself, never from the
-  requested bitrate. Jellyfin Web writes
-  `enableautobitratebitrate-Video-<isInNetwork>` from one place only,
-  `playbackManager.setMaxStreamingBitrate`, so the key is absent until the first
-  pick and then records `true` for `Auto` or `false` for a concrete bitrate.
-  Bandwidth detection rewrites `maxbitrate-*` on its own, so the requested
-  bitrate carries no intent — inferring one from it, as an earlier version did
-  by comparing against a hardcoded 60 Mbps "default", both overrides users who
-  deliberately chose 60 Mbps and goes silently inert whenever detection returns
-  anything else;
-- treat any in-session selection as a pick immediately, ahead of Jellyfin Web
-  persisting it, so requests issued in between are not forced;
+  query strings and request bodies, but only inside the short playback-start
+  window. Outside it, requests pass through untouched, so a bitrate the
+  player's own bandwidth detection has lowered on a congested network holds
+  instead of being re-raised into a buffering loop;
+- keep two different "the user picked a quality" signals separate:
+  - a pick made in the player this session (including `Auto`) ends the force
+    for the session through the fork's player-menu hook. `Auto` then runs
+    Jellyfin Web's bandwidth detection and switches using the detected rate;
+  - a concrete bitrate saved through Jellyfin Web's quality setting is a
+    durable preference. When the window arms, both
+    `enableautobitratebitrate-Video-<isInNetwork>` values are checked: `false`
+    records a concrete bitrate and wins across app restarts, while `true`
+    records `Auto` and does not disable the startup correction;
+  - the requested bitrate itself carries no intent (bandwidth detection
+    rewrites `maxbitrate-*` on its own) and is never consulted;
 - raise device profile `MaxStreamingBitrate` and `MaxStaticBitrate` to the
   highest local bitrate option, unconditionally. The server's
   `MediaOptions.GetMaxBitrate` returns the request's `MaxBitrate` before it ever
@@ -88,16 +88,18 @@ Approach:
   user selection, while leaving Jellyfin Web's hardcoded `MaxStaticBitrate` in
   place is what rejects a high bitrate remux for direct play;
 - keep arming the playback-start window from playback-start signals and new
-  PlaybackInfo item ids. It no longer gates the force — it now only guards the
-  per-item re-arm and marks scripts worth fetching speculatively before a
-  renderer bundle has been classified;
+  PlaybackInfo item ids. The window gates the force, guards the per-item
+  re-arm, and marks scripts worth fetching speculatively before a renderer
+  bundle has been classified;
 - patch only bitrate-shaped menu items inside the action-sheet scroller to avoid
   false positives;
 - keep the quality-menu observer active so late-created action sheets are still
   patched.
 
-Status: active workaround. The force must never become a permanent minimum:
-any quality the user has actually chosen, `Auto` included, takes precedence.
+Status: active workaround. The force is bounded to the playback-start window
+and must never become a permanent minimum: any player-menu choice takes
+precedence for the session, and any concrete settings-page choice takes
+precedence durably.
 
 ### Audio-only transcode with client-rendered subtitles
 
@@ -306,11 +308,11 @@ Approach:
 - wait for `webOS.deviceInfo()` before assigning the Jellyfin Web iframe URL,
   but continue with conservative defaults after a bounded timeout;
 - re-inject `window.DeviceInfo` if the real callback lands after that timeout,
-  and read it back through `getLiveDeviceInfo()` in the injected runtime rather
-  than the value bound when the bundle ran. Both halves are required: the bundle
-  receives `DeviceInfo` as an IIFE argument, so a shell-side reassignment on its
-  own is invisible to everything that captured it. Capability data is consumed
-  at playback start, which is normally late enough for the late answer to count;
+  and read it back through `getLiveDeviceInfo()` in the injected runtime. The
+  bundle always reads the window global at playback start, so a shell-side
+  re-injection is picked up without needing an IIFE-bound copy. Capability data
+  is consumed at playback start, which is normally late enough for the late
+  answer to count;
 - arm the injection failure timeout from navigation start rather than from
   handoff entry, so the device-info wait does not eat into its budget;
 - accept shell-control messages only from the iframe origin and per-document

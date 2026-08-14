@@ -27,6 +27,25 @@ const patches = loadScriptPatches();
 assert(patches, 'subtitles.scriptPatches should register');
 
 {
+    assert.strictEqual(patches.hasUsableFetchedScriptContent(200, ''), true);
+    assert.strictEqual(patches.hasUsableFetchedScriptContent(0, 'renderer code'), true);
+    assert.strictEqual(
+        patches.hasUsableFetchedScriptContent(0, ''),
+        false,
+        'status 0 with no readable body may be a CORS failure'
+    );
+    assert.strictEqual(patches.hasUsableFetchedScriptContent(404, 'error page'), false);
+
+    assert.strictEqual(patches.shouldRetirePgsRendererUrlHint(true), true);
+    assert.strictEqual(
+        patches.shouldRetirePgsRendererUrlHint(false),
+        false,
+        'a failed XHR cannot disprove a URL hint because the original script may still execute'
+    );
+    assert.strictEqual(patches.shouldRetirePgsRendererUrlHint(), false);
+}
+
+{
     assert.strictEqual(
         patches.detectPgsRendererBackend('', '/web/libbitsub.abc123.js'),
         patches.PGS_BACKEND_LIBBITSUB
@@ -83,6 +102,38 @@ assert(patches, 'subtitles.scriptPatches should register');
     assert.strictEqual(
         patches.detectPgsRendererBackend('replace libpgs with libbitsub;createPgsRenderer();getRendererModeByPlatform();', '/web/migration.js'),
         patches.PGS_BACKEND_LIBPGS
+    );
+}
+
+{
+    // The classification must report where the evidence came from: content
+    // markers count as 'text', a URL fall-through stays 'url' so the shell can
+    // keep a URL-hint-only latch correctable instead of hardening it.
+    const fromContent = patches.classifyPgsRendererBackend('createPgsRenderer();getRendererModeByPlatform();', '/web/chunk.js');
+    assert.strictEqual(fromContent.backend, patches.PGS_BACKEND_LIBPGS);
+    assert.strictEqual(fromContent.source, 'text');
+
+    const fromUrl = patches.classifyPgsRendererBackend('', '/web/libbitsub.abc123.js');
+    assert.strictEqual(fromUrl.backend, patches.PGS_BACKEND_LIBBITSUB);
+    assert.strictEqual(fromUrl.source, 'url');
+
+    const fromLibpgsUrl = patches.classifyPgsRendererBackend('', '/web/libpgs.js');
+    assert.strictEqual(fromLibpgsUrl.backend, patches.PGS_BACKEND_LIBPGS);
+    assert.strictEqual(fromLibpgsUrl.source, 'url');
+
+    const fromNothing = patches.classifyPgsRendererBackend('', '/web/chunk.js');
+    assert.strictEqual(fromNothing.backend, patches.PGS_BACKEND_UNKNOWN);
+    assert.strictEqual(fromNothing.source, '');
+
+    // A URL-only classification must flow through patchSubtitleRendererScriptText
+    // with its true source so the shell never mistakes it for content proof.
+    assert.strictEqual(
+        patches.patchSubtitleRendererScriptText('var x = 1;', { url: '/web/libbitsub.abc123.js' }).pgsBackendSource,
+        'url'
+    );
+    assert.strictEqual(
+        patches.patchSubtitleRendererScriptText('WORKER_FALLBACK;emitEvent({type:"worker-state"});', { url: '/web/chunk.js' }).pgsBackendSource,
+        'text'
     );
 }
 

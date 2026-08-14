@@ -5,7 +5,7 @@
  *
 */
 
-(function(AppInfo, deviceInfo, featureOverrides) {
+(function(AppInfo, featureOverrides) {
     'use strict';
 
     var DEBUG_LOG = false;
@@ -135,12 +135,6 @@
     var qualityMenuObserverActive = false;
     var qualityMenuPatchTimer = null;
     var QUALITY_MENU_EXTRA_BITRATES = [120000000, 100000000, 95000000, 80000000];
-    // Jellyfin Web's appSettings key for "did the user pick a quality", one per
-    // network context. The doubled word is upstream's spelling, not a typo here.
-    var QUALITY_SELECTION_SETTING_KEYS = [
-        'enableautobitratebitrate-Video-true',
-        'enableautobitratebitrate-Video-false'
-    ];
     var QUALITY_MENU_LEGACY_CAP_BITRATE = 60000000;
     var PLAYBACK_INFO_MAX_BITRATE_PARAM = 'MaxStreamingBitrate';
     var PLAYBACK_START_MAX_BITRATE_FORCE_WINDOW_MS = 15000;
@@ -149,9 +143,14 @@
     var forcePlaybackStartMaxBitrateRequestsLeft = 0;
     var lastPlaybackInfoMaxBitrateItemId = null;
     // Set as soon as the user explicitly picks any quality value (including
-    // 'Auto') in the current session, before Jellyfin Web has persisted it.
-    // From the next app start hasStoredPlaybackQualitySelection() carries it.
+    // 'Auto') in the player during the current session. Session scoped, never
+    // persisted: a pick made in Jellyfin Web's settings page is a different
+    // thing and is honored through its stored automatic-detection values.
     var userSelectedPlaybackQualityInSession = false;
+    // Snapshot of the stored automatic-detection values taken when the force
+    // window arms, so localStorage is not read on every PlaybackInfo request.
+    // Re-read at every (re-)arm, when a settings-page change could surface.
+    var storedConcreteQualityPickAtArm = false;
     var settingsInjectionObserver = null;
     var settingsInjectionObserverActive = false;
     var settingsEnsureTimer = null;
@@ -331,6 +330,9 @@
     // content was fetched) or 'text' (actual bundle content). A URL-hint-only
     // libbitsub latch may be corrected by the fetched content.
     var pgsRendererBackendSource = '';
+    // The script URL whose hint produced the current 'url' classification, so a
+    // hint can be retired when its own script's content never confirms it.
+    var pgsRendererBackendHintUrl = '';
     var pgsTimeSampleDisplayCount = 0;
     var pgsTimeClampCount = 0;
     var pgsTimeLastClampInfo = 'none';
@@ -473,6 +475,7 @@
     function startPlaybackStartMaxBitrateForce(reason) {
         forcePlaybackStartMaxBitrateUntil = Date.now() + PLAYBACK_START_MAX_BITRATE_FORCE_WINDOW_MS;
         forcePlaybackStartMaxBitrateRequestsLeft = PLAYBACK_START_MAX_BITRATE_FORCE_REQUEST_LIMIT;
+        storedConcreteQualityPickAtArm = hasStoredConcreteQualitySelection();
         debugLog('Armed playback start max bitrate forcing (' + reason + '): window='
             + PLAYBACK_START_MAX_BITRATE_FORCE_WINDOW_MS + 'ms, requests='
             + PLAYBACK_START_MAX_BITRATE_FORCE_REQUEST_LIMIT);
@@ -488,12 +491,22 @@
         debugLog('Cleared playback start max bitrate forcing (' + reason + ')');
     }
 
+    function markQualitySelected(bitrate, source) {
+        // Any explicit quality selection in the player ends the force for the
+        // rest of the session, including 'Auto'. Session scoped: a
+        // settings-page value is a different thing and is honored through its
+        // stored automatic-detection value.
+        userSelectedPlaybackQualityInSession = true;
+        clearPlaybackStartMaxBitrateForce(bitrate
+            ? 'manual-' + source + '-quality-' + bitrate
+            : 'manual-' + source + '-quality-auto');
+    }
+
     function shouldForcePlaybackStartMaxBitrate() {
-        // This window no longer gates the bitrate force itself — see
-        // shouldForcePlaybackMaxBitrate(), which reads the user's quality
-        // selection instead. What is left is a "playback is starting up" signal:
-        // it guards the per-item re-arm and tells the script interceptor that an
-        // early, not-yet-classified bundle is worth fetching speculatively.
+        // The window gates the bitrate force and doubles as a "playback is
+        // starting up" signal: it guards the per-item re-arm and tells the
+        // script interceptor that an early, not-yet-classified bundle is worth
+        // fetching speculatively.
         if (!forcePlaybackStartMaxBitrateUntil || forcePlaybackStartMaxBitrateRequestsLeft <= 0) {
             return false;
         }
@@ -2130,6 +2143,26 @@
         return pgsRendererBackend !== 'libbitsub';
     }
 
+    function retireUnconfirmedPgsRendererUrlHint(src, contentInspected) {
+        var patches = getSubtitleScriptPatches();
+        var mayRetire = patches && patches.shouldRetirePgsRendererUrlHint
+            ? patches.shouldRetirePgsRendererUrlHint(contentInspected)
+            : contentInspected === true;
+        if (!mayRetire) {
+            return;
+        }
+
+        // A URL hint that its successfully fetched script content did not
+        // confirm is noise. Fetch failure is not evidence against the hint: a
+        // cross-origin script may execute even when XHR cannot read it.
+        if (pgsRendererBackendSource === 'url' && pgsRendererBackendHintUrl === src) {
+            pgsRendererBackend = 'unknown';
+            pgsRendererBackendSource = '';
+            pgsRendererBackendHintUrl = '';
+            debugLog('Retired unconfirmed PGS renderer URL hint:', src);
+        }
+    }
+
     function removeLegacyPgsSettingsGroup() {
         var group = document.querySelector('.webos-settings-group-pgs');
         if (group && group.parentNode) {
@@ -2142,6 +2175,8 @@
             return;
         }
 
+        var patches = getSubtitleScriptPatches();
+        var libBitsub = (patches && patches.PGS_BACKEND_LIBBITSUB) || 'libbitsub';
         var normalizedSource = source === 'url' ? 'url' : 'text';
         if (backend === pgsRendererBackend) {
             // Content that confirms the current backend hardens a URL-hint-only
@@ -2151,6 +2186,7 @@
             // libbitsub away.
             if (pgsRendererBackendSource === 'url' && normalizedSource === 'text') {
                 pgsRendererBackendSource = 'text';
+                pgsRendererBackendHintUrl = '';
             }
             return;
         }
@@ -2159,13 +2195,14 @@
         // from bundle content it wins over a stale or incidental libpgs marker
         // in another bundle. A URL-hint-only classification may still be
         // corrected by the fetched content of the same script.
-        if (pgsRendererBackend === 'libbitsub' && backend !== 'libbitsub'
+        if (pgsRendererBackend === libBitsub && backend !== libBitsub
             && !(pgsRendererBackendSource === 'url' && normalizedSource === 'text')) {
             return;
         }
 
         pgsRendererBackend = backend;
         pgsRendererBackendSource = normalizedSource;
+        pgsRendererBackendHintUrl = normalizedSource === 'url' ? (reason || '') : '';
         debugLog('Detected PGS renderer backend:', backend, reason || 'script');
 
         if (!shouldShowLegacyPgsFeatures()) {
@@ -2189,7 +2226,7 @@
             return text;
         }
 
-        setPgsRendererBackend(result.pgsBackend, url || 'inline script', 'text');
+        setPgsRendererBackend(result.pgsBackend, url || 'inline script', result.pgsBackendSource);
 
         if (result.ass && result.ass.patched) {
             assScriptPatchCount++;
@@ -2453,6 +2490,7 @@
                 return;
             }
             fetchCompleted = true;
+            retireUnconfirmedPgsRendererUrlHint(task.src, false);
             insertOriginalScriptTask(task);
         }
 
@@ -2470,14 +2508,31 @@
             clearTimeout(timeoutId);
             fetchCompleted = true;
 
-            if ((xhr.status >= 200 && xhr.status < 300) || xhr.status === 0) {
+            // CORS failures commonly finish at readyState 4 with status 0 and
+            // an empty response before firing onerror. Treat status 0 as
+            // inspectable only when it actually exposed script content.
+            var patches = getSubtitleScriptPatches();
+            var contentInspected = patches && patches.hasUsableFetchedScriptContent
+                ? patches.hasUsableFetchedScriptContent(xhr.status, xhr.responseText)
+                : (xhr.status >= 200 && xhr.status < 300)
+                    || (xhr.status === 0 && typeof xhr.responseText === 'string' && xhr.responseText.length > 0);
+            if (contentInspected) {
                 var patchedText = patchSubtitleRendererScriptText(xhr.responseText, task.src);
                 if (patchedText !== xhr.responseText) {
+                    // The content was seen, so a URL hint from this script that
+                    // its content did not confirm is noise even when another
+                    // patch (ASS) applied. Retire it so it cannot stay
+                    // correctable by a marker in some later bundle. No-op when
+                    // the content confirmed or replaced the hint.
+                    retireUnconfirmedPgsRendererUrlHint(task.src, true);
                     insertPatchedScriptTask(task, patchedText);
                     return;
                 }
             }
 
+            // Only a usable response can disprove the URL hint. An HTTP error
+            // leaves it intact because the original script may still load.
+            retireUnconfirmedPgsRendererUrlHint(task.src, contentInspected);
             insertOriginalScriptTask(task);
         };
         xhr.onerror = function () {
@@ -3125,20 +3180,6 @@
 
         for (var i = 0; i < selects.length; i++) {
             var select = selects[i];
-            if (select.getAttribute('data-webos-quality-change-hooked') !== 'true') {
-                select.addEventListener('change', function () {
-                    // Any explicit quality selection ends the force, including
-                    // 'Auto' (not an integer). Jellyfin Web persists the same
-                    // fact a moment later; this latch just makes it effective
-                    // for requests that go out before the write lands.
-                    userSelectedPlaybackQualityInSession = true;
-                    var selectedBitrate = parsePositiveInteger(this.value);
-                    clearPlaybackStartMaxBitrateForce(selectedBitrate
-                        ? 'manual-native-quality-' + selectedBitrate
-                        : 'manual-native-quality-auto');
-                });
-                select.setAttribute('data-webos-quality-change-hooked', 'true');
-            }
             var patchedBefore = select.getAttribute('data-webos-quality-patched') === 'true';
             var storedValue = getStoredNativeVideoQualityValue(select);
             var currentValue = select.value;
@@ -3884,14 +3925,7 @@
                 }
                 var selectedItem = item && item !== dialog ? item : null;
                 if (selectedItem) {
-                    // Any explicit quality selection ends the force, including
-                    // 'Auto'. This runs in the capture phase, ahead of Jellyfin
-                    // Web persisting the same fact.
-                    userSelectedPlaybackQualityInSession = true;
-                    var selectedBitrate = getMenuItemBitrate(selectedItem);
-                    clearPlaybackStartMaxBitrateForce(selectedBitrate
-                        ? 'manual-action-sheet-quality-' + selectedBitrate
-                        : 'manual-action-sheet-quality-auto');
+                    markQualitySelected(getMenuItemBitrate(selectedItem), 'action-sheet');
                 }
             }, true);
             dialog.setAttribute('data-webos-quality-click-hooked', 'true');
@@ -4545,14 +4579,11 @@
         return clone;
     }
 
-    function hasStoredPlaybackQualitySelection() {
-        // Jellyfin Web writes `enableautobitratebitrate-<mediaType>-<isInNetwork>`
-        // from exactly one place, playbackManager.setMaxStreamingBitrate, which
-        // only runs when the user picks something in the quality menu: 'Auto'
-        // stores 'true', a concrete bitrate stores 'false'. Nothing else writes
-        // it, and the key is absent until the first pick. Automatic detection
-        // rewrites `maxbitrate-*` on its own, so the stored bitrate says nothing
-        // about intent and only this key does.
+    function hasStoredConcreteQualitySelection() {
+        // Jellyfin Web stores one flag per network context. The key suffix is
+        // IsInNetwork, while the stored value is 'true' for Auto and 'false'
+        // for a concrete bitrate. A concrete choice in either context is a
+        // durable preference and wins over the startup force.
         //
         // The endpoint's IsInNetwork value is not knowable here, so a pick made
         // in either network context counts as a pick. That errs toward leaving
@@ -4562,24 +4593,14 @@
             if (!storage) {
                 return false;
             }
-
-            for (var i = 0; i < QUALITY_SELECTION_SETTING_KEYS.length; i++) {
-                if (storage.getItem(QUALITY_SELECTION_SETTING_KEYS[i]) !== null) {
-                    return true;
-                }
-            }
-            return false;
+            var patches = getPlaybackInfoPatches();
+            return !!(patches
+                && patches.hasStoredConcreteVideoQualitySelection
+                && patches.hasStoredConcreteVideoQualitySelection(storage));
         } catch (error) {
             debugLog('Failed to read Jellyfin quality selection setting:', error && error.message ? error.message : error);
             return false;
         }
-    }
-
-    function shouldForcePlaybackMaxBitrate() {
-        // The fork only supplies a ceiling for users who have never expressed a
-        // preference. Any expressed preference wins, including 'Auto', because
-        // 'Auto' means "detect my bandwidth", not "no opinion".
-        return !userSelectedPlaybackQualityInSession && !hasStoredPlaybackQualitySelection();
     }
 
     function enforcePlaybackInfoMaxBitrateUrl(url, source) {
@@ -4603,10 +4624,15 @@
             startPlaybackStartMaxBitrateForce('playbackinfo-item-change-' + source);
         }
 
-        // Every request from a user who has never picked a quality gets the
-        // ceiling raised, whether it is playback start or a mid-session
-        // renegotiation like a track switch. A picked quality is left alone.
-        var shouldForce = shouldForcePlaybackMaxBitrate();
+        // The fork only raises the ceiling inside the short playback-start
+        // window. Outside it, requests pass through untouched, so a bitrate
+        // the player's own bandwidth detection has lowered on a congested
+        // network holds instead of being re-raised into a buffering loop.
+        // A pick made in the player this session, or a concrete value stored
+        // via Jellyfin Web's quality setting, disables the forcing entirely.
+        var shouldForce = shouldForcePlaybackStartMaxBitrate()
+            && !userSelectedPlaybackQualityInSession
+            && !storedConcreteQualityPickAtArm;
         var minimumBitrate = shouldForce ? getHighestKnownBitrateOption() : 0;
         var patched = patches.enforceMaxBitrateUrl(url, minimumBitrate, PLAYBACK_INFO_MAX_BITRATE_PARAM);
         if (shouldForce) {
@@ -5698,17 +5724,16 @@
     }
 
     function getLiveDeviceInfo() {
-        // `deviceInfo` is bound once, when the shell invokes this bundle. If
-        // webOS.deviceInfo() misses the shell's 5s wait, the shell continues
-        // with an empty object and re-injects `window.DeviceInfo` when the real
-        // callback lands. Read the global so a late answer is still picked up:
-        // capability data is only consumed at playback start, which is almost
-        // always later than that.
+        // The shell always injects window.DeviceInfo (an empty object at
+        // worst) before this bundle runs, and re-injects the real data when a
+        // late webOS.deviceInfo() callback lands. Read the global so a late
+        // answer is still picked up: capability data is only consumed at
+        // playback start, which is almost always later than that.
         var live = window.DeviceInfo;
         if (live && typeof live === 'object') {
             return live;
         }
-        return deviceInfo || null;
+        return null;
     }
 
     function applyPlaybackCompatibilityProfilePatches(profile) {
@@ -5988,4 +6013,4 @@
     for (var initStepIndex = 0; initStepIndex < initSteps.length; initStepIndex++) {
         runInitStep(initSteps[initStepIndex][0], initSteps[initStepIndex][1]);
     }
-})(window.AppInfo, window.DeviceInfo, window.WebOSFeatureOverrides);
+})(window.AppInfo, window.WebOSFeatureOverrides);

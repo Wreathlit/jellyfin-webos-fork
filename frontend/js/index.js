@@ -40,6 +40,19 @@ function debugJsonLog(prefix, data) {
     debugLog(prefix, serialized);
 }
 
+function serializeInjectJson(value) {
+    // JSON.stringify does not escape U+2028/U+2029, which pre-ES2019
+    // Chromium (webOS 4.x/5.x) rejects inside string literals. Escape them
+    // so injected `window.X = {...};` scripts parse on every platform.
+    // JSON.stringify(undefined) returns the undefined value rather than a
+    // string, so mirror the old string-concatenation behavior and emit
+    // `undefined` instead of throwing.
+    if (value === undefined) {
+        return 'undefined';
+    }
+    return JSON.stringify(value).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
 var deviceInfo;
 var deviceInfoReady = false;
 var deviceInfoCallbacks = [];
@@ -68,15 +81,14 @@ function updateFrameDeviceInfo(info) {
     // A deviceInfo callback that lands after the 5s fallback already injected
     // an empty window.DeviceInfo into the frame: re-inject the real one so the
     // session does not run with degraded capability data. The injected runtime
-    // has to read window.DeviceInfo at use time for this to be worth anything —
-    // it is bound as an argument when the bundle runs, so a plain reassignment
-    // is invisible to anything that captured it. See getLiveDeviceInfo() in
-    // webOS.js.
+    // reads window.DeviceInfo at use time via getLiveDeviceInfo() in webOS.js —
+    // it never keeps a value bound when the bundle ran, so this reassignment
+    // is picked up.
     try {
         var contentFrame = document.querySelector('#contentFrame');
         var contentDocument = contentFrame && contentFrame.contentDocument;
         if (contentDocument && contentDocument.head) {
-            injectScriptText(contentDocument, 'window.DeviceInfo = ' + JSON.stringify(info) + ';');
+            injectScriptText(contentDocument, 'window.DeviceInfo = ' + serializeInjectJson(info) + ';');
         }
     } catch (error) {
         // Ignore cross-origin or detached document errors.
@@ -1042,13 +1054,13 @@ function handoff(url, bundle, expectedServerId) {
             acceptedHandoffOrigin = currentOrigin;
         }
         var documentMessageToken = createHandoffMessageToken();
-        injectScriptText(contentDocument, 'window.WebOSBridgeToken = ' + JSON.stringify(documentMessageToken) + ';');
+        injectScriptText(contentDocument, 'window.WebOSBridgeToken = ' + serializeInjectJson(documentMessageToken) + ';');
         setActiveHandoffMessageAuthorization(currentOrigin, documentMessageToken);
         addUnloadListener();
 
-        injectScriptText(contentDocument, 'window.AppInfo = ' + JSON.stringify(appInfo) + ';');
-        injectScriptText(contentDocument, 'window.DeviceInfo = ' + JSON.stringify(deviceInfo) + ';');
-        injectScriptText(contentDocument, 'window.WebOSFeatureOverrides = ' + JSON.stringify(getEffectiveFeatureOverrides()) + ';');
+        injectScriptText(contentDocument, 'window.AppInfo = ' + serializeInjectJson(appInfo) + ';');
+        injectScriptText(contentDocument, 'window.DeviceInfo = ' + serializeInjectJson(deviceInfo) + ';');
+        injectScriptText(contentDocument, 'window.WebOSFeatureOverrides = ' + serializeInjectJson(getEffectiveFeatureOverrides()) + ';');
 
         if (bundle.js) {
             injectScriptText(contentDocument, bundle.js);

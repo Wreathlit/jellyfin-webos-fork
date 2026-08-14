@@ -32,6 +32,41 @@ function loadPlaybackInfoPatches() {
 const patches = loadPlaybackInfoPatches();
 assert(patches, 'playback.playbackInfoPatches should register');
 
+{
+    function storageWith(values) {
+        return {
+            getItem(key) {
+                return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null;
+            }
+        };
+    }
+
+    assert.strictEqual(patches.hasStoredConcreteVideoQualitySelection(null), false);
+    assert.strictEqual(patches.hasStoredConcreteVideoQualitySelection(storageWith({})), false);
+    assert.strictEqual(
+        patches.hasStoredConcreteVideoQualitySelection(storageWith({
+            'enableautobitratebitrate-Video-true': 'true',
+            'enableautobitratebitrate-Video-false': 'true'
+        })),
+        false,
+        'Auto in either network context must not count as a concrete bitrate'
+    );
+    assert.strictEqual(
+        patches.hasStoredConcreteVideoQualitySelection(storageWith({
+            'enableautobitratebitrate-Video-false': 'false'
+        })),
+        true,
+        'the false key suffix is the external-network context, not the selected mode'
+    );
+    assert.strictEqual(
+        patches.hasStoredConcreteVideoQualitySelection(storageWith({
+            'enableautobitratebitrate-Video-true': 'false'
+        })),
+        true,
+        'an in-network concrete bitrate must also be honored'
+    );
+}
+
 assert.strictEqual(patches.isPlaybackInfoUrl('/Items/abc/PlaybackInfo'), true);
 assert.strictEqual(patches.isPlaybackInfoUrl('/Users/abc/Items'), false);
 assert.strictEqual(patches.isPlaybackInfoUrl('/Items/abc/Images/Primary?next=/PlaybackInfo'), false);

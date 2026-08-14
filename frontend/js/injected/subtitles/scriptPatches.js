@@ -30,9 +30,10 @@
         var nextRate = hasRate ? message.rate : (entry.lastPostedRate || 1);
         var nextCurrentTime = hasCurrentTime ? message.currentTime : null;
         var predictedTime = hasCurrentTime ? getAssPredictedTime(entry, now) : null;
+        var isRateChange = hasRate && nextRate !== entry.lastPostedRate;
         var resetAnchor = !hasCurrentTime && (
             (hasPaused && nextPaused !== !!entry.lastPostedPaused)
-            || (hasRate && nextRate !== entry.lastPostedRate)
+            || isRateChange
         );
         var tolerance = typeof options.backwardToleranceSeconds === 'number' ? options.backwardToleranceSeconds : 0.03;
         var seekThreshold = typeof options.seekBackSeconds === 'number' ? options.seekBackSeconds : 0.75;
@@ -46,7 +47,7 @@
             && options.enabled
             && entry.lastPostedPaused === false
             && nextPaused === false
-            && !(hasRate && nextRate !== entry.lastPostedRate)
+            && !isRateChange
             && typeof predictedTime === 'number'
             && nextCurrentTime + tolerance < predictedTime) {
             var backwardsBy = predictedTime - nextCurrentTime;
@@ -76,7 +77,7 @@
         return true;
     }
 
-    function detectPgsRendererBackend(text, url) {
+    function classifyPgsRendererBackend(text, url) {
         var source = typeof text === 'string' ? text : '';
         var normalizedUrl = typeof url === 'string' ? url.toLowerCase() : '';
 
@@ -84,33 +85,52 @@
         // libbitsub signatures first. A bare library name is not enough
         // because migration notes can mention both old and new backends.
         // URL hints only fill the gap when the content has no recognizable
-        // markers, so a mislabeled script URL cannot misclassify the renderer
-        // the bundle actually contains.
+        // markers, and a URL-based classification stays labeled 'url' so the
+        // shell keeps it correctable by the fetched content of the same
+        // script — a mislabeled URL cannot lock the wrong backend in.
         if (source) {
             if (source.indexOf('[libbitsub]') !== -1
                 || containsAll(source, ['WORKER_FALLBACK', 'worker-state'])
                 || containsAll(source, ['beginPgs', 'appendPgs', 'finishPgs'])) {
-                return PGS_BACKEND_LIBBITSUB;
+                return { backend: PGS_BACKEND_LIBBITSUB, source: 'text' };
             }
             if (containsAll(source, ['createPgsRenderer', 'getRendererModeByPlatform'])
                 || containsAll(source, ['getPixelDataFromComposition', 'isFirstInSequence'])
                 || containsAll(source, ['requestSubtitleData', 'getSubtitleAtIndex'])) {
-                return PGS_BACKEND_LIBPGS;
+                return { backend: PGS_BACKEND_LIBPGS, source: 'text' };
             }
         }
 
         if (normalizedUrl.indexOf('libbitsub') !== -1) {
-            return PGS_BACKEND_LIBBITSUB;
+            return { backend: PGS_BACKEND_LIBBITSUB, source: 'url' };
         }
         if (normalizedUrl.indexOf('libpgs') !== -1) {
-            return PGS_BACKEND_LIBPGS;
+            return { backend: PGS_BACKEND_LIBPGS, source: 'url' };
         }
 
-        return PGS_BACKEND_UNKNOWN;
+        return { backend: PGS_BACKEND_UNKNOWN, source: '' };
+    }
+
+    function detectPgsRendererBackend(text, url) {
+        return classifyPgsRendererBackend(text, url).backend;
     }
 
     function shouldShowLegacyPgsFeatures(backend) {
         return backend !== PGS_BACKEND_LIBBITSUB;
+    }
+
+    function hasUsableFetchedScriptContent(status, responseText) {
+        // status 0 is also used for CORS/network failures. It proves that the
+        // content was readable only when XHR actually exposed a response body.
+        return (status >= 200 && status < 300)
+            || (status === 0 && typeof responseText === 'string' && responseText.length > 0);
+    }
+
+    function shouldRetirePgsRendererUrlHint(contentInspected) {
+        // A failed or timed-out XHR says nothing about whether the original
+        // script URL identifies the backend: a cross-origin script can execute
+        // normally while an XHR for the same URL is blocked by CORS.
+        return contentInspected === true;
     }
 
     function buildAssRenderAheadReplacement(originalValue) {
@@ -269,7 +289,8 @@
     }
 
     function patchSubtitleRendererScriptText(text, options) {
-        var pgsBackend = detectPgsRendererBackend(text, options && options.url);
+        var classification = classifyPgsRendererBackend(text, options && options.url);
+        var pgsBackend = classification.backend;
         var ass = patchAssRendererScriptText(text, options);
         var pgs = pgsBackend === PGS_BACKEND_LIBBITSUB
             ? createPgsPatchResult(ass.text)
@@ -280,6 +301,7 @@
             ass: ass,
             pgs: pgs,
             pgsBackend: pgsBackend,
+            pgsBackendSource: classification.source,
             patched: pgs.text !== text
         };
     }
@@ -293,8 +315,11 @@
         PGS_BACKEND_UNKNOWN: PGS_BACKEND_UNKNOWN,
         PGS_BACKEND_LIBPGS: PGS_BACKEND_LIBPGS,
         PGS_BACKEND_LIBBITSUB: PGS_BACKEND_LIBBITSUB,
+        classifyPgsRendererBackend: classifyPgsRendererBackend,
         detectPgsRendererBackend: detectPgsRendererBackend,
         shouldShowLegacyPgsFeatures: shouldShowLegacyPgsFeatures,
+        hasUsableFetchedScriptContent: hasUsableFetchedScriptContent,
+        shouldRetirePgsRendererUrlHint: shouldRetirePgsRendererUrlHint,
         buildAssRenderAheadReplacement: buildAssRenderAheadReplacement,
         buildPgsRenderAtVideoTimestampReplacement: buildPgsRenderAtVideoTimestampReplacement,
         buildPgsAsyncSubtitleDataGuardReplacement: buildPgsAsyncSubtitleDataGuardReplacement,
