@@ -241,6 +241,12 @@
     var hdrUiInfoCorrectionTimer = null;
     var hdrUiInfoCorrectedHdrUntil = 0;
     var hdrUiInfoCorrectedHdrReason = null;
+    // Provenance of the HDR currently holding the correction window, tracked as
+    // a flag rather than parsed back out of the free-form reason string: the
+    // reason is descriptive text that callers prefix (e.g.
+    // 'playback-start-fallback-playback-ui'), so comparing it to a literal
+    // silently missed the very producer the escape hatch exists for.
+    var hdrUiInfoCorrectedHdrFromUi = false;
     var hdrUiInfoInitialScanTimer = null;
     var hdrUiInfoObserver = createManagedObserver({
         handler: function () {
@@ -278,6 +284,10 @@
     var playbackInfoRequestSequence = 0;
     var latestPlaybackInfoRequestSequence = 0;
     var latestPlaybackInfoRequestItemId = null;
+    // '<itemId>|<mediaSourceId>' cache key written by the most recent
+    // PlaybackInfo response, with the playback epoch it belonged to.
+    var latestPlaybackInfoCacheKey = null;
+    var latestPlaybackInfoCacheEpoch = -1;
     var pendingPlaybackInfoDynamicRange = null;
     var playbackStartFallbackTimers = [];
     var playbackStartFallbackGeneration = 0;
@@ -2490,6 +2500,16 @@
                 return;
             }
             fetchCompleted = true;
+            // The original script node is about to be inserted, which downloads
+            // the same URL again. Drop the inspection request so a slow bundle
+            // that outran the (750ms speculative / 8s playback) timeout is not
+            // pulled twice in parallel. The fetchCompleted guard already
+            // neutralizes the callbacks abort() triggers.
+            try {
+                xhr.abort();
+            } catch (error) {
+                debugLog('Failed to abort intercepted script fetch:', error);
+            }
             retireUnconfirmedPgsRendererUrlHint(task.src, false);
             insertOriginalScriptTask(task);
         }
@@ -3856,7 +3876,12 @@
         return 0;
     }
 
-    function isBitrateActionSheet(menuItems) {
+    // Recognising a quality menu and deciding whether it is worth padding with
+    // extra options are two different questions. Jellyfin Web derives the menu
+    // from the source resolution, so a 720p source tops out well below the
+    // legacy 60 Mbps cap: such a menu is still a quality menu whose selection
+    // must be honored, it just has nothing to extend.
+    function getBitrateActionSheetInfo(menuItems) {
         var bitrateItemCount = 0;
         var hasHighBitrateCap = false;
         var hasBitrateText = false;
@@ -3877,7 +3902,10 @@
             }
         }
 
-        return bitrateItemCount >= 2 && hasHighBitrateCap && hasBitrateText;
+        return {
+            isBitrateSheet: bitrateItemCount >= 2 && hasBitrateText,
+            hasHighBitrateCap: hasHighBitrateCap
+        };
     }
 
     function findBitrateInsertBefore(parent, bitrate) {
@@ -3912,10 +3940,18 @@
         if (!menuItems || !menuItems.length) {
             return false;
         }
-        if (!isBitrateActionSheet(menuItems)) {
+
+        var sheetInfo = getBitrateActionSheetInfo(menuItems);
+        if (!sheetInfo.isBitrateSheet) {
             return false;
         }
 
+        // Hook the click on every quality menu, including ones with nothing to
+        // extend. markQualitySelected is the only thing that ends the
+        // playback-start bitrate force, so gating this on hasHighBitrateCap
+        // meant an in-player downgrade on a 720p-or-lower source was silently
+        // re-raised for the rest of the force window — exactly the buffering
+        // case the user was trying to fix.
         if (dialog.getAttribute('data-webos-quality-click-hooked') !== 'true') {
             dialog.addEventListener('click', function (event) {
                 var item = event && event.target ? event.target : null;
@@ -3929,6 +3965,14 @@
                 }
             }, true);
             dialog.setAttribute('data-webos-quality-click-hooked', 'true');
+        }
+
+        // Only menus that show the legacy 60 Mbps ceiling get the extra
+        // options; padding a 720p menu with 120 Mbps entries would be nonsense.
+        // Left unmarked so a menu still being populated is reclassified on the
+        // next mutation.
+        if (!sheetInfo.hasHighBitrateCap) {
+            return false;
         }
 
         var bitrateIds = {};
@@ -4139,7 +4183,10 @@
         var uiHint = getDynamicRangeHintFromPlaybackUi();
         hdrDetectionPlaybackUiLastHint = uiHint;
         if (uiHint === 'hdr' || playbackDynamicRange === 'unknown' && uiHint === 'sdr') {
-            setPlaybackDynamicRange(uiHint, reason + '-playback-ui');
+            // Same fallible OSD-text source as the scheduled scanner, so it must
+            // be flagged as such: this verdict has to stay correctable by a later
+            // authoritative SDR.
+            setPlaybackDynamicRange(uiHint, reason + '-playback-ui', true);
         } else {
             refreshHdrUiDimming(reason);
         }
@@ -4157,6 +4204,7 @@
         hdrUiInfoCorrectionUntil = 0;
         hdrUiInfoCorrectedHdrUntil = 0;
         hdrUiInfoCorrectedHdrReason = null;
+        hdrUiInfoCorrectedHdrFromUi = false;
         clearHdrUiInfoFallbackScanTimer();
         clearHdrUiInfoCorrectionTimer();
     }
@@ -4164,12 +4212,15 @@
     function armHdrUiInfoCorrectionWindow(reason) {
         hdrUiInfoCorrectionUntil = Date.now() + HDR_UI_INFO_CORRECTION_WINDOW_MS;
         hdrUiInfoCorrectedHdrUntil = 0;
+        hdrUiInfoCorrectedHdrReason = null;
+        hdrUiInfoCorrectedHdrFromUi = false;
         clearHdrUiInfoCorrectionTimer();
         hdrUiInfoCorrectionTimer = setTimeout(function () {
             hdrUiInfoCorrectionTimer = null;
             hdrUiInfoCorrectionUntil = 0;
             hdrUiInfoCorrectedHdrUntil = 0;
             hdrUiInfoCorrectedHdrReason = null;
+            hdrUiInfoCorrectedHdrFromUi = false;
             hdrUiInfoObserver.setEnabled(shouldUseHdrUiInfoObserver());
         }, HDR_UI_INFO_CORRECTION_WINDOW_MS);
 
@@ -4197,7 +4248,7 @@
             var hint = getDynamicRangeHintFromPlaybackUi();
             hdrDetectionPlaybackUiLastHint = hint;
             if (hint === 'hdr' || playbackDynamicRange === 'unknown' && hint === 'sdr') {
-                setPlaybackDynamicRange(hint, 'playback-ui');
+                setPlaybackDynamicRange(hint, 'playback-ui', true);
             } else {
                 refreshHdrUiDimming('playback-ui-scan');
             }
@@ -4630,9 +4681,16 @@
         // network holds instead of being re-raised into a buffering loop.
         // A pick made in the player this session, or a concrete value stored
         // via Jellyfin Web's quality setting, disables the forcing entirely.
+        //
+        // The stored value is also re-read live, not just snapshotted at arm
+        // time: Jellyfin Web writes the concrete-pick flag before it issues the
+        // PlaybackInfo for that pick, so this catches a selection whose menu
+        // markup the action-sheet click hook did not recognize. It is capped at
+        // PLAYBACK_START_MAX_BITRATE_FORCE_REQUEST_LIMIT reads per playback.
         var shouldForce = shouldForcePlaybackStartMaxBitrate()
             && !userSelectedPlaybackQualityInSession
-            && !storedConcreteQualityPickAtArm;
+            && !storedConcreteQualityPickAtArm
+            && !hasStoredConcreteQualitySelection();
         var minimumBitrate = shouldForce ? getHighestKnownBitrateOption() : 0;
         var patched = patches.enforceMaxBitrateUrl(url, minimumBitrate, PLAYBACK_INFO_MAX_BITRATE_PARAM);
         if (shouldForce) {
@@ -4850,24 +4908,49 @@
         var prefix = latestPlaybackInfoRequestItemId.toString() + '|';
         var pendingHint = 'unknown';
         var pendingVideoDelivery = 'unknown';
-        for (var key in playbackInfoDynamicRangeHints) {
-            if (!Object.prototype.hasOwnProperty.call(playbackInfoDynamicRangeHints, key)) {
-                continue;
-            }
-            if (key.indexOf(prefix) !== 0) {
-                continue;
-            }
-            var entryHint = playbackInfoDynamicRangeHints[key];
-            var entryVideoDelivery = playbackInfoVideoDeliveryHints[key] || 'unknown';
-            if (entryHint === 'hdr') {
-                pendingHint = 'hdr';
-                pendingVideoDelivery = entryVideoDelivery;
-                break;
-            }
-            if (entryHint === 'sdr') {
-                pendingHint = 'sdr';
+
+        // The cache is keyed '<itemId>|<mediaSourceId>' and survives across
+        // playbacks, so an item with several versions accumulates one entry per
+        // media source. Prefer the key the most recent PlaybackInfo response for
+        // this playback actually wrote: scanning by itemId prefix and preferring
+        // 'hdr' let another version's hint dim an SDR playback, and because that
+        // HDR then latches the correction window, the correct SDR arriving later
+        // from PlaybackInfo, the media session or item metadata was discarded.
+        var exactCacheKey = latestPlaybackInfoCacheKey
+            && latestPlaybackInfoCacheEpoch === playbackInfoPlaybackEpoch
+            && latestPlaybackInfoCacheKey.indexOf(prefix) === 0
+            ? latestPlaybackInfoCacheKey
+            : null;
+
+        if (exactCacheKey) {
+            pendingHint = playbackInfoDynamicRangeHints[exactCacheKey] || 'unknown';
+            pendingVideoDelivery = playbackInfoVideoDeliveryHints[exactCacheKey] || 'unknown';
+        } else {
+            // No response recorded for this playback: fall back to the item's
+            // cached sources, but only when they agree. A disagreement means we
+            // cannot tell which version is playing, and 'unknown' is the safe
+            // answer — it keeps the UI scan and the item-metadata fallback armed.
+            for (var key in playbackInfoDynamicRangeHints) {
+                if (!Object.prototype.hasOwnProperty.call(playbackInfoDynamicRangeHints, key)) {
+                    continue;
+                }
+                if (key.indexOf(prefix) !== 0) {
+                    continue;
+                }
+
+                var entryHint = playbackInfoDynamicRangeHints[key];
+                if (entryHint !== 'hdr' && entryHint !== 'sdr') {
+                    continue;
+                }
+                if (pendingHint !== 'unknown' && pendingHint !== entryHint) {
+                    pendingHint = 'unknown';
+                    pendingVideoDelivery = 'unknown';
+                    break;
+                }
+
+                pendingHint = entryHint;
                 if (pendingVideoDelivery === 'unknown') {
-                    pendingVideoDelivery = entryVideoDelivery;
+                    pendingVideoDelivery = playbackInfoVideoDeliveryHints[key] || 'unknown';
                 }
             }
         }
@@ -5014,6 +5097,16 @@
         hdrDetectionPlaybackInfoCount++;
         cachePlaybackInfoDynamicRangeHint(itemId, mediaSourceId, hint);
         cachePlaybackInfoVideoDeliveryHint(itemId, mediaSourceId, videoDelivery);
+
+        // Remember which cache entry this playback's own response wrote, so a
+        // later pending-hint apply reads that media source instead of guessing
+        // across every version of the item. Responses from a previous playback
+        // epoch must not claim the slot.
+        var responseEpoch = context && typeof context.epoch === 'number' ? context.epoch : playbackInfoPlaybackEpoch;
+        if (itemId && responseEpoch === playbackInfoPlaybackEpoch) {
+            latestPlaybackInfoCacheKey = getDynamicRangeCacheKey(itemId, mediaSourceId);
+            latestPlaybackInfoCacheEpoch = responseEpoch;
+        }
         if (playbackState !== PlaybackState.PLAYING) {
             if (playbackState !== PlaybackState.IDLE) {
                 return;
@@ -5681,18 +5774,19 @@
         debugLog('HDR UI dimming ' + (shouldDim ? 'enabled' : 'disabled') + ' (' + reason + ')');
     }
 
-    function setPlaybackDynamicRange(nextRange, reason) {
+    function setPlaybackDynamicRange(nextRange, reason, fromPlaybackUi) {
         if (nextRange !== 'hdr' && nextRange !== 'sdr') {
             nextRange = 'unknown';
         }
 
-        var authoritativeSdr = nextRange === 'sdr' && reason && reason !== 'playback-ui';
+        var authoritativeSdr = nextRange === 'sdr' && !!reason && !fromPlaybackUi;
         if (nextRange === 'sdr'
             && playbackDynamicRange === 'hdr'
             && hdrUiInfoCorrectedHdrUntil
             && Date.now() < hdrUiInfoCorrectedHdrUntil) {
-            if (hdrUiInfoCorrectedHdrReason === 'playback-ui' && authoritativeSdr) {
-                debugLog('Accepted authoritative SDR after playback UI HDR correction (' + reason + ')');
+            if (hdrUiInfoCorrectedHdrFromUi && authoritativeSdr) {
+                debugLog('Accepted authoritative SDR (' + reason + ') after playback UI HDR correction ('
+                    + hdrUiInfoCorrectedHdrReason + ')');
                 clearHdrUiInfoCorrectionWindow();
             } else {
                 debugLog('Ignored SDR dynamic range during HDR correction window (' + reason + ')');
@@ -5702,8 +5796,19 @@
         }
 
         if (nextRange === 'hdr' && Date.now() < hdrUiInfoCorrectionUntil) {
+            var hdrVerdictAlreadyHeld = playbackDynamicRange === 'hdr' && !!hdrUiInfoCorrectedHdrUntil;
             hdrUiInfoCorrectedHdrUntil = Math.max(hdrUiInfoCorrectedHdrUntil, hdrUiInfoCorrectionUntil);
-            hdrUiInfoCorrectedHdrReason = reason || null;
+            // An authoritative HDR always takes ownership of the window, which
+            // makes it stick against a later SDR. A UI-text guess may only
+            // claim it while no HDR verdict holds it yet, so a scan that runs
+            // after an authoritative HDR cannot weaken that verdict.
+            if (!fromPlaybackUi) {
+                hdrUiInfoCorrectedHdrFromUi = false;
+                hdrUiInfoCorrectedHdrReason = reason || null;
+            } else if (!hdrVerdictAlreadyHeld) {
+                hdrUiInfoCorrectedHdrFromUi = true;
+                hdrUiInfoCorrectedHdrReason = reason || null;
+            }
         } else if (nextRange === 'hdr') {
             if (!hdrUiInfoCorrectedHdrUntil || Date.now() >= hdrUiInfoCorrectedHdrUntil) {
                 clearHdrUiInfoCorrectionWindow();

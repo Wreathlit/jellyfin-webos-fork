@@ -84,12 +84,20 @@ function updateFrameDeviceInfo(info) {
     // reads window.DeviceInfo at use time via getLiveDeviceInfo() in webOS.js —
     // it never keeps a value bound when the bundle ran, so this reassignment
     // is picked up.
+    //
+    // Route it through the updater the active handoff publishes instead of
+    // resolving the frame's current document here. The TV's capability
+    // fingerprint (model, firmware, panel, HDR/DV/Atmos support) must only
+    // reach a document the handoff origin gate already accepted; a frame
+    // parked on a redirected origin that is still being validated — or one
+    // that failed and is waiting out the 45s injection timeout — must not be
+    // handed it.
+    if (!activeHandoffDeviceInfoUpdater) {
+        return;
+    }
+
     try {
-        var contentFrame = document.querySelector('#contentFrame');
-        var contentDocument = contentFrame && contentFrame.contentDocument;
-        if (contentDocument && contentDocument.head) {
-            injectScriptText(contentDocument, 'window.DeviceInfo = ' + serializeInjectJson(info) + ';');
-        }
+        activeHandoffDeviceInfoUpdater(info);
     } catch (error) {
         // Ignore cross-origin or detached document errors.
     }
@@ -464,8 +472,20 @@ function handleSuccessServerInfo(data, baseurl, auto_connect) {
                 //server has changed warn user.
                 hideConnecting();
                 displayError("The server ID has changed since the last connection, please check if you are reaching your own server. To connect anyway, click connect again.");
+                // Reset only what the ID change invalidates — the identity and
+                // the auto-connect consent. Carrying the display fields over
+                // keeps the saved entry renderable if the user declines: the
+                // replacement used to drop Name/Address/hosturl, leaving a card
+                // titled "undefined" on the next launch.
                 delete connected_servers[server_id]
-                connected_servers[data.Id] = ({ 'baseurl': baseurl, 'auto_connect': false, 'id': false })
+                connected_servers[data.Id] = ({
+                    'baseurl': baseurl,
+                    'hosturl': server.hosturl,
+                    'Name': server.Name,
+                    'Address': server.Address || baseurl,
+                    'auto_connect': false,
+                    'id': false
+                })
                 storage.set('connected_servers', connected_servers)
                 return false
             }
@@ -632,6 +652,9 @@ function loadUrl(url, success, failure) {
 
 var injectBundleCache = null;
 var activeHandoffCleanup = null;
+// Published by handoff() once a document has passed the origin gate and been
+// injected; cleared by that handoff's cleanup. Read by updateFrameDeviceInfo.
+var activeHandoffDeviceInfoUpdater = null;
 var activeHandoffMessageOrigin = '';
 var activeHandoffMessageToken = '';
 var handoffMessageTokenSequence = 0;
@@ -1062,6 +1085,20 @@ function handoff(url, bundle, expectedServerId) {
         injectScriptText(contentDocument, 'window.DeviceInfo = ' + serializeInjectJson(deviceInfo) + ';');
         injectScriptText(contentDocument, 'window.WebOSFeatureOverrides = ' + serializeInjectJson(getEffectiveFeatureOverrides()) + ';');
 
+        // Only an accepted document may receive a late deviceInfo answer.
+        // injectedDocument is read live, so a same-origin reload updates the
+        // newest accepted document while a document the frame moved on to
+        // without passing the origin gate is skipped.
+        activeHandoffDeviceInfoUpdater = function (info) {
+            if (handoffCleanedUp
+                || !injectedDocument
+                || getContentDocument() !== injectedDocument
+                || !injectedDocument.head) {
+                return;
+            }
+            injectScriptText(injectedDocument, 'window.DeviceInfo = ' + serializeInjectJson(info) + ';');
+        };
+
         if (bundle.js) {
             injectScriptText(contentDocument, bundle.js);
         }
@@ -1094,6 +1131,7 @@ function handoff(url, bundle, expectedServerId) {
         contentFrame.removeEventListener('load', onFrameLoad);
         if (activeHandoffCleanup === cleanupHandoff) {
             clearActiveHandoffMessageAuthorization();
+            activeHandoffDeviceInfoUpdater = null;
             activeHandoffCleanup = null;
         }
     }
@@ -1212,7 +1250,7 @@ function renderSingleServer(server_id, server) {
     // Address is only populated after the manifest step; fall back to baseurl so a card
     // whose handshake never completed never renders or connects to "undefined".
     var serverAddress = server.Address || server.baseurl || '';
-    server_card.querySelector(".server_card_title").innerText = server.Name;
+    server_card.querySelector(".server_card_title").innerText = server.Name || serverAddress;
     server_card.querySelector(".server_card_url").innerText = serverAddress;
     server_card.querySelector("button").value = serverAddress;
 }
@@ -1228,6 +1266,18 @@ function verifyThenAdd(server) {
         debugLog("Ignoring discovered server with invalid address:", server.Address);
         return;
     }
+    // The service re-broadcasts every ~15s and rewrites Address each time, so
+    // re-verify whenever the address moved (DHCP lease change, network
+    // reconfiguration, PublishedServerUrl edit). Skipping an unchanged address
+    // keeps the steady-state request count at zero; the previous "verified
+    // once, never again" flag left the first-seen address rendered — and
+    // selected — for the lifetime of the app process.
+    var knownServer = discovered_servers[server.Id];
+    if (knownServer && knownServer.Address === server.Address) {
+        return;
+    }
+    // servers_verifying is strictly an in-flight marker; every terminal handler
+    // clears it so a later address change can be checked.
     if (servers_verifying[server.Id]) {
         return;
     }
@@ -1240,26 +1290,25 @@ function verifyThenAdd(server) {
             debugLog(server);
             debugLog(data);
 
+            delete servers_verifying[server.Id];
+
             // TODO: Do we want to autodiscover only Jellyfin servers, or anything that responds to "who is JellyfinServer?"
             if (data.ProductName == "Jellyfin Server") {
                 server.system_info_public = data;
-                if (!discovered_servers[server.Id]) {
-                    discovered_servers[server.Id] = server;
-                    renderServerList(discovered_servers);
-                }
+                discovered_servers[server.Id] = server;
+                renderSingleServer(server.Id, server);
             }
-            servers_verifying[server.Id] = true;
         },
         error: function (data) {
             debugLog("error");
             debugLog(server);
             debugLog(data);
-            servers_verifying[server.Id] = false;
+            delete servers_verifying[server.Id];
         },
         abort: function () {
             debugLog("abort");
             debugLog(server);
-            servers_verifying[server.Id] = false;
+            delete servers_verifying[server.Id];
         },
         timeout: 5000
     });

@@ -29,7 +29,8 @@ function AJAX() {};
 AJAX.prototype.request = function(url, settings) {
 	var method = (settings.method) ? settings.method : "GET";
 	var xhr = new XMLHttpRequest();
-	
+	var aborted = false;
+
 	xhr.open(method, url);
 	
 	if (settings.headers) {
@@ -63,6 +64,15 @@ AJAX.prototype.request = function(url, settings) {
 	}
 	
 	xhr.onreadystatechange = function () {
+		// abort() moves readyState to DONE and fires readystatechange with
+		// status 0 *before* the abort event. Without this guard the terminal
+		// branch below reports a generic transport failure ("are you connecting
+		// to a Jellyfin Server?") that settings.abort has no way to take back,
+		// so cancelling a connection attempt showed an error about the server.
+		if (aborted) {
+			return;
+		}
+
 		if (xhr.readyState == XMLHttpRequest.DONE) {
 			if (xhr.status == 200) {
                 if (settings.success) {
@@ -89,10 +99,18 @@ AJAX.prototype.request = function(url, settings) {
         }
 	}
 	
+	// Callers abort through the returned object, so mark the request as
+	// cancelled before the native abort() dispatches its events.
+	var nativeAbort = xhr.abort;
+	xhr.abort = function () {
+		aborted = true;
+		return nativeAbort.apply(xhr, arguments);
+	};
+
 	if (settings.data) {
 		xhr.send(JSON.stringify(settings.data));
 	} else {
 		xhr.send();
-	} 
+	}
 	return xhr;
 };

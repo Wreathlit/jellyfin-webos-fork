@@ -93,6 +93,18 @@ Approach:
   bundle has been classified;
 - patch only bitrate-shaped menu items inside the action-sheet scroller to avoid
   false positives;
+- keep recognising a quality menu separate from deciding whether to extend it.
+  Jellyfin Web derives the menu from the source resolution, so a 720p-or-lower
+  source never shows a `60 Mbps` entry. Requiring one before installing the
+  player-menu hook meant a downgrade picked on such a source never reached the
+  "user picked a quality" signal and was re-raised for the rest of the window —
+  the exact buffering case the pick was meant to fix. The hook is now installed
+  on any bitrate menu; only the extra high-bitrate entries stay gated on the
+  legacy cap;
+- re-read the stored concrete-pick flag on each forced request instead of only
+  snapshotting it when the window arms. Jellyfin Web writes that flag before it
+  issues the PlaybackInfo for the pick, so this also catches a selection whose
+  menu markup the hook did not recognise;
 - keep the quality-menu observer active so late-created action sheets are still
   patched.
 
@@ -313,6 +325,12 @@ Approach:
   re-injection is picked up without needing an IIFE-bound copy. Capability data
   is consumed at playback start, which is normally late enough for the late
   answer to count;
+- route that re-injection through an updater the handoff publishes only after a
+  document passes the origin gate, instead of writing to whatever document the
+  frame currently holds. The capability payload is a device fingerprint (model,
+  firmware, panel size, HDR/DV/Atmos support), and the frame can legitimately be
+  sitting on a refused origin while its `/System/Info/Public` validation is
+  still outstanding or its 45s failure timeout has not fired;
 - arm the injection failure timeout from navigation start rather than from
   handoff entry, so the device-info wait does not eat into its budget;
 - accept shell-control messages only from the iframe origin and per-document
@@ -324,6 +342,45 @@ Approach:
 Status: active workaround. The device-info wait is based on upstream PR #331,
 and iframe focus follows upstream PR #332. A stalled device-info callback no
 longer leaves the app on a permanent blank screen.
+
+### Server picker and discovery
+
+Problem: cancelling a connection attempt reported a server error instead of a
+cancellation; a discovered server that changed address kept an unusable card
+until the app was relaunched; and a saved server whose ID had changed rendered
+as `undefined`.
+
+Cause: three independent shell defects.
+
+- `XMLHttpRequest.abort()` moves `readyState` to `DONE` with status `0` and
+  fires `readystatechange` *before* the `abort` event, so `ajax.js` reported a
+  generic transport failure first. The shell turned that into "are you
+  connecting to a Jellyfin Server?", and the later abort callback only hid the
+  spinner — it could not retract the message.
+- `verifyThenAdd()` kept its per-Id guard set forever after one success and
+  stored the record only when absent, while the discovery service rewrites
+  `Address` on every broadcast. A DHCP lease change or `PublishedServerUrl` edit
+  therefore left the first-seen address in the card and its connect button.
+- The server-ID-change path replaced the saved entry with a stub holding only
+  `baseurl`/`auto_connect`/`id`, discarding `Name`, `Address` and `hosturl`
+  before the user had agreed to anything. If they declined, the next launch
+  rendered `server.Name` — `undefined` — as the card title.
+
+Approach:
+
+- treat an aborted request as aborted: `ajax.js` marks the request cancelled in
+  its own `abort()` wrapper and the terminal branch returns early, so only the
+  abort callback runs;
+- keep `servers_verifying` as a strict in-flight marker cleared by every
+  terminal handler, re-verify a server whenever its broadcast address changed,
+  and repaint that one card. An unchanged address still costs no request, so the
+  steady state is unaffected;
+- on an ID change, reset only what the change invalidates — the identity and the
+  auto-connect consent — and carry the display fields over; also fall back to the
+  address for the card title so a record saved without a name is still readable.
+
+Status: fixed. Covered by `tests/unit/ajaxRequest.test.js` and the server-list
+cases in `tests/unit/shellRuntime.test.js`.
 
 ### Pointer click activation
 
@@ -419,11 +476,28 @@ Approach:
   display-title, and Playback Info/player-stats text as fallback HDR signals;
 - after entering playback, run a short delayed fallback window that reapplies
   cached PlaybackInfo hints, refreshes item metadata detection, and scans visible
-  playback UI text again.
+  playback UI text again;
+- track how the HDR holding the correction window was derived as a flag passed
+  to `setPlaybackDynamicRange()`, not by comparing its `reason` string to
+  `'playback-ui'`. `reason` is descriptive text that callers prefix, so the
+  delayed fallback recorded its OSD-text guess as
+  `playback-start-fallback-playback-ui` and the escape hatch — accept an
+  authoritative SDR that contradicts a UI-text HDR — never matched. It also
+  overwrote a correctly labelled guess the scheduled scanner had already stored,
+  turning a recoverable state into a stuck one. A title containing an HDR token
+  on SDR content could therefore dim the whole session;
+- resolve a pending PlaybackInfo hint through the cache key that this playback's
+  own response wrote. The cache is keyed `<itemId>|<mediaSourceId>` and outlives
+  a playback, so an item with several versions accumulates one entry per source;
+  scanning by item id and preferring `hdr` let another version's hint dim an SDR
+  playback, and the resulting HDR then latched the correction window against the
+  correct SDR. Without such a key, sibling entries are used only when they agree.
 
 Status: active feature. ASS and PGS intentionally share
 `--webos-hdr-subtitle-opacity`; keeping a separate PGS opacity variable made the
-implementation look more configurable than the UI actually is.
+implementation look more configurable than the UI actually is. Provenance of an
+HDR verdict must stay a flag: encoding it in the `reason` string is what broke
+the SDR escape hatch, and `reason` remains free-form diagnostic text.
 
 ### ASS subtitle timing
 
@@ -451,6 +525,23 @@ Approach:
 
 Status: verified improvement. The best observed behavior came from letting
 libass run on its own clock while preventing small backward media-time samples.
+
+### Subtitle renderer script interception
+
+Problem: a renderer bundle whose inspection fetch outran its timeout was
+downloaded twice.
+
+Cause: on timeout the queue inserted the original `<script>` node — which
+downloads the URL again — without aborting the inspection `XMLHttpRequest`. The
+speculative path makes this easy to hit: early scripts get a 750 ms budget, so a
+large chunk on a slow TV link routinely exceeds it.
+
+Approach: abort the inspection request before inserting the original node. The
+existing `fetchCompleted` guard already neutralises the callbacks that abort
+dispatches.
+
+Status: fixed. Bandwidth only — the original script still loads and executes
+unpatched, which is the intended fallback.
 
 ### PGS subtitle stale text
 

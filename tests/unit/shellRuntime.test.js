@@ -75,12 +75,51 @@ function extractBridgeToken(contentDocument) {
     return JSON.parse(tokenScript.substring(prefix.length, tokenScript.length - 1));
 }
 
+function createFakeElement(tagName) {
+    return {
+        tagName: tagName,
+        children: [],
+        className: '',
+        innerText: '',
+        style: {},
+        attributes: {},
+        appendChild(child) {
+            this.children.push(child);
+            return child;
+        },
+        setAttribute(name, value) {
+            this.attributes[name] = value;
+        },
+        getAttribute(name) {
+            return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null;
+        },
+        querySelector(selector) {
+            for (const child of this.children) {
+                const matches = selector.charAt(0) === '.'
+                    ? child.className === selector.slice(1)
+                    : child.tagName === selector;
+                if (matches) {
+                    return child;
+                }
+
+                const nested = child.querySelector ? child.querySelector(selector) : null;
+                if (nested) {
+                    return nested;
+                }
+            }
+            return null;
+        }
+    };
+}
+
 function loadShell() {
     const timers = [];
     const clearedTimers = [];
     const intervals = [];
     const clearedIntervals = [];
     const xhrRequests = [];
+    const ajaxRequests = [];
+    const serverList = createFakeElement('ul');
     const contentWindow = addEventTarget({});
     const contentFrame = addEventTarget({
         contentWindow: contentWindow,
@@ -97,9 +136,14 @@ function loadShell() {
         '.container': { style: {} },
         '#serverInfoForm': { style: {} },
         '#busy': { style: {} },
-        '#error': { style: {}, textContent: '' }
+        '#error': { style: {}, textContent: '' },
+        // navigationInit() probes these; zero-sized means "not visible", which
+        // keeps focus handling out of the way of the assertions below.
+        '#connect': { offsetWidth: 0, offsetHeight: 0, focus() {} },
+        '#abort': { offsetWidth: 0, offsetHeight: 0, focus() {} }
     };
     const storedValues = [];
+    const storedState = {};
     let deviceInfoCallback;
     let platformBackCalls = 0;
     const testConsole = {
@@ -116,9 +160,21 @@ function loadShell() {
         querySelector(selector) {
             return elements[selector] || null;
         },
+        getElementById(id) {
+            if (id === 'serverlist') {
+                return serverList;
+            }
+
+            for (const child of serverList.children) {
+                if (child.id === id) {
+                    return child;
+                }
+            }
+            return null;
+        },
         createElement(tagName) {
             if (tagName !== 'a') {
-                return {};
+                return createFakeElement(tagName);
             }
 
             const anchor = {};
@@ -158,11 +214,33 @@ function loadShell() {
         document: document,
         console: testConsole,
         storage: {
-            get() {
-                return null;
+            get(name) {
+                return Object.prototype.hasOwnProperty.call(storedState, name) ? storedState[name] : null;
             },
             set(name, value) {
+                storedState[name] = value;
                 storedValues.push({ name: name, value: value });
+                return value;
+            },
+            exists(name) {
+                return Object.prototype.hasOwnProperty.call(storedState, name);
+            },
+            remove(name) {
+                delete storedState[name];
+            }
+        },
+        ajax: {
+            request(url, settings) {
+                const request = {
+                    url: url,
+                    settings: settings,
+                    aborted: false,
+                    abort() {
+                        this.aborted = true;
+                    }
+                };
+                ajaxRequests.push(request);
+                return request;
             }
         },
         webOS: {
@@ -219,7 +297,17 @@ function loadShell() {
         intervals: intervals,
         clearedIntervals: clearedIntervals,
         xhrRequests: xhrRequests,
+        ajaxRequests: ajaxRequests,
         storedValues: storedValues,
+        seedStorage(name, value) {
+            storedState[name] = value;
+        },
+        readStorage(name) {
+            return storedState[name];
+        },
+        getServerCard(id) {
+            return document.getElementById(id);
+        },
         setContentDocument(contentDocument) {
             contentFrame.contentDocument = contentDocument;
         },
@@ -436,4 +524,165 @@ function sendShellMessage(shell, origin, token, type, data) {
 
     sendShellMessage(shell, targetOrigin, returnedTargetToken, 'AppHost.exit');
     assert.strictEqual(shell.getPlatformBackCalls(), 2, 'the returned target document should be authorized with its own origin');
+}
+
+function countDeviceInfoInjections(contentDocument) {
+    const prefix = 'window.DeviceInfo = ';
+    return contentDocument.injectedScripts.filter(function (script) {
+        return script.indexOf(prefix) === 0;
+    }).length;
+}
+
+{
+    // A late deviceInfo answer carries the TV's capability fingerprint (model,
+    // firmware, panel size, HDR/DV/Atmos support). It must only reach a document
+    // the handoff origin gate accepted — never one parked on a refused origin
+    // while its /System/Info/Public validation is still outstanding.
+    const shell = loadShell();
+
+    shell.getDeviceInfoCallback()({});
+    shell.context.handoff('https://target.example/web/index.html', { js: '', css: '' }, 'server-id');
+    shell.contentWindow.dispatchTestEvent('unload');
+
+    const foreignDocument = createContentDocument('https://redirect.example/web/index.html');
+    shell.setContentDocument(foreignDocument);
+    shell.contentFrame.dispatchTestEvent('load');
+
+    assert.strictEqual(countDeviceInfoInjections(foreignDocument), 0, 'an unvalidated origin must not be injected');
+    assert.strictEqual(shell.xhrRequests.length, 1, 'the refused origin should still be under validation');
+
+    shell.getDeviceInfoCallback()({ hdr10: true, modelName: 'OLED65' });
+
+    assert.strictEqual(
+        countDeviceInfoInjections(foreignDocument),
+        0,
+        'a late device callback must not leak capabilities into an unaccepted document'
+    );
+}
+
+{
+    // Once the frame navigates away from the accepted document, the stale
+    // document must not be written to either.
+    const shell = loadShell();
+    const trustedUrl = 'https://trusted.example/web/index.html';
+
+    shell.getDeviceInfoCallback()({});
+    shell.context.handoff(trustedUrl, { js: '', css: '' }, 'server-id');
+
+    const acceptedDocument = createContentDocument(trustedUrl);
+    shell.setContentDocument(acceptedDocument);
+    shell.contentFrame.dispatchTestEvent('load');
+    assert.strictEqual(countDeviceInfoInjections(acceptedDocument), 1, 'the handoff injects DeviceInfo once');
+
+    shell.contentWindow.dispatchTestEvent('unload');
+    const foreignDocument = createContentDocument('https://redirect.example/web/index.html');
+    shell.setContentDocument(foreignDocument);
+
+    shell.getDeviceInfoCallback()({ hdr10: true });
+
+    assert.strictEqual(countDeviceInfoInjections(acceptedDocument), 1, 'a document the frame already left must not be re-injected');
+    assert.strictEqual(countDeviceInfoInjections(foreignDocument), 0, 'the document that replaced it was never accepted');
+}
+
+{
+    // Cleanup revokes late injection along with the bridge token.
+    const shell = loadShell();
+    const trustedUrl = 'https://trusted.example/web/index.html';
+
+    shell.getDeviceInfoCallback()({});
+    shell.context.handoff(trustedUrl, { js: '', css: '' }, 'server-id');
+
+    const acceptedDocument = createContentDocument(trustedUrl);
+    shell.setContentDocument(acceptedDocument);
+    shell.contentFrame.dispatchTestEvent('load');
+
+    shell.context.activeHandoffCleanup();
+    shell.getDeviceInfoCallback()({ hdr10: true });
+
+    assert.strictEqual(countDeviceInfoInjections(acceptedDocument), 1, 'cleanup must revoke late device-info injection');
+}
+
+{
+    // Discovery repeats every ~15s and rewrites Address each cycle. An unchanged
+    // address must not cost a request, but a server that moves must be
+    // re-verified and repainted instead of keeping a dead address forever.
+    const shell = loadShell();
+
+    shell.context.verifyThenAdd({ Id: 'srv-1', Name: 'Living Room', Address: 'http://192.168.0.10:8096' });
+    assert.strictEqual(shell.ajaxRequests.length, 1, 'a newly discovered server is verified once');
+    shell.ajaxRequests[0].settings.success({ ProductName: 'Jellyfin Server' });
+
+    shell.context.verifyThenAdd({ Id: 'srv-1', Name: 'Living Room', Address: 'http://192.168.0.10:8096' });
+    assert.strictEqual(shell.ajaxRequests.length, 1, 'an unchanged address must not be re-verified every cycle');
+
+    shell.context.verifyThenAdd({ Id: 'srv-1', Name: 'Living Room', Address: 'http://192.168.0.42:8096' });
+    assert.strictEqual(shell.ajaxRequests.length, 2, 'a re-addressed server must be re-verified');
+    shell.ajaxRequests[1].settings.success({ ProductName: 'Jellyfin Server' });
+
+    const card = shell.getServerCard('server_srv-1');
+    assert.strictEqual(card.querySelector('.server_card_url').innerText, 'http://192.168.0.42:8096');
+    assert.strictEqual(card.querySelector('button').value, 'http://192.168.0.42:8096', 'the card must connect to the current address');
+}
+
+{
+    // A failed verification must release the in-flight marker so the next
+    // broadcast can retry.
+    const shell = loadShell();
+
+    shell.context.verifyThenAdd({ Id: 'srv-2', Name: 'Den', Address: 'http://192.168.0.11:8096' });
+    assert.strictEqual(shell.ajaxRequests.length, 1);
+    shell.ajaxRequests[0].settings.error({ error: 'timeout' });
+
+    shell.context.verifyThenAdd({ Id: 'srv-2', Name: 'Den', Address: 'http://192.168.0.11:8096' });
+    assert.strictEqual(shell.ajaxRequests.length, 2, 'a failed verification must not permanently block the server');
+}
+
+{
+    // A record saved without a name must not render the literal "undefined".
+    const shell = loadShell();
+
+    shell.context.renderSingleServer('srv-3', {
+        baseurl: 'http://192.168.0.12:8096',
+        auto_connect: false,
+        id: false
+    });
+
+    const card = shell.getServerCard('server_srv-3');
+    assert.strictEqual(card.querySelector('.server_card_title').innerText, 'http://192.168.0.12:8096');
+}
+
+{
+    // An ID change invalidates the identity and the auto-connect consent, not
+    // the whole record: dropping the display fields left an unusable card
+    // behind for users who declined the reconnect.
+    const shell = loadShell();
+
+    shell.seedStorage('connected_servers', {
+        'old-id': {
+            baseurl: 'https://server.example',
+            hosturl: 'https://server.example/web/index.html',
+            Name: 'Living Room',
+            Address: 'server.example',
+            auto_connect: true,
+            id: 'old-id'
+        }
+    });
+
+    const accepted = shell.context.handleSuccessServerInfo(
+        { Id: 'new-id', ServerName: 'Somebody Else' },
+        'https://server.example',
+        true
+    );
+
+    assert.strictEqual(accepted, false, 'an ID change must stop the handoff and warn');
+
+    const saved = shell.readStorage('connected_servers');
+    assert.ok(!saved['old-id'], 'the stale identity must be dropped');
+
+    const replacement = saved['new-id'];
+    assert.strictEqual(replacement.Name, 'Living Room', 'the saved name must survive a declined reconnect');
+    assert.strictEqual(replacement.Address, 'server.example');
+    assert.strictEqual(replacement.hosturl, 'https://server.example/web/index.html');
+    assert.strictEqual(replacement.auto_connect, false, 'auto connect must be re-confirmed after an ID change');
+    assert.strictEqual(replacement.id, false, 'the unknown-id sentinel keeps the next reconnect from warning again');
 }
