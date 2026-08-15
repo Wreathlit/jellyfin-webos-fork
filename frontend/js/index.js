@@ -175,13 +175,13 @@ function navigate(amount) {
         navigationInit();
     } else {
         //Isolate the node that we're after
-        const currentNode = element;
+        var currentNode = element;
 
         //find all tab-able elements
-        const allElements = document.querySelectorAll('input, button, a, area, object, select, textarea, [contenteditable]');
+        var allElements = document.querySelectorAll('input, button, a, area, object, select, textarea, [contenteditable]');
 
         //Find the current tab index.
-        const currentIndex = findIndex(allElements, currentNode);
+        var currentIndex = findIndex(allElements, currentNode);
         if (currentIndex < 0) {
             navigationInit();
             return;

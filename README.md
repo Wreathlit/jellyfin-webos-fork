@@ -672,6 +672,38 @@ check), `npm run check:syntax` (all project JavaScript), and
 `npm run test:unit` (the unit tests under `tests/unit/`). Run it before pushing
 — CI runs the same command on Node.js 22 and 24.
 
+### Testing the injected runtime
+
+`frontend/js/webOS.js` is a single IIFE that exports nothing but
+`window.NativeShell`, so its internals cannot be imported the way the modules
+under `frontend/js/injected/` can. `tests/helpers/injectedRuntime.js` loads the
+whole bundle — the injected modules in their shipping order, then `webOS.js` —
+into a `vm` context with a deterministic clock and a small DOM, and tests drive
+it exactly as Jellyfin Web does:
+
+- `NativeShell` calls (`enableFullscreen`, `updateMediaSession`, …);
+- the patched `window.fetch` / `XMLHttpRequest`, through
+  `respondToFetch()` and the recorded `state.xhrRequests`;
+- the patched `Node.prototype` insertion methods, by appending a `<script>`;
+- DOM events with real capture-then-bubble propagation.
+
+Assertions are made on what the TV would actually show or send: the
+`webos-hdr-ui-dim` body class, the injected DOM, and the request URLs that leave
+the device. `clock.tick(ms)` advances `Date.now()` and the timer queue together,
+so the playback-start windows can be crossed without waiting.
+
+Two constraints matter when adding cases:
+
+- the harness never invents mutations. A test that relies on the bundle's
+  MutationObservers must deliver the mutation record itself;
+- `tests/run.js` awaits a suite that exports a function or a promise. The
+  bundle's fetch path resolves through real promises, so any suite touching it
+  must export its runner rather than executing on `require`, or failures land
+  after the run has already reported success.
+
+New cases should be confirmed to fail against the unfixed code before being
+committed; every case in `tests/unit/injectedRuntime.test.js` was.
+
 Validate the IPK package structure (requires the webOS CLI):
 
 ```sh
