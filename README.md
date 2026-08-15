@@ -4,8 +4,45 @@ This fork carries local webOS fixes on top of Jellyfin for webOS. It is aimed at
 real LG webOS devices where the hosted Jellyfin Web UI exposes TV-specific
 problems that are hard to solve from the server alone.
 
-This fork targets webOS 5.0 and later. Older webOS JavaScript service runtimes
-are intentionally outside its compatibility boundary.
+## Platform baseline
+
+This fork targets **webOS 5.0 and later**, which means:
+
+| Surface | Baseline |
+| --- | --- |
+| Browser engine | **Chromium 68** — ES2018 |
+| Service runtime | webOS 5.0's Node.js — `const`/`let` and `Buffer.from` are in use |
+| Transpiling | **none** — `ares-package --no-minify` ships exactly what is authored |
+
+webOS major versions are tied to model year and LG does not upgrade them, so
+webOS 5.0 means 2020 hardware. The baseline is what runs on the oldest device
+this app is expected to reach, not what the newest device supports.
+
+Because nothing is transpiled, source language *is* target language. ES2018 and
+older is fine — `Promise`, `Object.assign`, `Array.prototype.includes`,
+`String.prototype.trimStart` all exist. Anything newer does not:
+
+| Not available | Since |
+| --- | --- |
+| `?.`, `??` | Chromium 80 |
+| `??=`, `\|\|=`, `&&=` | Chromium 85 |
+| `Array.prototype.flat` / `flatMap` | Chromium 69 |
+| `globalThis`, `queueMicrotask` | Chromium 71 |
+| `Object.fromEntries`, `String.prototype.matchAll` | Chromium 73 |
+| `String.prototype.replaceAll`, `Promise.any` | Chromium 85 |
+| `.at()`, `Object.hasOwn`, `structuredClone` | Chromium 92+ |
+
+`npm run check:baseline` enforces this. It exists because `check:syntax` cannot:
+that step shells out to `node --check`, and Node accepts `?.` happily, so a
+violation would pass CI green and then white-screen the TV with a parse error at
+load. The check is a lexical scan, not a parser — it catches the common
+accidents rather than proving compatibility.
+
+To raise the baseline, change the table in `tools/check-baseline.js` and this
+section together, and be explicit about which model years are being dropped.
+
+Older webOS JavaScript service runtimes are intentionally outside the
+compatibility boundary.
 
 The main local patch surface is:
 
@@ -668,9 +705,11 @@ npm test
 ```
 
 This runs `npm run check:assets` (injected-runtime asset manifest + load-order
-check), `npm run check:syntax` (all project JavaScript), and
-`npm run test:unit` (the unit tests under `tests/unit/`). Run it before pushing
-— CI runs the same command on Node.js 22 and 24.
+check), `npm run check:syntax` (all project JavaScript parses),
+`npm run check:baseline` (frontend stays within Chromium 68 / ES2018 — see
+"Platform baseline"), and `npm run test:unit` (the unit tests under
+`tests/unit/`). Run it before pushing — CI runs the same command on Node.js 22
+and 24.
 
 ### Testing the injected runtime
 

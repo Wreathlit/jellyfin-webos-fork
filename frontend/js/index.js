@@ -138,27 +138,14 @@ try {
     completeDeviceInfo({});
 }
 
-//Adds .includes to string to do substring matching
-if (!String.prototype.includes) {
-  String.prototype.includes = function(search, start) {
-    'use strict';
-
-    if (search instanceof RegExp) {
-      throw TypeError('first argument must not be a RegExp');
-    }
-    if (start === undefined) { start = 0; }
-    return this.indexOf(search, start) !== -1;
-  };
-}
-
-
 function isVisible(element) {
     return element.offsetWidth > 0 && element.offsetHeight > 0;
 }
 
 function findIndex(array, currentNode) {
-    //This just implements the following function which is not available on some LG TVs
-    //Array.from(allElements).findIndex(function (el) { return currentNode.isEqualNode(el); })
+    // Matches on isEqualNode (structural equality), not identity, so this is
+    // not a plain indexOf. Kept explicit because the distinction is load
+    // bearing for how focus is located.
     for (var i = 0, item; item = array[i]; i++) {
         if (currentNode.isEqualNode(item))
             return i;
@@ -346,7 +333,7 @@ function validURL(str) {
 }
 
 function normalizeUrl(url) {
-    url = url.trimLeft ? url.trimLeft() : url.trimStart();
+    url = url.trimStart();
     if (url.indexOf("http://") != 0 && url.indexOf("https://") != 0) {
         // assume http
         url = "http://" + url;
@@ -555,7 +542,9 @@ function handleSuccessManifest(data, baseurl) {
             debugLog("martin:handleSuccessManifest modified server");
             debugLog(info);
 
-        // avoid Promise as it's buggy in some WebOS
+        // Callback style, not promises. Promise is available on the supported
+        // baseline; this is kept because getTextToInject also serves the
+        // sequential loader below, not because promises are unsafe.
             getTextToInject(function (bundle) {
                 handoff(hosturl, bundle, info.id && info.id !== false ? info.id : null);
             }, function (error) {
@@ -696,7 +685,9 @@ function getTextToInject(success, failure) {
         });
     }
 
-    // imitate promises as they're borked in at least WebOS 2
+    // Sequential loader. Assets must be concatenated in injectedScriptUrls
+    // order, so this walks them one at a time rather than racing them; it is
+    // not a promise workaround.
     var looper = function (idx) {
         if (idx >= urls.length) {
             injectBundleCache = bundle;
@@ -759,8 +750,8 @@ function getHandoffUrlOrigin(value) {
 function createHandoffMessageToken() {
     handoffMessageTokenSequence++;
 
-    var cryptoObject = window.crypto || window.msCrypto;
-    if (cryptoObject && cryptoObject.getRandomValues && typeof Uint32Array !== 'undefined') {
+    var cryptoObject = window.crypto;
+    if (cryptoObject && cryptoObject.getRandomValues) {
         try {
             var values = new Uint32Array(4);
             cryptoObject.getRandomValues(values);

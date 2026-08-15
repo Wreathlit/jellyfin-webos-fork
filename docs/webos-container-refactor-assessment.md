@@ -147,8 +147,9 @@ runtime patch layer.
 
 The large client rewrite is still out of scope, but the behavior-preserving
 module refactor has started. The first accepted direction is to keep the hosted
-Jellyfin Web iframe and split the injected compatibility layer into ordered ES5
-runtime modules.
+Jellyfin Web iframe and split the injected compatibility layer into ordered
+runtime modules, written to the platform baseline (Chromium 68 / ES2018; see
+"Platform baseline" in README.md, enforced by `npm run check:baseline`).
 
 Current migration constraints:
 

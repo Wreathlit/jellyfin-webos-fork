@@ -4408,28 +4408,8 @@
         return null;
     }
 
-    function createResolvedThenable(value) {
-        return {
-            then: function (onFulfilled) {
-                if (typeof onFulfilled !== 'function') {
-                    return createResolvedThenable(value);
-                }
-
-                try {
-                    return createResolvedThenable(onFulfilled(value));
-                } catch (error) {
-                    return createResolvedThenable('unknown');
-                }
-            }
-        };
-    }
-
     function resolvedDynamicRangeHint(value) {
-        if (window.Promise && typeof window.Promise.resolve === 'function') {
-            return window.Promise.resolve(value);
-        }
-
-        return createResolvedThenable(value);
+        return Promise.resolve(value);
     }
 
     function getDynamicRangeCacheKey(itemId, mediaSourceId) {
@@ -5906,9 +5886,7 @@
         AppHost: {
             init: function () {
                 postMessage('AppHost.init', AppInfo);
-                return window.Promise && typeof window.Promise.resolve === 'function'
-                    ? window.Promise.resolve(AppInfo)
-                    : createResolvedThenable(AppInfo);
+                return Promise.resolve(AppInfo);
             },
 
             appName: function () {

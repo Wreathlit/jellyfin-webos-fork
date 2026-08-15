@@ -16,8 +16,9 @@
     "version": "node tools/sync-version.js && git add frontend/appinfo.json",
     "check:assets": "node tools/check-injected-assets.js",
     "check:syntax": "node tools/check-js-syntax.js",
+    "check:baseline": "node tools/check-baseline.js",
     "test:unit": "node tests/run.js",
-    "test": "npm run check:assets && npm run check:syntax && npm run test:unit"
+    "test": "npm run check:assets && npm run check:syntax && npm run check:baseline && npm run test:unit"
   },
   "author": "Jellyfin contributors",
   "license": "MPL-2.0",
