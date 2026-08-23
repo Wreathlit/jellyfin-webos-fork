@@ -717,39 +717,6 @@
         return result;
     }
 
-    function hasOnlyDirectStreamTranscodeReasons(url) {
-        // Keep this allow-list aligned with Jellyfin 10.11 StreamBuilder's
-        // DirectStreamReasons. These failures can change the container/audio
-        // while leaving the video bitstream untouched.
-        var directStreamReasons = {
-            containernotsupported: true,
-            videocodectagnotsupported: true,
-            audiocodecnotsupported: true,
-            audiobitratenotsupported: true,
-            audiochannelsnotsupported: true,
-            audioprofilenotsupported: true,
-            audiosampleratenotsupported: true,
-            secondaryaudionotsupported: true,
-            audiobitdepthnotsupported: true,
-            audioisexternal: true
-        };
-        var reasons = parseNormalizedCommaSeparatedList(getFirstQueryParameterValue(url, [
-            'TranscodeReasons',
-            'transcodeReasons',
-            'transcodereasons'
-        ]));
-        if (!reasons.length) {
-            return false;
-        }
-
-        for (var i = 0; i < reasons.length; i++) {
-            if (!directStreamReasons[reasons[i]]) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     function getFirstObjectField(value, names) {
         if (!value || typeof value !== 'object') {
             return null;
@@ -802,6 +769,105 @@
         return getFirstQueryParameterValue(url, names);
     }
 
+    function parseFinitePlaybackNumber(value) {
+        if (value === null || value === undefined || value === '') {
+            return null;
+        }
+
+        var parsed = parseFloat(value);
+        return isFinite(parsed) ? parsed : null;
+    }
+
+    function normalizeVideoProfileName(value) {
+        return value ? value.toString().replace(/\s+/g, '').toLowerCase() : '';
+    }
+
+    function getVideoProfileScore(codec, profile) {
+        var profilesByCodec = {
+            h264: [
+                'constrainedbaseline',
+                'baseline',
+                'extended',
+                'main',
+                'high',
+                'progressivehigh',
+                'constrainedhigh',
+                'high10'
+            ],
+            hevc: ['main', 'main10'],
+            h265: ['main', 'main10'],
+            av1: ['main', 'high', 'professional']
+        };
+        var profiles = profilesByCodec[codec] || [];
+        return profiles.indexOf(normalizeVideoProfileName(profile));
+    }
+
+    function isVideoProfileBlockedByRequest(videoStream, sourceVideoCodec, url) {
+        var requestedProfiles = parseNormalizedCommaSeparatedList(
+            getCodecOptionQueryValue(url, sourceVideoCodec, 'profile')
+        );
+        if (!requestedProfiles.length) {
+            return false;
+        }
+
+        var sourceProfile = normalizeVideoProfileName(getFirstObjectField(videoStream, ['Profile', 'profile']));
+        if (!sourceProfile || requestedProfiles.indexOf(sourceProfile) !== -1) {
+            return false;
+        }
+
+        // Jellyfin permits a lower profile when the first requested profile is
+        // higher in the same codec family. Unknown profiles stay conservative.
+        var sourceScore = getVideoProfileScore(sourceVideoCodec, sourceProfile);
+        var requestedScore = getVideoProfileScore(sourceVideoCodec, requestedProfiles[0]);
+        return sourceScore === -1 || requestedScore === -1 || sourceScore > requestedScore;
+    }
+
+    function isVideoRangeBlockedByRequest(videoStream, sourceVideoCodec, url) {
+        var requestedRanges = parseNormalizedCommaSeparatedList(
+            getCodecOptionQueryValue(url, sourceVideoCodec, 'rangetype')
+        );
+        if (!requestedRanges.length) {
+            return false;
+        }
+
+        var sourceRange = getFirstObjectField(videoStream, ['VideoRangeType', 'videoRangeType']);
+        var normalizedSourceRange = sourceRange ? sourceRange.toString().toLowerCase() : '';
+        if (!normalizedSourceRange) {
+            return true;
+        }
+        if (requestedRanges.indexOf(normalizedSourceRange) !== -1) {
+            return false;
+        }
+
+        // These are the lossless fallback relationships in Jellyfin 10.11's
+        // CanStreamCopyVideo(). More complex Dolby Vision metadata removal is
+        // intentionally not predicted here.
+        if (normalizedSourceRange === 'doviwithhdr10' && requestedRanges.indexOf('hdr10') !== -1) {
+            return false;
+        }
+        if (normalizedSourceRange === 'doviwithhlg' && requestedRanges.indexOf('hlg') !== -1) {
+            return false;
+        }
+        if (normalizedSourceRange === 'doviwithsdr' && requestedRanges.indexOf('sdr') !== -1) {
+            return false;
+        }
+        if (normalizedSourceRange === 'hdr10plus' && requestedRanges.indexOf('hdr10') !== -1) {
+            return false;
+        }
+
+        return true;
+    }
+
+    function isVideoNumberAboveRequest(videoStream, streamFields, url, requestFields, rejectMissing, tolerance) {
+        var requestValue = parseFinitePlaybackNumber(getFirstQueryParameterValue(url, requestFields));
+        if (requestValue === null) {
+            return false;
+        }
+
+        var streamValue = parseFinitePlaybackNumber(getFirstObjectField(videoStream, streamFields));
+        return streamValue === null ? rejectMissing : streamValue > requestValue + (tolerance || 0);
+    }
+
     function hasStreamCopyBlockingRequest(mediaSource, videoStream, sourceVideoCodec, url) {
         var isInterlaced = getFirstObjectField(videoStream, ['IsInterlaced', 'isInterlaced']);
         var deInterlace = getFirstQueryParameterValue(url, ['DeInterlace', 'deInterlace', 'deinterlace']);
@@ -845,6 +911,77 @@
             return true;
         }
 
+        if (isVideoProfileBlockedByRequest(videoStream, sourceVideoCodec, url)
+            || isVideoRangeBlockedByRequest(videoStream, sourceVideoCodec, url)) {
+            return true;
+        }
+
+        if (isVideoNumberAboveRequest(
+            videoStream,
+            ['Width', 'width'],
+            url,
+            ['MaxWidth', 'maxWidth', 'maxwidth'],
+            true
+        ) || isVideoNumberAboveRequest(
+            videoStream,
+            ['Height', 'height'],
+            url,
+            ['MaxHeight', 'maxHeight', 'maxheight'],
+            true
+        ) || isVideoNumberAboveRequest(
+            videoStream,
+            ['ReferenceFrameRate', 'referenceFrameRate', 'RealFrameRate', 'realFrameRate'],
+            url,
+            ['MaxFramerate', 'maxFramerate', 'maxframerate', 'Framerate', 'framerate'],
+            true,
+            0.05
+        )) {
+            return true;
+        }
+
+        var requestedVideoBitrate = parseFinitePlaybackNumber(getFirstQueryParameterValue(url, [
+            'VideoBitRate',
+            'videoBitRate',
+            'videobitrate'
+        ]));
+        if (requestedVideoBitrate !== null) {
+            var sourceVideoBitrate = parseFinitePlaybackNumber(getFirstObjectField(videoStream, [
+                'BitRate',
+                'bitRate',
+                'Bitrate',
+                'bitrate'
+            ]));
+            var liveStreamId = getFirstQueryParameterValue(url, ['LiveStreamId', 'liveStreamId', 'livestreamid']);
+            if ((sourceVideoBitrate === null && !liveStreamId)
+                || (sourceVideoBitrate !== null && sourceVideoBitrate > requestedVideoBitrate)) {
+                return true;
+            }
+        }
+
+        var requestedBitDepth = parseFinitePlaybackNumber(
+            getCodecOptionQueryValue(url, sourceVideoCodec, 'videobitdepth')
+                || getFirstQueryParameterValue(url, ['MaxVideoBitDepth', 'maxVideoBitDepth', 'maxvideobitdepth'])
+        );
+        var sourceBitDepth = parseFinitePlaybackNumber(getFirstObjectField(videoStream, ['BitDepth', 'bitDepth']));
+        if (requestedBitDepth !== null && sourceBitDepth !== null && sourceBitDepth > requestedBitDepth) {
+            return true;
+        }
+
+        var requestedRefFrames = parseFinitePlaybackNumber(
+            getCodecOptionQueryValue(url, sourceVideoCodec, 'maxrefframes')
+                || getFirstQueryParameterValue(url, ['MaxRefFrames', 'maxRefFrames', 'maxrefframes'])
+        );
+        var sourceRefFrames = parseFinitePlaybackNumber(getFirstObjectField(videoStream, ['RefFrames', 'refFrames']));
+        if (requestedRefFrames !== null && sourceRefFrames !== null && sourceRefFrames > requestedRefFrames) {
+            return true;
+        }
+
+        var requestedLevel = parseFinitePlaybackNumber(getCodecOptionQueryValue(url, sourceVideoCodec, 'level'));
+        var sourceLevel = parseFinitePlaybackNumber(getFirstObjectField(videoStream, ['Level', 'level']));
+        if (requestedLevel !== null && sourceLevel !== null && sourceLevel > requestedLevel) {
+            return true;
+        }
+
         var container = mediaSource.Container || mediaSource.container || '';
         if (sourceVideoCodec === 'h264'
             && container.toString().toLowerCase() === 'avi'
@@ -856,20 +993,18 @@
     }
 
     function isImplicitVideoStreamCopy(mediaSource, url) {
-        // PlaybackInfo always serializes a target VideoCodec list for the HLS
-        // transcode endpoint. With AllowVideoStreamCopy enabled (the default),
-        // EncodingHelper replaces that target with `copy` at request time when
-        // the only incompatibilities are DirectStreamReasons and the source
-        // video codec occurs in the target list. The URL itself therefore does
-        // not necessarily contain VideoCodec=copy even though the session later
-        // reports IsVideoDirect=true.
+        // PlaybackInfo serializes the chosen target profile into an HLS URL and
+        // labels that candidate as Transcode. When the request starts, Jellyfin
+        // 10.11's TryStreamCopy independently compares the source video against
+        // those URL constraints and can replace the video codec with `copy`.
+        // TranscodeReasons describe why raw direct play failed; TryStreamCopy
+        // does not read them, so they must not be used as a video-encode gate.
         var allowVideoStreamCopy = getFirstQueryParameterValue(url, [
             'AllowVideoStreamCopy',
             'allowVideoStreamCopy',
             'allowvideostreamcopy'
         ]);
-        if (isExplicitFalsePlaybackQueryValue(allowVideoStreamCopy)
-            || !hasOnlyDirectStreamTranscodeReasons(url)) {
+        if (isExplicitFalsePlaybackQueryValue(allowVideoStreamCopy)) {
             return false;
         }
 
@@ -897,7 +1032,7 @@
         return value ? value.toString().toLowerCase() : '';
     }
 
-    function getPlaybackVideoDeliveryFromMediaSource(mediaSource) {
+    function getPlaybackVideoDeliveryFromMediaSource(mediaSource, predictImplicitCopy) {
         if (!mediaSource || typeof mediaSource !== 'object') {
             return 'unknown';
         }
@@ -905,7 +1040,9 @@
         var transcodingUrl = mediaSource.TranscodingUrl || mediaSource.transcodingUrl;
         var transcodingUrlDelivery = getPlaybackVideoDeliveryFromTranscodingUrl(transcodingUrl);
         if (transcodingUrlDelivery !== 'unknown') {
-            if (transcodingUrlDelivery === 'transcode' && isImplicitVideoStreamCopy(mediaSource, transcodingUrl)) {
+            if (transcodingUrlDelivery === 'transcode'
+                && predictImplicitCopy !== false
+                && isImplicitVideoStreamCopy(mediaSource, transcodingUrl)) {
                 return 'copy';
             }
             return transcodingUrlDelivery;
@@ -941,7 +1078,60 @@
     }
 
     function getPlaybackVideoDeliveryFromPlaybackInfoPayload(payload, mediaSourceId) {
-        return getPlaybackVideoDeliveryFromMediaSource(getSelectedPlaybackInfoMediaSource(payload, mediaSourceId));
+        // PlaybackInfo describes the candidate URL before the media request has
+        // started. TryStreamCopy may still change its video encoder to `copy`,
+        // but the inverse is also possible when a server-side constraint that
+        // is absent from this payload rejects stream copy. Do not present that
+        // prediction as the actual playback result; /Sessions provides the
+        // authoritative TranscodingInfo.IsVideoDirect value once playback is
+        // running.
+        return getPlaybackVideoDeliveryFromMediaSource(
+            getSelectedPlaybackInfoMediaSource(payload, mediaSourceId),
+            false
+        );
+    }
+
+    function getPlaybackVideoDeliveryFromSession(session) {
+        if (!session || typeof session !== 'object') {
+            return 'unknown';
+        }
+
+        var playState = session.PlayState || session.playState || {};
+        var playMethod = getLowerName(
+            playState.PlayMethod
+                || playState.playMethod
+                || session.PlayMethod
+                || session.playMethod
+        );
+        var transcodingInfo = session.TranscodingInfo || session.transcodingInfo;
+        if (transcodingInfo && typeof transcodingInfo === 'object') {
+            var isVideoDirect = Object.prototype.hasOwnProperty.call(transcodingInfo, 'IsVideoDirect')
+                ? transcodingInfo.IsVideoDirect
+                : transcodingInfo.isVideoDirect;
+            if (isVideoDirect === true || getLowerName(isVideoDirect) === 'true') {
+                return playMethod === 'directplay' ? 'directplay' : 'directstream';
+            }
+            if (isVideoDirect === false || getLowerName(isVideoDirect) === 'false') {
+                return 'transcode';
+            }
+
+            var videoCodec = getLowerName(transcodingInfo.VideoCodec || transcodingInfo.videoCodec);
+            if (videoCodec === 'copy') {
+                return 'directstream';
+            }
+        }
+
+        if (playMethod === 'directplay') {
+            return 'directplay';
+        }
+        if (playMethod === 'directstream') {
+            return 'directstream';
+        }
+        if (playMethod === 'transcode') {
+            return 'transcode';
+        }
+
+        return 'unknown';
     }
 
     function getDynamicRangeHintFromPlaybackInfoPayload(payload, mediaSourceId) {
@@ -1020,6 +1210,7 @@
         getPlaybackVideoDeliveryFromTranscodingUrl: getPlaybackVideoDeliveryFromTranscodingUrl,
         getPlaybackVideoDeliveryFromMediaSource: getPlaybackVideoDeliveryFromMediaSource,
         getPlaybackVideoDeliveryFromPlaybackInfoPayload: getPlaybackVideoDeliveryFromPlaybackInfoPayload,
+        getPlaybackVideoDeliveryFromSession: getPlaybackVideoDeliveryFromSession,
         combineDynamicRangeHints: combineDynamicRangeHints
     });
 })(window);

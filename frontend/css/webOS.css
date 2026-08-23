@@ -33,6 +33,7 @@ body.webos-hdr-ui-dim .actionSheet,
 body.webos-hdr-ui-dim .formDialog,
 body.webos-hdr-ui-dim .promptDialog,
 body.webos-hdr-ui-dim .toast,
+body.webos-hdr-ui-dim .webos-playback-diagnostics-overlay,
 body.webos-hdr-ui-dim .dialog {
     filter: brightness(var(--webos-hdr-ui-brightness, 0.3)) saturate(0.92);
 }

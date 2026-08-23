@@ -188,6 +188,29 @@ assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
 }), 'copy', 'audio-only transcode should identify the server\'s implicit video stream copy');
 assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
     PlayMethod: 'Transcode',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc,h264&AudioCodec=aac&VideoBitRate=120000000&MaxFramerate=60&MaxWidth=3840&MaxHeight=2160&hevc-level=153&hevc-videobitdepth=10&hevc-profile=main,main10&hevc-rangetype=HDR10&TranscodeReasons=DirectPlayError',
+    MediaStreams: [{
+        Type: 'Video',
+        Codec: 'hevc',
+        Profile: 'Main 10',
+        Level: 153,
+        BitDepth: 10,
+        BitRate: 24000000,
+        Width: 3840,
+        Height: 2160,
+        ReferenceFrameRate: 23.976,
+        VideoRangeType: 'HDR10'
+    }]
+}), 'copy', 'TryStreamCopy ignores the direct-play reason when the video satisfies the HLS request');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc&AudioCodec=aac',
+    MediaStreams: [
+        { Type: 'Video', Codec: 'hevc' }
+    ]
+}), 'copy', 'missing TranscodeReasons must not prevent request-time video copy');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
     TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=h264&AudioCodec=aac&TranscodeReasons=AudioCodecNotSupported',
     MediaStreams: [
         { Type: 'Video', Codec: 'hevc' }
@@ -202,11 +225,25 @@ assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
 }), 'transcode', 'an explicit stream-copy disable must force video transcode classification');
 assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
     PlayMethod: 'Transcode',
-    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc&AudioCodec=aac&TranscodeReasons=AudioCodecNotSupported,VideoBitDepthNotSupported',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc&AudioCodec=aac&hevc-videobitdepth=8&TranscodeReasons=AudioCodecNotSupported,VideoBitDepthNotSupported',
     MediaStreams: [
-        { Type: 'Video', Codec: 'hevc' }
+        { Type: 'Video', Codec: 'hevc', BitDepth: 10 }
     ]
-}), 'transcode', 'a video incompatibility must force video transcode classification');
+}), 'transcode', 'the actual target bit-depth constraint must force video transcode classification');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc&AudioCodec=aac&hevc-profile=main',
+    MediaStreams: [
+        { Type: 'Video', Codec: 'hevc', Profile: 'Main 10' }
+    ]
+}), 'transcode', 'a source profile above the requested profile must be encoded');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
+    PlayMethod: 'Transcode',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc&AudioCodec=aac&hevc-rangetype=SDR',
+    MediaStreams: [
+        { Type: 'Video', Codec: 'hevc', VideoRangeType: 'HDR10' }
+    ]
+}), 'transcode', 'an HDR source cannot be copied into an SDR-only request');
 assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
     PlayMethod: 'Transcode',
     TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=h264&AudioCodec=aac&RequireAvc=true&TranscodeReasons=AudioCodecNotSupported',
@@ -254,6 +291,26 @@ assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
     SupportsDirectPlay: true,
     TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=h264'
 }), 'transcode', 'TranscodingUrl should win over capability flags');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromPlaybackInfoPayload({
+    MediaSourceId: 'same-codec',
+    MediaSources: [{
+        Id: 'same-codec',
+        PlayMethod: 'Transcode',
+        TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc,h264&AudioCodec=aac',
+        MediaStreams: [{ Type: 'Video', Codec: 'hevc' }]
+    }]
+}), 'transcode', 'PlaybackInfo must not expose a request-time stream-copy prediction as an observed copy');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromSession({
+    PlayState: { PlayMethod: 'Transcode' },
+    TranscodingInfo: { IsVideoDirect: true }
+}), 'directstream', 'the running session identifies audio-only transcode as direct-streamed video');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromSession({
+    PlayState: { PlayMethod: 'Transcode' },
+    TranscodingInfo: { IsVideoDirect: false }
+}), 'transcode', 'the running session identifies real video encoding');
+assert.strictEqual(hdr.getPlaybackVideoDeliveryFromSession({
+    PlayState: { PlayMethod: 'DirectPlay' }
+}), 'directplay');
 assert.strictEqual(hdr.normalizePlaybackVideoDelivery('DirectPlay'), 'directplay');
 assert.strictEqual(hdr.isPlaybackVideoCopiedOrDirect('directplay'), true);
 assert.strictEqual(hdr.isPlaybackVideoCopiedOrDirect('directstream'), true);

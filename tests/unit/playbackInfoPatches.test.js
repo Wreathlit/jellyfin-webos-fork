@@ -415,7 +415,7 @@ function burnInPayload(mediaSource) {
 function videoTranscodeSource(subtitleStreams) {
     return {
         Id: 'source-1',
-        TranscodingUrl: '/videos/abc/master.m3u8?VideoCodec=h264&AudioCodec=aac&SubtitleStreamIndex=3&alwaysBurnInSubtitleWhenTranscoding=true',
+        TranscodingUrl: '/videos/abc/master.m3u8?VideoCodec=h264&AudioCodec=aac&AllowVideoStreamCopy=false&SubtitleStreamIndex=3&alwaysBurnInSubtitleWhenTranscoding=true',
         MediaStreams: subtitleStreams
     };
 }
@@ -488,8 +488,7 @@ function videoTranscodeSource(subtitleStreams) {
 
 {
     // Jellyfin 10.11 normally writes the target video codec into the URL even
-    // when EncodingHelper will select stream copy at request time. Audio-only
-    // TranscodeReasons plus a matching source codec identify that path.
+    // when EncodingHelper will select stream copy at request time.
     const payload = burnInPayload({
         Id: 'source-1',
         PlayMethod: 'Transcode',
@@ -501,6 +500,35 @@ function videoTranscodeSource(subtitleStreams) {
     });
 
     assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {}), false, 'implicit video copy must not suppress client-side rendering');
+    assert.strictEqual(payload.MediaSources[0].MediaStreams[1].DeliveryMethod, 'External');
+}
+
+{
+    // TryStreamCopy ignores TranscodeReasons. A direct-play failure can still
+    // become video copy when the source satisfies the HLS request constraints.
+    const payload = burnInPayload({
+        Id: 'source-1',
+        PlayMethod: 'Transcode',
+        TranscodingUrl: '/videos/abc/master.m3u8?VideoCodec=hevc,h264&AudioCodec=aac&VideoBitRate=120000000&MaxFramerate=60&MaxWidth=3840&MaxHeight=2160&hevc-level=153&hevc-videobitdepth=10&hevc-profile=main,main10&hevc-rangetype=HDR10&SubtitleStreamIndex=3&TranscodeReasons=DirectPlayError&alwaysBurnInSubtitleWhenTranscoding=true',
+        MediaStreams: [
+            {
+                Index: 0,
+                Type: 'Video',
+                Codec: 'hevc',
+                Profile: 'Main 10',
+                Level: 153,
+                BitDepth: 10,
+                BitRate: 24000000,
+                Width: 3840,
+                Height: 2160,
+                ReferenceFrameRate: 23.976,
+                VideoRangeType: 'HDR10'
+            },
+            { Index: 3, Type: 'Subtitle', Codec: 'ass', DeliveryMethod: 'External' }
+        ]
+    });
+
+    assert.strictEqual(patches.patchBurnedInSubtitleDelivery(payload, {}), false, 'request-time video copy must keep client subtitles');
     assert.strictEqual(payload.MediaSources[0].MediaStreams[1].DeliveryMethod, 'External');
 }
 

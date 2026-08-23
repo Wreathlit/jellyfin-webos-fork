@@ -289,6 +289,10 @@
     var latestPlaybackInfoCacheKey = null;
     var latestPlaybackInfoCacheEpoch = -1;
     var pendingPlaybackInfoDynamicRange = null;
+    var playbackSessionProbeFetch = null;
+    var latestPlaybackSessionProbe = null;
+    var playbackSessionProbeTimers = [];
+    var playbackSessionProbeGeneration = 0;
     var playbackStartFallbackTimers = [];
     var playbackStartFallbackGeneration = 0;
     var pgsSubtitleDeliveryDiagnostic = 'none';
@@ -708,9 +712,11 @@
                 applyPendingPlaybackInfoHint();
             }
             schedulePlaybackStartFallbackChecks('playback-start-fallback');
+            schedulePlaybackSessionProbes();
         }
         if (nextState !== PlaybackState.PLAYING) {
             clearPlaybackStartFallbackTimers();
+            clearPlaybackSessionProbeTimers(true);
             clearPlaybackStartMaxBitrateForce('playback-state-change');
             clearHdrUiInfoCorrectionWindow();
         }
@@ -1023,10 +1029,12 @@
         var currentTime = video && typeof video.currentTime === 'number' ? video.currentTime.toFixed(3) : 'n/a';
         var dimensions = video ? ((video.videoWidth || 0).toString() + 'x' + (video.videoHeight || 0).toString()) : 'n/a';
         var rVfcSupported = !!(video && video.requestVideoFrameCallback);
+        var hdrDimClassActive = !!(document.body && document.body.classList.contains(HDR_UI_DIM_CLASS));
+        var hdrDimDecision = isHdrUiDimmingAllowedForCurrentPlayback();
 
         overlay.textContent = [
             'webOS diagnostics',
-            'state=' + playbackState + ' range=' + playbackDynamicRange + ' video=' + playbackVideoDelivery + '(' + (playbackVideoDeliveryReason || '-') + ')' + ' rAF=' + playbackDiagnosticsRafFps + ' rVFC=' + (rVfcSupported ? playbackDiagnosticsVideoFrameFps : 'n/a') + ' delta=' + (rVfcSupported ? playbackDiagnosticsVideoFrameDelta + 'ms' : 'n/a'),
+            'state=' + playbackState + ' range=' + playbackDynamicRange + ' video=' + playbackVideoDelivery + '(' + (playbackVideoDeliveryReason || '-') + ')' + ' dim=' + (hdrDimClassActive ? 'on' : 'off') + '/' + (hdrDimDecision ? 'allow' : 'block') + '@' + formatHdrUiDimBrightness(hdrUiDimBrightness) + ' rAF=' + playbackDiagnosticsRafFps + ' rVFC=' + (rVfcSupported ? playbackDiagnosticsVideoFrameFps : 'n/a') + ' delta=' + (rVfcSupported ? playbackDiagnosticsVideoFrameDelta + 'ms' : 'n/a'),
             'HDR via=' + (playbackDynamicRangeReason || '-') + ' ms=' + formatHdrDetectionHint(hdrDetectionMediaSessionLastHint) + ' pi=' + formatHdrDetectionHint(hdrDetectionPlaybackInfoLastHint) + '/' + hdrDetectionPlaybackInfoCount + ' pend=' + (pendingPlaybackInfoDynamicRange ? formatHdrDetectionHint(pendingPlaybackInfoDynamicRange.hint) : '-') + ' im=' + formatHdrDetectionHint(hdrDetectionItemMetadataLastHint) + ' ui=' + formatHdrDetectionHint(hdrDetectionPlaybackUiLastHint),
             'long=' + formatPlaybackDiagnosticsLongTaskInfo(now) + ' video=' + dimensions + ' t=' + currentTime + ' drop=' + formatPlaybackDiagnosticsNumber(dropped) + '/' + formatPlaybackDiagnosticsNumber(total),
             'ASS canvas=' + getPlaybackDiagnosticsAssCanvasInfo() + ' worker=' + getPlaybackDiagnosticsAssWorkerInfo(),
@@ -4393,6 +4401,13 @@
             : 'unknown';
     }
 
+    function getPlaybackVideoDeliveryFromSession(session) {
+        var decisions = getHdrDecisions();
+        return decisions && decisions.getPlaybackVideoDeliveryFromSession
+            ? decisions.getPlaybackVideoDeliveryFromSession(session)
+            : 'unknown';
+    }
+
     function getDynamicRangeHintFromItem(item, mediaSourceId) {
         var decisions = getHdrDecisions();
         return decisions && decisions.getDynamicRangeHintFromItem
@@ -4577,6 +4592,319 @@
         return !!(patches && patches.isPlaybackInfoUrl && patches.isPlaybackInfoUrl(url));
     }
 
+    function isPlaybackSessionsUrl(url) {
+        if (!url || typeof url !== 'string') {
+            return false;
+        }
+        return /\/sessions(?:[?#]|$)/i.test(url);
+    }
+
+    function getPlaybackQueryParameterValue(url, name) {
+        var patches = getPlaybackInfoPatches();
+        return patches && patches.getQueryParameterValue
+            ? patches.getQueryParameterValue(url, name)
+            : null;
+    }
+
+    function getPlaybackSessionDeviceId(transcodingUrl) {
+        var deviceId = getPlaybackQueryParameterValue(transcodingUrl, 'DeviceId')
+            || getPlaybackQueryParameterValue(transcodingUrl, 'deviceId');
+        if (!deviceId && window.AppInfo) {
+            deviceId = window.AppInfo.deviceId || window.AppInfo.DeviceId;
+        }
+        return deviceId ? deviceId.toString() : null;
+    }
+
+    function buildPlaybackSessionsUrl(playbackInfoUrl, deviceId) {
+        if (!playbackInfoUrl || typeof playbackInfoUrl !== 'string') {
+            return null;
+        }
+
+        var hashIndex = playbackInfoUrl.indexOf('#');
+        var withoutHash = hashIndex === -1 ? playbackInfoUrl : playbackInfoUrl.substring(0, hashIndex);
+        var queryIndex = withoutHash.indexOf('?');
+        var path = queryIndex === -1 ? withoutHash : withoutHash.substring(0, queryIndex);
+        var itemsIndex = path.toLowerCase().lastIndexOf('/items/');
+        if (itemsIndex === -1) {
+            return null;
+        }
+
+        var sessionUrl = path.substring(0, itemsIndex) + '/Sessions';
+        var query = [];
+        if (deviceId) {
+            query.push('DeviceId=' + encodeURIComponent(deviceId));
+        }
+
+        // Some older/custom Jellyfin Web builds authenticate API requests with
+        // an api_key query value instead of an Authorization header. Preserve
+        // only that credential, never unrelated PlaybackInfo parameters.
+        var apiKey = getPlaybackQueryParameterValue(playbackInfoUrl, 'api_key')
+            || getPlaybackQueryParameterValue(playbackInfoUrl, 'ApiKey');
+        if (apiKey) {
+            query.push('api_key=' + encodeURIComponent(apiKey));
+        }
+        return sessionUrl + (query.length ? '?' + query.join('&') : '');
+    }
+
+    function createPlaybackSessionFetchInit(input, init) {
+        var inherited = buildFetchInitFromRequest(input, init);
+        var result = { method: 'GET' };
+        var keys = [
+            'headers',
+            'mode',
+            'credentials',
+            'cache',
+            'redirect',
+            'referrer',
+            'referrerPolicy',
+            'integrity'
+        ];
+        for (var i = 0; i < keys.length; i++) {
+            if (typeof inherited[keys[i]] !== 'undefined') {
+                result[keys[i]] = inherited[keys[i]];
+            }
+        }
+        return result;
+    }
+
+    function clearPlaybackSessionProbeTimers(clearProbe) {
+        playbackSessionProbeGeneration++;
+        for (var i = 0; i < playbackSessionProbeTimers.length; i++) {
+            clearTimeout(playbackSessionProbeTimers[i]);
+        }
+        playbackSessionProbeTimers = [];
+        if (clearProbe) {
+            latestPlaybackSessionProbe = null;
+        }
+    }
+
+    function getSessionObjectValue(value, names) {
+        if (!value || typeof value !== 'object') {
+            return null;
+        }
+        for (var i = 0; i < names.length; i++) {
+            if (Object.prototype.hasOwnProperty.call(value, names[i])) {
+                return value[names[i]];
+            }
+        }
+        return null;
+    }
+
+    function findCurrentPlaybackSession(payload, probe) {
+        var sessions = toArray(payload);
+        if (!sessions.length && payload && typeof payload === 'object') {
+            sessions = toArray(payload.Items || payload.items);
+        }
+
+        var expectedItemId = probe && probe.itemId
+            ? probe.itemId.toString()
+            : (currentMediaSessionItemId || latestPlaybackInfoRequestItemId);
+        var expectedMediaSourceId = probe && probe.mediaSourceId
+            ? probe.mediaSourceId.toString()
+            : currentPlaybackMediaSourceId;
+        var expectedDeviceId = probe && probe.deviceId
+            ? probe.deviceId.toString()
+            : getPlaybackSessionDeviceId(null);
+        var best = null;
+        var bestScore = -1;
+
+        for (var i = 0; i < sessions.length; i++) {
+            var session = sessions[i];
+            if (!session || typeof session !== 'object') {
+                continue;
+            }
+
+            var nowPlayingItem = session.NowPlayingItem || session.nowPlayingItem || {};
+            var sessionItemId = getSessionObjectValue(nowPlayingItem, ['Id', 'id']);
+            var sessionDeviceId = getSessionObjectValue(session, ['DeviceId', 'deviceId']);
+            var playState = session.PlayState || session.playState || {};
+            var sessionMediaSourceId = getSessionObjectValue(playState, ['MediaSourceId', 'mediaSourceId'])
+                || getSessionObjectValue(nowPlayingItem, ['MediaSourceId', 'mediaSourceId']);
+
+            if (expectedItemId && (!sessionItemId || sessionItemId.toString() !== expectedItemId)) {
+                continue;
+            }
+            if (expectedDeviceId && sessionDeviceId && sessionDeviceId.toString() !== expectedDeviceId) {
+                continue;
+            }
+            if (expectedMediaSourceId
+                && sessionMediaSourceId
+                && sessionMediaSourceId.toString() !== expectedMediaSourceId) {
+                continue;
+            }
+
+            var score = 0;
+            if (expectedItemId && sessionItemId && sessionItemId.toString() === expectedItemId) {
+                score += 8;
+            }
+            if (expectedDeviceId && sessionDeviceId && sessionDeviceId.toString() === expectedDeviceId) {
+                score += 4;
+            }
+            if (expectedMediaSourceId
+                && sessionMediaSourceId
+                && sessionMediaSourceId.toString() === expectedMediaSourceId) {
+                score += 2;
+            }
+            if (score > bestScore) {
+                best = session;
+                bestScore = score;
+            }
+        }
+
+        return best;
+    }
+
+    function applyPlaybackSessionsPayload(payload, probe, reason) {
+        if (playbackState !== PlaybackState.PLAYING) {
+            return false;
+        }
+
+        var expectedItemId = probe && probe.itemId ? probe.itemId.toString() : null;
+        var activeItemId = currentMediaSessionItemId || latestPlaybackInfoRequestItemId;
+        if (expectedItemId && activeItemId && expectedItemId !== activeItemId.toString()) {
+            return false;
+        }
+
+        var session = findCurrentPlaybackSession(payload, probe);
+        var delivery = getPlaybackVideoDeliveryFromSession(session);
+        if (delivery === 'unknown') {
+            return false;
+        }
+
+        var itemId = expectedItemId || (activeItemId ? activeItemId.toString() : null);
+        var mediaSourceId = probe && probe.mediaSourceId
+            ? probe.mediaSourceId
+            : currentPlaybackMediaSourceId;
+        cachePlaybackInfoVideoDeliveryHint(itemId, mediaSourceId, delivery);
+
+        var transcodingInfo = session && (session.TranscodingInfo || session.transcodingInfo);
+        var hasVideoDirect = !!(transcodingInfo
+            && (Object.prototype.hasOwnProperty.call(transcodingInfo, 'IsVideoDirect')
+                || Object.prototype.hasOwnProperty.call(transcodingInfo, 'isVideoDirect')));
+        setPlaybackVideoDelivery(delivery, (reason || 'sessions') + (hasVideoDirect ? '-is-video-direct' : '-play-method'));
+        if (hasVideoDirect || delivery === 'directplay' || delivery === 'directstream') {
+            clearPlaybackSessionProbeTimers(false);
+        }
+        return true;
+    }
+
+    function inspectPlaybackSessionsFetchResult(fetchResult, probe, reason) {
+        if (!fetchResult || typeof fetchResult.then !== 'function') {
+            return fetchResult;
+        }
+
+        return fetchResult.then(function (response) {
+            try {
+                if (response && typeof response.clone === 'function') {
+                    response.clone().json().then(function (payload) {
+                        applyPlaybackSessionsPayload(payload, probe, reason || 'sessions-fetch');
+                    }, function () {
+                        // Ignore payload parse errors.
+                    });
+                }
+            } catch (error) {
+                debugLog('Failed to inspect Sessions response:', error);
+            }
+            return response;
+        });
+    }
+
+    function runPlaybackSessionFetchProbe(probe) {
+        if (!playbackSessionProbeFetch || !probe.url) {
+            return;
+        }
+        var inspected = inspectPlaybackSessionsFetchResult(
+            playbackSessionProbeFetch(probe.url, probe.fetchInit),
+            probe,
+            'sessions-probe'
+        );
+        if (inspected && typeof inspected.then === 'function') {
+            inspected.then(null, function (error) {
+                debugLog('Playback Sessions probe failed:', error);
+            });
+        }
+    }
+
+    function runPlaybackSessionProbe(probe, generation) {
+        if (!probe
+            || generation !== playbackSessionProbeGeneration
+            || playbackState !== PlaybackState.PLAYING
+            || latestPlaybackSessionProbe !== probe
+            || probe.sequence !== latestPlaybackInfoRequestSequence) {
+            return;
+        }
+
+        var apiClient = window.ApiClient;
+        if (apiClient && typeof apiClient.getSessions === 'function') {
+            try {
+                var sessionsRequest = apiClient.getSessions({ deviceId: probe.deviceId });
+                if (sessionsRequest && typeof sessionsRequest.then === 'function') {
+                    sessionsRequest.then(function (payload) {
+                        if (generation === playbackSessionProbeGeneration) {
+                            applyPlaybackSessionsPayload(payload, probe, 'sessions-api-client');
+                        }
+                    }, function () {
+                        if (generation === playbackSessionProbeGeneration) {
+                            runPlaybackSessionFetchProbe(probe);
+                        }
+                    });
+                    return;
+                }
+            } catch (error) {
+                debugLog('ApiClient.getSessions failed:', error);
+            }
+        }
+
+        runPlaybackSessionFetchProbe(probe);
+    }
+
+    function schedulePlaybackSessionProbes() {
+        clearPlaybackSessionProbeTimers(false);
+        if (playbackState !== PlaybackState.PLAYING
+            || !latestPlaybackSessionProbe
+            || !latestPlaybackSessionProbe.requiresRuntimeVerdict
+            || latestPlaybackSessionProbe.sequence !== latestPlaybackInfoRequestSequence) {
+            return;
+        }
+
+        var probe = latestPlaybackSessionProbe;
+        var generation = playbackSessionProbeGeneration;
+        var delays = [750, 2500, 6000];
+        for (var i = 0; i < delays.length; i++) {
+            (function (delay) {
+                playbackSessionProbeTimers.push(setTimeout(function () {
+                    runPlaybackSessionProbe(probe, generation);
+                }, delay));
+            })(delays[i]);
+        }
+    }
+
+    function rememberPlaybackSessionProbe(itemId, mediaSourceId, mediaSource, videoDelivery, context) {
+        if (!context || context.epoch !== playbackInfoPlaybackEpoch) {
+            return;
+        }
+        if (context.sequence && context.sequence !== latestPlaybackInfoRequestSequence) {
+            return;
+        }
+
+        var transcodingUrl = mediaSource && (mediaSource.TranscodingUrl || mediaSource.transcodingUrl);
+        var deviceId = getPlaybackSessionDeviceId(transcodingUrl);
+        latestPlaybackSessionProbe = {
+            epoch: context.epoch,
+            sequence: context.sequence,
+            itemId: itemId ? itemId.toString() : null,
+            mediaSourceId: mediaSourceId ? mediaSourceId.toString() : null,
+            deviceId: deviceId,
+            url: buildPlaybackSessionsUrl(context.url, deviceId),
+            fetchInit: context.sessionFetchInit || { method: 'GET' },
+            requiresRuntimeVerdict: videoDelivery === 'transcode' || videoDelivery === 'unknown'
+        };
+
+        if (playbackState === PlaybackState.PLAYING) {
+            schedulePlaybackSessionProbes();
+        }
+    }
+
     function parsePositiveInteger(value) {
         var parsed = parseInt(value, 10);
         if (isNaN(parsed) || parsed <= 0) {
@@ -4709,7 +5037,8 @@
             epoch: playbackInfoPlaybackEpoch,
             sequence: playbackInfoRequestSequence,
             itemId: latestPlaybackInfoRequestItemId,
-            url: url
+            url: url,
+            sessionFetchInit: null
         };
     }
 
@@ -5068,6 +5397,7 @@
 
         var itemId = extractItemIdFromPlaybackInfoUrl(sourceUrl);
         var mediaSourceId = getSelectedMediaSourceId(payload) || currentPlaybackMediaSourceId;
+        var selectedMediaSource = getSelectedPlaybackInfoMediaSource(payload, mediaSourceId);
         var hint = getDynamicRangeHintFromPlaybackInfoPayload(payload, mediaSourceId);
         var videoDelivery = getPlaybackVideoDeliveryFromPlaybackInfoPayload(payload, mediaSourceId);
         var pgsDeliveryDiagnostic = getPgsSubtitleDeliveryDiagnostic(payload, mediaSourceId);
@@ -5095,6 +5425,7 @@
             playbackTranscodeReasonsDiagnostic = transcodeReasonsDiagnostic;
             playbackVideoStreamDiagnostic = videoStreamDiagnostic;
             rememberPendingPlaybackInfoDynamicRange(itemId, mediaSourceId, hint, videoDelivery, context, reason);
+            rememberPlaybackSessionProbe(itemId, mediaSourceId, selectedMediaSource, videoDelivery, context);
             return;
         }
         if (!shouldApplyPlaybackInfoResponse(itemId, mediaSourceId, context)) {
@@ -5107,6 +5438,7 @@
         if (itemId) {
             setCurrentPlaybackItemId(itemId, mediaSourceId, 'item-changed-playbackinfo');
         }
+        rememberPlaybackSessionProbe(itemId, mediaSourceId, selectedMediaSource, videoDelivery, context);
         setPlaybackVideoDelivery(videoDelivery, reason || 'playbackinfo');
 
         if (hint !== 'unknown') {
@@ -5451,6 +5783,23 @@
         }
     }
 
+    function inspectPlaybackSessionsXhrResponse(xhr) {
+        try {
+            if (!xhr || !isPlaybackSessionsUrl(xhr.__webOsPlaybackSessionsUrl)) {
+                return;
+            }
+            if (xhr.status && (xhr.status < 200 || xhr.status >= 300)) {
+                return;
+            }
+            var read = readPlaybackInfoXhrPayload(xhr);
+            if (read) {
+                applyPlaybackSessionsPayload(read.payload, null, 'sessions-existing-xhr');
+            }
+        } catch (error) {
+            debugLog('Failed to inspect XHR Sessions response:', error);
+        }
+    }
+
     function isFetchRequest(input) {
         return typeof window.Request !== 'undefined' && input instanceof window.Request;
     }
@@ -5537,6 +5886,9 @@
 
         if (window.fetch) {
             var originalFetch = window.fetch;
+            playbackSessionProbeFetch = function (url, init) {
+                return originalFetch.call(window, url, init);
+            };
             window.fetch = function () {
                 var fetchThis = this;
                 var input = arguments.length ? arguments[0] : null;
@@ -5547,6 +5899,14 @@
                     url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
                 } catch (error) {
                     url = '';
+                }
+
+                if (isPlaybackSessionsUrl(url)) {
+                    return inspectPlaybackSessionsFetchResult(
+                        originalFetch.apply(fetchThis, arguments),
+                        null,
+                        'sessions-existing-fetch'
+                    );
                 }
 
                 if (isSubtitleDeliveryUrl(url)) {
@@ -5561,6 +5921,7 @@
                     var responseUrl = enforcedFetchBitrate.url;
                     var urlWasRewritten = enforcedFetchBitrate.url !== url;
                     var playbackInfoContext = createPlaybackInfoRequestContext(responseUrl);
+                    playbackInfoContext.sessionFetchInit = createPlaybackSessionFetchInit(input, init);
 
                     if (urlWasRewritten) {
                         if (typeof input === 'string') {
@@ -5630,6 +5991,7 @@
                 xhrProto.__webOsPlaybackInfoHooked = true;
                 var originalXhrOpen = xhrProto.open;
                 var originalXhrSend = xhrProto.send;
+                var originalXhrSetRequestHeader = xhrProto.setRequestHeader;
 
                 xhrProto.open = function () {
                     var requestUrl = '';
@@ -5643,11 +6005,16 @@
                     clearXhrResponseShadow(this);
                     this.__webOsPlaybackInfoInspected = false;
                     this.__webOsPlaybackInfoBurnInHandled = false;
+                    this.__webOsPlaybackInfoHeaders = {};
                     if (isPlaybackInfoUrl(requestUrl)) {
                         var enforcedXhrBitrate = enforcePlaybackInfoMaxBitrateUrl(requestUrl, 'xhr');
                         requestUrl = enforcedXhrBitrate.url;
                         this.__webOsPlaybackInfoMaxBitrate = enforcedXhrBitrate.targetBitrate;
                         this.__webOsPlaybackInfoContext = createPlaybackInfoRequestContext(requestUrl);
+                        this.__webOsPlaybackInfoContext.sessionFetchInit = {
+                            method: 'GET',
+                            headers: this.__webOsPlaybackInfoHeaders
+                        };
 
                         // Registered here, not in send(), so this listener is
                         // ahead of the onreadystatechange/onloadend handler the
@@ -5673,9 +6040,23 @@
                     }
 
                     this.__webOsPlaybackInfoUrl = requestUrl;
+                    this.__webOsPlaybackSessionsUrl = isPlaybackSessionsUrl(requestUrl) ? requestUrl : null;
                     this.__webOsSubtitleUrl = isSubtitleDeliveryUrl(requestUrl) ? requestUrl : null;
                     return originalXhrOpen.apply(this, openArgs);
                 };
+
+                if (originalXhrSetRequestHeader) {
+                    xhrProto.setRequestHeader = function (name, value) {
+                        if (isPlaybackInfoUrl(this.__webOsPlaybackInfoUrl)
+                            && this.__webOsPlaybackInfoHeaders) {
+                            var normalizedName = name ? name.toString() : '';
+                            if (normalizedName) {
+                                this.__webOsPlaybackInfoHeaders[normalizedName] = value;
+                            }
+                        }
+                        return originalXhrSetRequestHeader.apply(this, arguments);
+                    };
+                }
 
                 xhrProto.send = function () {
                     var sendArgs = arguments;
@@ -5703,6 +6084,15 @@
                         this.__webOsSubtitleLoadendHooked = true;
                         this.addEventListener('loadend', function () {
                             inspectSubtitleXhrResponse(this);
+                        });
+                    }
+
+                    if (this.__webOsPlaybackSessionsUrl
+                        && !this.__webOsPlaybackSessionsLoadendHooked
+                        && this.addEventListener) {
+                        this.__webOsPlaybackSessionsLoadendHooked = true;
+                        this.addEventListener('loadend', function () {
+                            inspectPlaybackSessionsXhrResponse(this);
                         });
                     }
 

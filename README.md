@@ -232,14 +232,16 @@ rendering, which needs care because the server does not always serialize an
 eventual video copy as `VideoCodec=copy`: the HLS URL normally carries the
 target codec list and `EncodingHelper` selects `copy` only when the request
 begins. The fork therefore recognizes an implicit copy only when video stream
-copy is allowed, every reported reason belongs to Jellyfin's
-`DirectStreamReasons`, and the source video codec appears in that target list.
-It also mirrors the remaining request-time blockers that can still prevent the
-server from copying that source: required AVC framing, non-anamorphic output,
-deinterlacing, subtitle encoding, and non-AVC H264 in an AVI container. This
-prevents an audio-only transcode from being mistaken for a video encode and
-having its only client-rendered subtitle suppressed. The device profile remains
-unchanged so no path is forced into a transcode it did not need.
+copy is allowed, the source video codec appears in that target list, and the
+source satisfies the URL's request-time codec constraints. It mirrors Jellyfin's
+profile/range, dimensions, frame-rate, bitrate, bit-depth, reference-frame and
+level checks, plus required AVC framing, non-anamorphic output, deinterlacing,
+subtitle encoding, and non-AVC H264 in an AVI container. `TranscodeReasons` is
+deliberately not a gate because upstream `TryStreamCopy` never reads it. This
+pre-playback prediction is used only by the subtitle race workaround; it is not
+reported as the actual playback state because request-time server constraints
+can still produce a different result. The device profile remains unchanged so
+no path is forced into a transcode it did not need.
 
 The correction has to land before Jellyfin Web reads the response, so it runs on
 both transports. On `fetch` the patched payload is handed back as a new
@@ -514,6 +516,18 @@ Approach:
 - after entering playback, run a short delayed fallback window that reapplies
   cached PlaybackInfo hints, refreshes item metadata detection, and scans visible
   playback UI text again;
+- keep HDR fields and video delivery as separate evidence. Jellyfin's HDR fields
+  describe the selected source, while a real video transcode produces SDR; UI
+  dimming therefore still requires DirectPlay, DirectStream, or video copy;
+- do not promote a same-codec HLS `TranscodingUrl` to an observed video copy.
+  PlaybackInfo is created before request-time `TryStreamCopy`, so the same URL
+  shape can finish as either DirectStream or a real video transcode;
+- for ambiguous HLS playback, briefly query the current device's `/Sessions`
+  entry after playback starts and let `TranscodingInfo.IsVideoDirect` override
+  the provisional PlaybackInfo value: `true` becomes `directstream`, while
+  `false` remains `transcode`. Existing player-stats session requests are also
+  observed, and item/media-source/device matching prevents stale sessions from
+  changing the current playback;
 - track how the HDR holding the correction window was derived as a flag passed
   to `setPlaybackDynamicRange()`, not by comparing its `reason` string to
   `'playback-ui'`. `reason` is descriptive text that callers prefix, so the
@@ -640,8 +654,10 @@ during playback, not static environment strings.
 Approach:
 
 - provide an optional on-screen diagnostics overlay from the injected settings;
-- show playback state, dynamic range, rAF FPS, `requestVideoFrameCallback` FPS
-  when available, long-task stats, video dimensions/time, and dropped frames;
+- show playback state, dynamic range, video-delivery classification, and
+  `dim=<class>/<decision>@<brightness>` so HDR gating and CSS-class state can be
+  distinguished, plus rAF FPS, `requestVideoFrameCallback` FPS when available,
+  long-task stats, video dimensions/time, and dropped frames;
 - show compact ASS patch/message/clamp counters;
 - show the detected PGS backend and, for `libpgs`, compact
   patch/media-time/render/main-thread counters and active diagnostic switches;
@@ -656,8 +672,7 @@ Approach:
   media-source URL does not enable `alwaysBurnInSubtitleWhenTranscoding`, otherwise
   `on/fixed:<transport>` or `on/skip:<transport>` depending on whether the
   PlaybackInfo response needed correcting;
-- omit static values such as browser user agent, patched script URL, and CSS
-  filter details.
+- omit static values such as browser user agent and patched script URL.
 
 Status: active diagnostic tool. On `libpgs`, PGS patch counters such as `mode1`
 and `o1` mean the conditional hook was installed into that renderer. They do not

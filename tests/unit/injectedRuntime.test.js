@@ -82,6 +82,175 @@ test('the bundle initializes every startup step cleanly', async () => {
     assert.strictEqual(runtime.nativeShell.AppHost.getDefaultLayout(), 'tv');
 });
 
+// HDR fields identify the source, not the encoded output. Without positive
+// direct/video-copy evidence, enabling the dim class could dim an SDR tone-map.
+test('source HDR without video-delivery evidence does not dim', async () => {
+    const runtime = loadInjectedRuntime({
+        localStorage: { webos_hdr_ui_dim_brightness: '0.18' }
+    });
+
+    assert.strictEqual(
+        runtime.document.documentElement.style.getPropertyValue('--webos-hdr-ui-brightness'),
+        '0.18',
+        'the persisted brightness must reach the CSS variable'
+    );
+
+    runtime.nativeShell.updateMediaSession({ itemId: 'item-hdr-unknown-delivery', VideoRangeType: 'HDR10' });
+    await runtime.settle(50);
+
+    assert.strictEqual(
+        runtime.isHdrDimmed(),
+        false,
+        'source HDR alone must not override unknown video delivery'
+    );
+});
+
+// PlaybackInfo cannot say whether request-time TryStreamCopy actually
+// succeeded. The running session can: IsVideoDirect=true means only the
+// container/audio path changed, even though PlayMethod remains Transcode.
+test('a running HDR audio-only transcode resolves to directstream and applies the saved UI brightness', async () => {
+    const runtime = loadInjectedRuntime({
+        localStorage: {
+            webos_hdr_ui_dim_brightness: '0.18'
+        }
+    });
+    runtime.respondToFetch((request) => request.url.indexOf('/Sessions') !== -1 ? [{
+        DeviceId: 'test-device',
+        NowPlayingItem: { Id: 'item-hdr-audio-transcode' },
+        PlayState: {
+            MediaSourceId: 'src-hdr-audio-transcode',
+            PlayMethod: 'Transcode'
+        },
+        TranscodingInfo: { IsVideoDirect: true }
+    }] : ({
+        MediaSourceId: 'src-hdr-audio-transcode',
+        MediaSources: [{
+            Id: 'src-hdr-audio-transcode',
+            PlayMethod: 'Transcode',
+            TranscodingUrl: '/videos/item-hdr-audio-transcode/master.m3u8?VideoCodec=hevc,h264&AudioCodec=aac&VideoBitRate=120000000&MaxFramerate=60&MaxWidth=3840&MaxHeight=2160&hevc-level=153&hevc-videobitdepth=10&hevc-profile=main,main10&hevc-rangetype=HDR10&TranscodeReasons=DirectPlayError',
+            VideoRangeType: 'HDR10',
+            MediaStreams: [{
+                Type: 'Video',
+                Codec: 'hevc',
+                Profile: 'Main 10',
+                Level: 153,
+                BitDepth: 10,
+                BitRate: 24000000,
+                Width: 3840,
+                Height: 2160,
+                ReferenceFrameRate: 23.976,
+                VideoRangeType: 'HDR10'
+            }]
+        }]
+    }));
+
+    await runtime.window.fetch(
+        playbackInfoUrl('item-hdr-audio-transcode', 'src-hdr-audio-transcode'),
+        { headers: { Authorization: 'MediaBrowser test-token' } }
+    );
+    await runtime.settle(10);
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(1200);
+    await runtime.settle(300);
+
+    assert.strictEqual(runtime.isHdrDimmed(), true, 'direct-streamed HDR video must enable UI dimming');
+    assert.strictEqual(
+        runtime.document.documentElement.style.getPropertyValue('--webos-hdr-ui-brightness'),
+        '0.18',
+        'the persisted brightness must remain the active CSS value'
+    );
+    assert.ok(
+        runtime.state.fetchCalls.some((call) => call.url === 'https://server.example/Sessions?DeviceId=test-device'),
+        'the playback probe must query only this device session'
+    );
+    const sessionCall = runtime.state.fetchCalls.find((call) => call.url.indexOf('/Sessions?') !== -1);
+    assert.strictEqual(
+        sessionCall.init.headers.Authorization,
+        'MediaBrowser test-token',
+        'the session probe must reuse the authenticated PlaybackInfo request headers'
+    );
+});
+
+test('a same-codec HDR candidate resolves to transcode when IsVideoDirect is false', async () => {
+    const runtime = loadInjectedRuntime();
+    runtime.respondToFetch((request) => request.url.indexOf('/Sessions') !== -1 ? [{
+        DeviceId: 'test-device',
+        NowPlayingItem: { Id: 'item-hdr-real-transcode' },
+        PlayState: {
+            MediaSourceId: 'src-hdr-real-transcode',
+            PlayMethod: 'Transcode'
+        },
+        TranscodingInfo: { IsVideoDirect: false }
+    }] : ({
+        MediaSourceId: 'src-hdr-real-transcode',
+        MediaSources: [{
+            Id: 'src-hdr-real-transcode',
+            PlayMethod: 'Transcode',
+            // This is deliberately indistinguishable from a potential copy in
+            // PlaybackInfo: source and target codec both say HEVC.
+            TranscodingUrl: '/videos/item-hdr-real-transcode/master.m3u8?VideoCodec=hevc,h264&AudioCodec=aac&VideoBitRate=120000000&MaxWidth=3840&MaxHeight=2160',
+            VideoRangeType: 'HDR10',
+            MediaStreams: [{
+                Type: 'Video',
+                Codec: 'hevc',
+                Width: 3840,
+                Height: 2160,
+                VideoRangeType: 'HDR10'
+            }]
+        }]
+    }));
+
+    await runtime.window.fetch(playbackInfoUrl('item-hdr-real-transcode', 'src-hdr-real-transcode'));
+    await runtime.settle(10);
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(1200);
+    await runtime.settle(300);
+
+    assert.strictEqual(runtime.isHdrDimmed(), false, 'video encoding must keep HDR UI dimming off');
+    assert.ok(
+        runtime.state.fetchCalls.some((call) => call.url === 'https://server.example/Sessions?DeviceId=test-device'),
+        'the authoritative session lookup must run even when PlaybackInfo already looks like a transcode'
+    );
+});
+
+test('an explicit direct-play response does not start Sessions polling', async () => {
+    const runtime = loadInjectedRuntime();
+    runtime.respondToFetch(() => ({ MediaSources: [HDR_MEDIA_SOURCE] }));
+
+    await runtime.window.fetch(playbackInfoUrl('item-hdr-direct', 'src-hdr'));
+    await runtime.settle(10);
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(7000);
+
+    assert.strictEqual(runtime.isHdrDimmed(), true, 'explicit HDR direct play must still dim immediately');
+    assert.strictEqual(
+        runtime.state.fetchCalls.some((call) => call.url.indexOf('/Sessions') !== -1),
+        false,
+        'only ambiguous HLS playback needs a runtime session verdict'
+    );
+});
+
+test('an explicit HDR video transcode does not dim the UI', async () => {
+    const runtime = loadInjectedRuntime();
+    runtime.respondToFetch(() => ({
+        MediaSourceId: 'src-hdr-transcode',
+        MediaSources: [{
+            Id: 'src-hdr-transcode',
+            PlayMethod: 'Transcode',
+            TranscodingUrl: '/videos/item-hdr-transcode/master.m3u8?VideoCodec=h264',
+            VideoRangeType: 'HDR10',
+            MediaStreams: [{ Type: 'Video', Codec: 'hevc', VideoRangeType: 'HDR10' }]
+        }]
+    }));
+
+    await runtime.window.fetch(playbackInfoUrl('item-hdr-transcode', 'src-hdr-transcode'));
+    await runtime.settle(10);
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(50);
+
+    assert.strictEqual(runtime.isHdrDimmed(), false, 'a video-transcode verdict must keep HDR UI dimming off');
+});
+
 // Regression: the delayed fallback recorded its OSD-text HDR guess under
 // 'playback-start-fallback-playback-ui', which never matched the 'playback-ui'
 // literal the escape hatch compared against, so an authoritative SDR could
