@@ -124,15 +124,11 @@
     var HEADER_PIN_INTERVAL = 12000; // fallback heartbeat only; scroll/resize/hashchange drive normal updates
     var MIN_HEADER_HEIGHT = 72;
     var headerPinTimer = null;
-    var headerPinObserver = null;
-    var headerPinObserverActive = false;
     var headerPinningInitialized = false;
     var headerPinScheduled = false;
     var cachedHeaderElement = null;
     var lastHeaderMeasureTs = 0;
     var HEADER_MEASURE_INTERVAL = 1500;
-    var qualityMenuObserver = null;
-    var qualityMenuObserverActive = false;
     var qualityMenuPatchTimer = null;
     var QUALITY_MENU_EXTRA_BITRATES = [120000000, 100000000, 95000000, 80000000];
     var QUALITY_MENU_LEGACY_CAP_BITRATE = 60000000;
@@ -157,8 +153,7 @@
     // window arms, so localStorage is not read on every PlaybackInfo request.
     // Re-read at every (re-)arm, when a settings-page change could surface.
     var storedConcreteQualityPickAtArm = false;
-    var settingsInjectionObserver = null;
-    var settingsInjectionObserverActive = false;
+    var settingsInjectionInitialized = false;
     var settingsInjectionObserverRecheckTimer = null;
     // A route change can precede the settings DOM being rendered; re-evaluate
     // once after this delay so the observer is not gated off a stale snapshot.
@@ -601,12 +596,30 @@
             || header.style.visibility === 'hidden';
     }
 
-    function initHeaderPinObserver() {
-        if (headerPinObserver || !window.MutationObserver) {
-            return;
-        }
+    // alwaysReconnect: the header element is replaced as jellyfin-web navigates,
+    // so every enable re-resolves the targets rather than staying bound to a
+    // node that has left the document. getTargets expresses the two-tier
+    // arrangement (the header plus its parent, or the body when there is no
+    // header yet) that this observer used to open-code.
+    var headerPinObserver = createManagedObserver({
+        alwaysReconnect: true,
+        getTargets: function () {
+            var header = getHeaderElement();
+            if (header) {
+                var targets = [{
+                    target: header,
+                    config: { attributes: true, attributeFilter: ['class', 'style'] }
+                }];
+                if (header.parentNode) {
+                    targets.push({ target: header.parentNode, config: { childList: true } });
+                }
+                return targets;
+            }
 
-        headerPinObserver = new MutationObserver(function (mutations) {
+            var body = document.body || document.documentElement;
+            return body ? [{ target: body, config: { childList: true, subtree: true } }] : [];
+        },
+        handler: function (mutations) {
             var shouldRescanHeader = false;
             var shouldSchedule = false;
 
@@ -634,57 +647,15 @@
                 lastHeaderMeasureTs = 0;
                 scheduleForceHeaderPinned();
             }
-        });
+        }
+    });
+
+    function initHeaderPinObserver() {
+        headerPinObserver.create();
     }
 
     function setHeaderPinObserverEnabled(enabled) {
-        if (!window.MutationObserver) {
-            return;
-        }
-
-        if (!enabled) {
-            if (headerPinObserver && headerPinObserverActive) {
-                headerPinObserver.disconnect();
-                headerPinObserverActive = false;
-            }
-            return;
-        }
-
-        if (!headerPinObserver) {
-            initHeaderPinObserver();
-        }
-
-        if (!headerPinObserver) {
-            return;
-        }
-
-        headerPinObserver.disconnect();
-        headerPinObserverActive = false;
-
-        var header = getHeaderElement();
-        if (header) {
-            headerPinObserver.observe(header, {
-                attributes: true,
-                attributeFilter: ['class', 'style']
-            });
-            headerPinObserverActive = true;
-
-            if (header.parentNode) {
-                headerPinObserver.observe(header.parentNode, {
-                    childList: true
-                });
-            }
-            return;
-        }
-
-        var body = document.body || document.documentElement;
-        if (body) {
-            headerPinObserver.observe(body, {
-                childList: true,
-                subtree: true
-            });
-            headerPinObserverActive = true;
-        }
+        headerPinObserver.setEnabled(enabled);
     }
 
     function setHeaderPinningEnabled(enabled) {
@@ -3796,31 +3767,25 @@
         return false;
     }
 
-    function setSettingsInjectionObserverEnabled(enabled) {
-        if (!settingsInjectionObserver) {
-            return;
-        }
-
-        if (enabled) {
-            if (!settingsInjectionObserverActive) {
-                var targetNode = document.body || document.documentElement;
-                if (targetNode) {
-                    settingsInjectionObserver.observe(targetNode, {
-                        childList: true,
-                        subtree: true
-                    });
-                    settingsInjectionObserverActive = true;
-                }
+    // Was hand-rolled create/observe/disconnect/active bookkeeping, duplicated
+    // from two other observers in this file with small differences that had
+    // crept in. createManagedObserver already expressed all of it.
+    var settingsInjectionObserver = createManagedObserver({
+        handler: function (mutations) {
+            if (shouldScheduleSettingsInjectionFromMutations(mutations)) {
+                scheduleSettingsEnsureControls(false);
             }
+        },
+        onEnabled: function () {
             scheduleSettingsEnsureControls(true);
-            return;
+        },
+        onDisabled: function () {
+            clearScheduledSettingsEnsure();
         }
+    });
 
-        if (settingsInjectionObserverActive) {
-            settingsInjectionObserver.disconnect();
-            settingsInjectionObserverActive = false;
-        }
-        clearScheduledSettingsEnsure();
+    function setSettingsInjectionObserverEnabled(enabled) {
+        settingsInjectionObserver.setEnabled(enabled);
     }
 
     // The route hooks below already fire on every navigation, but this used to
@@ -3847,15 +3812,10 @@
     }
 
     function initWebOSSettingsInjection() {
-        if (settingsInjectionObserver || !window.MutationObserver) {
+        if (settingsInjectionInitialized || !window.MutationObserver) {
             return;
         }
-
-        settingsInjectionObserver = new MutationObserver(function (mutations) {
-            if (shouldScheduleSettingsInjectionFromMutations(mutations)) {
-                scheduleSettingsEnsureControls(false);
-            }
-        });
+        settingsInjectionInitialized = true;
 
         window.addEventListener('hashchange', function () {
             scheduleSettingsInjectionObserverRecheck();
@@ -4251,12 +4211,8 @@
         }, typeof delay === 'number' ? delay : 0);
     }
 
-    function initQualityMenuPatching() {
-        if (qualityMenuObserver || !window.MutationObserver) {
-            return;
-        }
-
-        qualityMenuObserver = new MutationObserver(function (mutations) {
+    var qualityMenuObserver = createManagedObserver({
+        handler: function (mutations) {
             for (var i = 0; i < mutations.length; i++) {
                 var mutation = mutations[i];
                 if (!mutation.addedNodes || !mutation.addedNodes.length) {
@@ -4286,43 +4242,18 @@
                     }
                 }
             }
+        },
+        onEnabled: function () {
+            patchExistingQualityActionSheets();
+        }
+    });
 
-        });
+    function initQualityMenuPatching() {
+        qualityMenuObserver.create();
     }
 
     function setQualityMenuObserverEnabled(enabled) {
-        if (!window.MutationObserver) {
-            return;
-        }
-
-        if (!enabled) {
-            if (qualityMenuObserver && qualityMenuObserverActive) {
-                qualityMenuObserver.disconnect();
-                qualityMenuObserverActive = false;
-            }
-            return;
-        }
-
-        if (!qualityMenuObserver) {
-            initQualityMenuPatching();
-        }
-
-        if (!qualityMenuObserver) {
-            return;
-        }
-
-        if (!qualityMenuObserverActive) {
-            var targetNode = document.body || document.documentElement;
-            if (targetNode) {
-                qualityMenuObserver.observe(targetNode, {
-                    childList: true,
-                    subtree: true
-                });
-                qualityMenuObserverActive = true;
-            }
-        }
-
-        patchExistingQualityActionSheets();
+        qualityMenuObserver.setEnabled(enabled);
     }
 
     function clearHdrUiInfoScanTimer() {
