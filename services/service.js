@@ -124,8 +124,12 @@ var scanresult = Object.create(null);
 
 
 
+// Returns how many entries expired, so callers can tell subscribers that a
+// server disappeared. Pushes are otherwise single-key deltas, which can only
+// ever add or update -- a client had no way to learn a server went away.
 function pruneScanResults() {
 	var now = Date.now();
+	var removed = 0;
 	for (var serverId in scanresult) {
 		if (!hasValue(scanresult, serverId)) {
 			continue;
@@ -134,8 +138,10 @@ function pruneScanResults() {
 		var server = scanresult[serverId];
 		if (!server || typeof server.lastSeen !== 'number' || (now - server.lastSeen) > SCAN_RESULT_TTL) {
 			delete scanresult[serverId];
+			removed++;
 		}
 	}
+	return removed;
 }
 
 function evictOldestScanResult() {
@@ -179,7 +185,12 @@ function countScanResultsForSource(address) {
 }
 
 function sendScanResults(server_id) {
-	pruneScanResults();
+	// An expiry means the delta form cannot describe the new state, so fall
+	// back to a full snapshot that clients can reconcile against.
+	if (pruneScanResults() > 0) {
+		server_id = null;
+	}
+
 	for (var i in subscriptions) {
 		if (hasValue(subscriptions, i)) {
 			var s = subscriptions[i];
@@ -191,11 +202,15 @@ function sendScanResults(server_id) {
 				res[server_id] = scanresult[server_id];
 				s.respond({
 					returnValue: true,
+					// Partial update: absent servers are unchanged, not gone.
+					full: false,
 					results: res
 				});
 			} else {
 				s.respond({
 					returnValue: true,
+					// Complete set: anything missing from it no longer exists.
+					full: true,
 					results: scanresult,
 				});
 			}

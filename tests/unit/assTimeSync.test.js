@@ -31,9 +31,11 @@ function applyVideoTimeMessage(entry, message, now) {
     if (result.hasCurrentTime) {
         entry.lastPostedCurrentTime = result.currentTime;
         entry.lastPostedAt = now;
+        entry.clampRunStartedAt = result.clampRunStartedAt || 0;
     } else if (result.resetAnchor) {
         entry.lastPostedCurrentTime = null;
         entry.lastPostedAt = now;
+        entry.clampRunStartedAt = 0;
     }
     entry.lastPostedPaused = result.isPaused;
     entry.lastPostedRate = result.rate;

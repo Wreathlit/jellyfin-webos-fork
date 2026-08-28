@@ -6,6 +6,10 @@
 */
 
 var curr_req = false;
+// Incremented by every new connection attempt and by abort(). handleSuccessManifest
+// clears curr_req before assembling the injection bundle, so from that point on
+// this counter is the only thing that can still cancel a connection.
+var connectGeneration = 0;
 var server_info = false;
 var manifest = false;
 
@@ -143,14 +147,33 @@ function isVisible(element) {
 }
 
 function findIndex(array, currentNode) {
-    // Matches on isEqualNode (structural equality), not identity, so this is
-    // not a plain indexOf. Kept explicit because the distinction is load
-    // bearing for how focus is located.
-    for (var i = 0, item; item = array[i]; i++) {
-        if (currentNode.isEqualNode(item))
+    // Identity, not isEqualNode: activeElement is itself a member of the
+    // candidate list, and structural equality would match whichever equivalent
+    // element came first -- two cards for servers with the same name and
+    // address are structurally identical.
+    for (var i = 0; i < array.length; i++) {
+        if (array[i] === currentNode) {
             return i;
+        }
     }
     return -1;
+}
+
+var FOCUSABLE_SELECTOR = 'input, button, a, area, object, select, textarea, [contenteditable]';
+
+// Hidden elements must not occupy a slot in the ordering. The Abort button sits
+// inside the hidden busy overlay but last in document order, so an unfiltered
+// list clamped "one past the last card" onto it -- and focus() on a
+// display:none element silently does nothing, which read as a dead key.
+function getFocusCandidates() {
+    var all = document.querySelectorAll(FOCUSABLE_SELECTOR);
+    var visible = [];
+    for (var i = 0; i < all.length; i++) {
+        if (isVisible(all[i])) {
+            visible.push(all[i]);
+        }
+    }
+    return visible;
 }
 
 function navigate(amount) {
@@ -161,14 +184,10 @@ function navigate(amount) {
     } else if (!isVisible(element) || element.tagName == 'BODY') {
         navigationInit();
     } else {
-        //Isolate the node that we're after
-        var currentNode = element;
-
-        //find all tab-able elements
-        var allElements = document.querySelectorAll('input, button, a, area, object, select, textarea, [contenteditable]');
+        var allElements = getFocusCandidates();
 
         //Find the current tab index.
-        var currentIndex = findIndex(allElements, currentNode);
+        var currentIndex = findIndex(allElements, element);
         if (currentIndex < 0) {
             navigationInit();
             return;
@@ -195,12 +214,82 @@ function upArrowPressed() {
 function downArrowPressed() {
     navigate(1);
 }
+function getFocusCandidateBox(element) {
+    if (!element || typeof element.getBoundingClientRect !== 'function') {
+        return null;
+    }
+
+    var rect = element.getBoundingClientRect();
+    if (!rect || (!rect.width && !rect.height)) {
+        return null;
+    }
+
+    return {
+        centerX: rect.left + rect.width / 2,
+        top: rect.top,
+        bottom: rect.top + rect.height
+    };
+}
+
+// The server cards wrap in a flex row, so neighbours on the same line are only
+// reachable left/right. Pick the nearest visible candidate on that side whose
+// vertical extent still overlaps the current one, so focus stays on its row.
+function navigateHorizontally(direction) {
+    var element = document.activeElement;
+    if (!element || element.tagName == 'BODY' || !isVisible(element)) {
+        navigationInit();
+        return;
+    }
+
+    var origin = getFocusCandidateBox(element);
+    if (!origin) {
+        // No layout information available; fall back to document order.
+        navigate(direction);
+        return;
+    }
+
+    var candidates = getFocusCandidates();
+    var best = null;
+    var bestDistance = -1;
+
+    for (var i = 0; i < candidates.length; i++) {
+        var candidate = candidates[i];
+        if (candidate === element) {
+            continue;
+        }
+
+        var box = getFocusCandidateBox(candidate);
+        if (!box) {
+            continue;
+        }
+
+        var offset = box.centerX - origin.centerX;
+        if (direction > 0 ? offset <= 0 : offset >= 0) {
+            continue;
+        }
+
+        if (box.bottom <= origin.top || box.top >= origin.bottom) {
+            continue;
+        }
+
+        var distance = offset < 0 ? -offset : offset;
+        if (bestDistance < 0 || distance < bestDistance) {
+            bestDistance = distance;
+            best = candidate;
+        }
+    }
+
+    if (best) {
+        best.focus();
+    }
+}
+
 function leftArrowPressed() {
-    // Your stuff here
+    navigateHorizontally(-1);
 }
 
 function rightArrowPressed() {
-    // Your stuff here
+    navigateHorizontally(1);
 }
 
 function backPressed() {
@@ -323,7 +412,7 @@ function Init() {
                 }
             }
         }
-        renderServerList(connected_servers);
+        refreshServerList();
     }
 }
 // Just ensure that the string has no spaces, and begins with either http:// or https:// (case insensitively), and isn't empty after the ://
@@ -357,14 +446,21 @@ function handleServerSelect() {
     var auto_connect = document.querySelector('#auto_connect').checked;
 
     if (validURL(baseurl)) {
-
-        displayConnecting();
         debugLog(baseurl, auto_connect);
 
+        // Cancel any in-flight attempt *before* showing the busy screen.
+        // abort() synchronously dispatches the abort event, whose handler calls
+        // hideConnecting() -- ordered the other way round it tore down the busy
+        // screen that had just been put up and left the UI on the form.
         if (curr_req) {
             debugLog("There is an active request.");
             abort();
         }
+
+        // Open a fresh generation so this attempt is not cancelled by the
+        // abort() that may have just retired the previous one.
+        connectGeneration++;
+        displayConnecting();
         hideError();
         getServerInfo(baseurl, auto_connect);
     } else {
@@ -545,7 +641,12 @@ function handleSuccessManifest(data, baseurl) {
         // Callback style, not promises. Promise is available on the supported
         // baseline; this is kept because getTextToInject also serves the
         // sequential loader below, not because promises are unsafe.
+            var manifestGeneration = connectGeneration;
             getTextToInject(function (bundle) {
+                if (connectGeneration !== manifestGeneration) {
+                    debugLog("Connection was cancelled while the injection bundle loaded.");
+                    return;
+                }
                 handoff(hosturl, bundle, info.id && info.id !== false ? info.id : null);
             }, function (error) {
                 console.error(error);
@@ -575,7 +676,12 @@ function handleSuccessManifest(data, baseurl) {
     debugLog("martin:handleSuccessManifest added server");
     debugLog(connected_servers[baseurl]);
 
+    var fallbackGeneration = connectGeneration;
     getTextToInject(function (bundle) {
+        if (connectGeneration !== fallbackGeneration) {
+            debugLog("Connection was cancelled while the injection bundle loaded.");
+            return;
+        }
         handoff(hosturl, bundle, null);
     }, function (error) {
         console.error(error);
@@ -611,6 +717,11 @@ function handleFailure(data) {
 }
 
 function abort() {
+    // Bump first: past the manifest step there is no XHR left to cancel, but
+    // the bundle is still being assembled and handoff() would still run. The
+    // generation check in the getTextToInject callbacks is what actually stops
+    // it, so it has to be invalidated even on the curr_req path.
+    connectGeneration++;
     if (curr_req) {
         curr_req.abort()
     } else {
@@ -1177,6 +1288,10 @@ window.addEventListener('message', function (event) {
                 activeHandoffCleanup();
             }
             startDiscovery();
+            // Rebuild from current state: the server just disconnected from was
+            // stored during this session and had no card, while entries evicted
+            // by the LRU still had one.
+            refreshServerList();
             document.querySelector('.container').style.display = '';
             hideConnecting();
             contentFrame.style.display = 'none';
@@ -1185,21 +1300,137 @@ window.addEventListener('message', function (event) {
         case 'AppHost.exit':
             webOS.platformBack();
             break;
+        case 'openUrl':
+            // AppHost advertises 'targetblank' and 'externallinkdisplay', so
+            // jellyfin-web does route external links here. Without a handler the
+            // message was dropped and the link silently did nothing.
+            openExternalUrl(msg.data && msg.data.url);
+            break;
+        case 'downloadFile':
+            // 'filedownload' is deliberately absent from AppHost.supports, so
+            // jellyfin-web should never offer a download on this client. Warn
+            // rather than dropping it, to catch the day that stops being true.
+            console.warn('Ignoring downloadFile request; downloads are unsupported on webOS.');
+            break;
+        default:
+            debugLog('Unhandled bridge message type:', msg.type);
+            break;
     }
 });
+
+// Hand an external link to the TV browser. The URL comes from the server page,
+// so only http(s) is accepted -- anything else could target a luna:// service
+// or another app.
+function openExternalUrl(url) {
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+        console.warn('Refusing to open a non-http(s) external URL.');
+        return;
+    }
+
+    try {
+        webOS.service.request('luna://com.webos.applicationManager', {
+            method: 'launch',
+            parameters: {
+                id: 'com.webos.app.browser',
+                params: { target: url }
+            },
+            onFailure: function (error) {
+                console.warn('Failed to open external URL:', error);
+            }
+        });
+    } catch (error) {
+        console.warn('Failed to open external URL:', error);
+    }
+}
 
 /* Server auto-discovery */
 
 var discovered_servers = {};
 var connected_servers = {};
 
-function renderServerList(server_list) {
-    for (var server_id in server_list) {
-        var server = server_list[server_id];
-        if (!server || typeof server !== 'object') {
+// Compare two server addresses for "is this the same endpoint". Discovery and
+// the stored entry can spell the same server differently (trailing slash,
+// case in the host, an explicit default port), and treating those as different
+// would leave the user looking at two cards for one server.
+function isSameServerAddress(a, b) {
+    if (!a || !b) {
+        return false;
+    }
+
+    return normalizeServerAddressForCompare(a) === normalizeServerAddressForCompare(b);
+}
+
+function normalizeServerAddressForCompare(address) {
+    var normalized = normalizeUrl(address).toLowerCase().replace(/\/+$/, '');
+    // Strip the port when it is the scheme default so ":80"/":443" and the
+    // bare host compare equal.
+    return normalized
+        .replace(/^http:\/\/([^/]*):80$/, 'http://$1')
+        .replace(/^https:\/\/([^/]*):443$/, 'https://$1');
+}
+
+// A discovered server shares the saved server's card only when it points at the
+// same address; otherwise it gets a card of its own so it cannot overwrite one.
+function getDiscoveredServerCardKey(server) {
+    var saved = getConnectedServers()[server.Id];
+    if (!saved || !saved.baseurl) {
+        return server.Id;
+    }
+
+    if (isSameServerAddress(saved.baseurl, server.Address)) {
+        return server.Id;
+    }
+
+    return 'discovered_' + server.Id;
+}
+
+// Reconcile the rendered list against the servers that currently exist, adding
+// and updating cards *and removing stale ones*. Rendering used to be add-only
+// and ran just once at startup, so an LRU-evicted server, a discovered server
+// that went offline, and a server first connected to during this session all
+// left the picker showing entries that no longer matched anything.
+function refreshServerList() {
+    var list = document.getElementById("serverlist");
+    if (!list) {
+        return;
+    }
+
+    var live = {};
+
+    var saved = getConnectedServers();
+    for (var saved_id in saved) {
+        var saved_server = saved[saved_id];
+        if (!saved_server || typeof saved_server !== 'object') {
             continue;
         }
-        renderSingleServer(server_id, server);
+        live["server_" + saved_id] = true;
+        renderSingleServer(saved_id, saved_server);
+    }
+
+    for (var discovered_id in discovered_servers) {
+        var discovered_server = discovered_servers[discovered_id];
+        if (!discovered_server || typeof discovered_server !== 'object') {
+            continue;
+        }
+        var card_key = getDiscoveredServerCardKey(discovered_server);
+        live["server_" + card_key] = true;
+        renderSingleServer(card_key, discovered_server);
+    }
+
+    // Walk the child list rather than querySelectorAll: the cards are this
+    // list's direct children, so the sweep needs no selector-engine support.
+    var children = list.children || list.childNodes;
+    if (!children) {
+        return;
+    }
+    for (var i = children.length - 1; i >= 0; i--) {
+        var card = children[i];
+        if (!card || !card.id || card.id.indexOf("server_") !== 0) {
+            continue;
+        }
+        if (!live[card.id]) {
+            list.removeChild(card);
+        }
     }
 }
 
@@ -1284,11 +1515,32 @@ function verifyThenAdd(server) {
             delete servers_verifying[server.Id];
 
             // TODO: Do we want to autodiscover only Jellyfin servers, or anything that responds to "who is JellyfinServer?"
-            if (data.ProductName == "Jellyfin Server") {
-                server.system_info_public = data;
-                discovered_servers[server.Id] = server;
-                renderSingleServer(server.Id, server);
+            if (data.ProductName != "Jellyfin Server") {
+                return;
             }
+
+            // Bind the announced identity to the response. A responder that
+            // does not claim the Id it was broadcast under is not the server
+            // the broadcast described. (An announcer that controls its own
+            // /System/Info/Public can still echo any Id, so this is a
+            // consistency check, not an authentication of the peer.)
+            if (typeof data.Id === 'string' && data.Id && data.Id !== server.Id) {
+                debugLog("Ignoring discovered server whose reported Id does not match its broadcast Id:", server.Id, data.Id);
+                return;
+            }
+
+            server.system_info_public = data;
+            discovered_servers[server.Id] = server;
+
+            // Discovery rides on unauthenticated UDP, so any LAN peer can
+            // announce itself under a saved server's Id. Cards are keyed by Id,
+            // so rendering such an announcement normally would silently rewrite
+            // a previously connected server's card -- name, URL and the Connect
+            // button target alike. getDiscoveredServerCardKey gives a
+            // mismatched address its own card instead: a genuine address change
+            // still shows up and stays selectable, but it can no longer
+            // impersonate the saved entry.
+            refreshServerList();
         },
         error: function (data) {
             debugLog("error");
@@ -1325,6 +1577,24 @@ function startDiscovery() {
             debugJsonLog('OK:', args);
 
             if (args.results) {
+                // A full snapshot is authoritative about what still exists, so
+                // drop entries it omits. Partial pushes only ever add or
+                // update, which is why an offline server used to keep its card
+                // for the lifetime of the app.
+                if (args.full === true) {
+                    var removedAny = false;
+                    for (var known_id in discovered_servers) {
+                        if (!Object.prototype.hasOwnProperty.call(args.results, known_id)) {
+                            delete discovered_servers[known_id];
+                            delete servers_verifying[known_id];
+                            removedAny = true;
+                        }
+                    }
+                    if (removedAny) {
+                        refreshServerList();
+                    }
+                }
+
                 for (var server_id in args.results) {
                     verifyThenAdd(args.results[server_id]);
                 }

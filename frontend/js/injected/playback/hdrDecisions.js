@@ -146,12 +146,21 @@
         return 'unknown';
     }
 
+    // Free-text fields carrying whatever the file's track name happens to say.
+    // "HDR-removed" and "HDR comparison clip" both match the HDR word test, so
+    // these may only decide the range when nothing structured did.
+    function isWeakDynamicRangeTextKey(key) {
+        var normalizedKey = key ? key.toString().toLowerCase() : '';
+        return normalizedKey === 'title' || normalizedKey === 'displaytitle';
+    }
+
     function getDynamicRangeHintFromObjectFields(value, keysToInspect) {
         if (!value || typeof value !== 'object') {
             return 'unknown';
         }
 
         var sawSdr = false;
+        var sawWeakHdr = false;
         for (var i = 0; i < keysToInspect.length; i++) {
             var key = keysToInspect[i];
             if (!Object.prototype.hasOwnProperty.call(value, key)) {
@@ -159,15 +168,33 @@
             }
 
             var hint = getDynamicRangeHintFromMetadataField(key, value[key]);
+            if (hint === 'unknown') {
+                continue;
+            }
+
+            // Structured HDR evidence still wins outright, including over a
+            // VideoRange/VideoRangeType that says SDR: servers derive that enum
+            // from ColorTransfer, so Dolby Vision Profile 5 (whose transfer is
+            // often unspecified) routinely reports SDR while carrying complete
+            // DvProfile/RpuPresentFlag/VideoDoViTitle metadata.
             if (hint === 'hdr') {
+                if (isWeakDynamicRangeTextKey(key)) {
+                    // Defer instead of short-circuiting so a structured SDR
+                    // field later in the scan can still win.
+                    sawWeakHdr = true;
+                    continue;
+                }
                 return 'hdr';
             }
-            if (hint === 'sdr') {
-                sawSdr = true;
-            }
+
+            sawSdr = true;
         }
 
-        return sawSdr ? 'sdr' : 'unknown';
+        if (sawSdr) {
+            return 'sdr';
+        }
+
+        return sawWeakHdr ? 'hdr' : 'unknown';
     }
 
     function toArray(value) {
@@ -527,23 +554,10 @@
             'displayTitle',
             'DisplayTitle'
         ];
-        var sawSdr = false;
-
-        for (var i = 0; i < keysToInspect.length; i++) {
-            var key = keysToInspect[i];
-            if (!Object.prototype.hasOwnProperty.call(mediaInfo, key)) {
-                continue;
-            }
-
-            var value = mediaInfo[key];
-            var hint = getDynamicRangeHintFromMetadataField(key, value);
-            if (hint === 'hdr') {
-                return 'hdr';
-            }
-            if (hint === 'sdr') {
-                sawSdr = true;
-            }
-        }
+        // Share the scanner rather than repeating the loop: this copy had no
+        // weak-text handling, so a track titled "HDR removed" still outranked a
+        // VideoRangeType that said SDR here.
+        var fieldHint = getDynamicRangeHintFromObjectFields(mediaInfo, keysToInspect);
 
         if (isHdrDoviProfileOrLevel(mediaInfo.videoDoViProfile)
             || isHdrDoviProfileOrLevel(mediaInfo.VideoDoViProfile)
@@ -552,7 +566,7 @@
             return 'hdr';
         }
 
-        return sawSdr ? 'sdr' : 'unknown';
+        return fieldHint;
     }
 
     function normalizePlaybackVideoDelivery(value) {
@@ -614,9 +628,21 @@
                     return mediaSources[i];
                 }
             }
+
+            // An id was named and none of the candidates carry it, so this
+            // payload does not describe the source being asked about. Falling
+            // back to the first entry used to answer confidently about the
+            // wrong version, and a wrong "direct"/"copy" verdict is never
+            // re-checked -- only 'transcode' and 'unknown' schedule the
+            // /Sessions probe that could correct it.
+            return null;
         }
 
-        return mediaSources[0];
+        // With no id to go on, only a single-source payload is unambiguous.
+        // For a multi-version item jellyfin-web picks the optimal source, which
+        // need not be the first, so guessing here would produce the same
+        // unverifiable verdict; 'unknown' lets the runtime probe settle it.
+        return mediaSources.length === 1 ? mediaSources[0] : null;
     }
 
     function isTruthyPlaybackQueryValue(value) {

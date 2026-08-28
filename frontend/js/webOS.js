@@ -153,6 +153,10 @@
     var storedConcreteQualityPickAtArm = false;
     var settingsInjectionObserver = null;
     var settingsInjectionObserverActive = false;
+    var settingsInjectionObserverRecheckTimer = null;
+    // A route change can precede the settings DOM being rendered; re-evaluate
+    // once after this delay so the observer is not gated off a stale snapshot.
+    var SETTINGS_INJECTION_ROUTE_RECHECK_MS = 750;
     var settingsEnsureTimer = null;
     var settingsEnsureScheduled = false;
     var settingsEnsureAttemptsLeft = 0;
@@ -168,6 +172,14 @@
     var ASS_RENDER_AHEAD_LIMIT_MIB = 0;
     var ASS_TIME_SYNC_BACKWARD_TOLERANCE_SECONDS = 0.03;
     var ASS_TIME_SYNC_SEEK_BACK_SECONDS = 0.75;
+    // Upper bound on how far the extrapolated subtitle clock may lead the
+    // observed one, measured in wall-clock seconds. Roughly one worst-case
+    // currentTime update interval: beyond that the media clock genuinely moved
+    // and the clamp must resync instead of carrying the lead forward.
+    var ASS_TIME_SYNC_MAX_CLAMP_LEAD_SECONDS = 0.25;
+    // Jitter is transient, so a clamp that has been holding continuously for
+    // this long is bridging something else and must let the real clock through.
+    var ASS_TIME_SYNC_MAX_CLAMP_RUN_SECONDS = 1;
     var PLAYBACK_DIAGNOSTICS_UPDATE_INTERVAL = 500;
     var SCRIPT_PATCH_FETCH_TIMEOUT_MS = 8000;
     var SCRIPT_PATCH_SPECULATIVE_FETCH_TIMEOUT_MS = 750;
@@ -326,6 +338,9 @@
     var externalScriptPatchQueueActive = false;
     var externalScriptPatchStartTs = Date.now();
     var externalScriptPatchEarlyInspectCount = 0;
+    // URLs fetched and inspected once with no patch applied. Re-intercepting
+    // them would only pay the download twice for a known no-op.
+    var externalScriptPatchNoOpUrls = {};
     var assWorkerTimeSyncClampCount = 0;
     var assWorkerVideoStateEntries = [];
     var assWorkerVideoMessagePatchCount = 0;
@@ -703,7 +718,11 @@
         }
 
         setHeaderPinningEnabled(nextState !== PlaybackState.PLAYING);
-        setQualityMenuObserverEnabled(true);
+        // The quality action sheet only exists in the player OSD, so there is
+        // nothing for this body-wide subtree observer to find outside playback.
+        // It used to be switched on and never off, leaving its per-mutation
+        // querySelectorAll running while the user browsed the library.
+        setQualityMenuObserverEnabled(nextState === PlaybackState.PLAYING);
         hdrUiInfoObserver.setEnabled(nextState === PlaybackState.PLAYING && playbackDynamicRange === 'unknown');
         if (nextState === PlaybackState.PLAYING && previousState !== PlaybackState.PLAYING) {
             startPlaybackStartMaxBitrateForce('playback-start');
@@ -2389,12 +2408,33 @@
         return true;
     }
 
-    function shouldInspectExternalScriptForSubtitlePatches(src) {
-        return isLikelySubtitleRendererScriptUrl(src)
-            || playbackState === PlaybackState.PLAYING
+    function isDuringPlaybackScriptWindow() {
+        return playbackState === PlaybackState.PLAYING
             || shouldForcePlaybackStartMaxBitrate()
-            || !!currentMediaSessionItemId
-            || shouldSpeculativelyInspectEarlyScript(src);
+            || !!currentMediaSessionItemId;
+    }
+
+    function shouldInspectExternalScriptForSubtitlePatches(src) {
+        if (externalScriptPatchNoOpUrls[src]) {
+            // Already fetched and inspected this exact URL in this session and
+            // no patch applied. Re-inspecting only costs a second download.
+            return false;
+        }
+
+        if (isLikelySubtitleRendererScriptUrl(src)) {
+            return true;
+        }
+
+        // The playback-window net exists because a renderer chunk may ship
+        // under a hashed name the URL heuristic cannot recognise. Those chunks
+        // come from the Jellyfin server, so restrict the net to same-origin
+        // scripts: it keeps the safety net while sparing third-party scripts a
+        // serialized re-download during playback.
+        if (isDuringPlaybackScriptWindow()) {
+            return isSameOriginOrRelativeScriptUrl(src);
+        }
+
+        return shouldSpeculativelyInspectEarlyScript(src);
     }
 
     function canPatchExternalScript(script) {
@@ -2402,6 +2442,13 @@
             return false;
         }
         if (script.__webOsAssScriptIntercepted) {
+            return false;
+        }
+
+        // Rewriting a subresource-integrity script as an inline one silently
+        // drops the hash check (integrity is ignored on inline scripts), so
+        // leave any script that carries one untouched.
+        if (script.getAttribute && script.getAttribute('integrity')) {
             return false;
         }
 
@@ -2432,6 +2479,7 @@
 
         try {
             task.originalInsert.call(task.parent, node, task.refNode || null);
+            task.inserted = true;
             return true;
         } catch (error) {
             if (!task.refNode) {
@@ -2441,6 +2489,7 @@
 
             try {
                 task.originalInsert.call(task.parent, node, null);
+                task.inserted = true;
                 return true;
             } catch (fallbackError) {
                 debugLog('Failed to append intercepted script:', fallbackError);
@@ -2449,31 +2498,44 @@
         }
     }
 
-    function insertOriginalScriptTask(task) {
-        var completed = false;
-        function done() {
-            if (completed) {
-                return;
-            }
-            completed = true;
+    // Last-resort recovery for the patch pipeline. Everything between clearing
+    // the fetch timeout and finishing the task runs unguarded patch code
+    // (multiple full-bundle regex passes plus a large string concat), and an
+    // exception there used to strand externalScriptPatchQueueActive at true,
+    // which silently blocks every dynamically inserted script from that point
+    // on until the app is restarted. Recover by inserting the untouched script
+    // when nothing made it into the DOM yet, and always release the queue.
+    function recoverExternalScriptPatchTask(task, error) {
+        warnLog('Recovering from intercepted script patch failure:', error);
+
+        if (!task || task.finished) {
+            externalScriptPatchQueueActive = false;
+            processExternalScriptPatchQueue();
+            return;
+        }
+
+        if (task.inserted) {
+            finishExternalScriptPatchTask(task);
+            return;
+        }
+
+        try {
+            insertOriginalScriptTask(task);
+        } catch (fallbackError) {
+            debugLog('Failed to insert original script during recovery:', fallbackError);
             finishExternalScriptPatchTask(task);
         }
+    }
 
-        var timeoutId = setTimeout(done, SCRIPT_PATCH_FETCH_TIMEOUT_MS);
-        function finishFromEvent() {
-            clearTimeout(timeoutId);
-            done();
-        }
-
-        if (task.script.addEventListener) {
-            task.script.addEventListener('load', finishFromEvent);
-            task.script.addEventListener('error', finishFromEvent);
-        }
-
-        if (!insertScriptNode(task, task.script)) {
-            clearTimeout(timeoutId);
-            done();
-        }
+    function insertOriginalScriptTask(task) {
+        // Release the queue as soon as the node is in the DOM instead of
+        // waiting for the script to finish loading. Dynamically inserted
+        // scripts are async, so waiting never bought an execution-order
+        // guarantee the un-intercepted path had -- it only serialized every
+        // lazy-loaded chunk behind the previous one's full download (and made a
+        // detached parent cost a silent 8s stall).
+        insertScriptNode(task, task.script);
+        finishExternalScriptPatchTask(task);
     }
 
     function insertPatchedScriptTask(task, patchedText) {
@@ -2518,8 +2580,12 @@
             } catch (error) {
                 debugLog('Failed to abort intercepted script fetch:', error);
             }
-            retireUnconfirmedPgsRendererUrlHint(task.src, false);
-            insertOriginalScriptTask(task);
+            try {
+                retireUnconfirmedPgsRendererUrlHint(task.src, false);
+                insertOriginalScriptTask(task);
+            } catch (error) {
+                recoverExternalScriptPatchTask(task, error);
+            }
         }
 
         var timeoutId = setTimeout(function () {
@@ -2527,7 +2593,16 @@
             finishFetchWithOriginal();
         }, task.fetchTimeout || SCRIPT_PATCH_FETCH_TIMEOUT_MS);
 
-        xhr.open('GET', task.src, true);
+        // A malformed src makes open() throw synchronously; without this the
+        // queue would stall until the fetch timeout instead of failing over.
+        try {
+            xhr.open('GET', task.src, true);
+        } catch (error) {
+            clearTimeout(timeoutId);
+            fetchCompleted = true;
+            recoverExternalScriptPatchTask(task, error);
+            return;
+        }
         xhr.onreadystatechange = function () {
             if (xhr.readyState !== 4 || fetchCompleted) {
                 return;
@@ -2536,32 +2611,43 @@
             clearTimeout(timeoutId);
             fetchCompleted = true;
 
-            // CORS failures commonly finish at readyState 4 with status 0 and
-            // an empty response before firing onerror. Treat status 0 as
-            // inspectable only when it actually exposed script content.
-            var patches = getSubtitleScriptPatches();
-            var contentInspected = patches && patches.hasUsableFetchedScriptContent
-                ? patches.hasUsableFetchedScriptContent(xhr.status, xhr.responseText)
-                : (xhr.status >= 200 && xhr.status < 300)
-                    || (xhr.status === 0 && typeof xhr.responseText === 'string' && xhr.responseText.length > 0);
-            if (contentInspected) {
-                var patchedText = patchSubtitleRendererScriptText(xhr.responseText, task.src);
-                if (patchedText !== xhr.responseText) {
-                    // The content was seen, so a URL hint from this script that
-                    // its content did not confirm is noise even when another
-                    // patch (ASS) applied. Retire it so it cannot stay
-                    // correctable by a marker in some later bundle. No-op when
-                    // the content confirmed or replaced the hint.
-                    retireUnconfirmedPgsRendererUrlHint(task.src, true);
-                    insertPatchedScriptTask(task, patchedText);
-                    return;
+            // The timeout fallback is gone by this point, so any exception from
+            // here on would otherwise strand the queue permanently.
+            try {
+                // CORS failures commonly finish at readyState 4 with status 0 and
+                // an empty response before firing onerror. Treat status 0 as
+                // inspectable only when it actually exposed script content.
+                var patches = getSubtitleScriptPatches();
+                var contentInspected = patches && patches.hasUsableFetchedScriptContent
+                    ? patches.hasUsableFetchedScriptContent(xhr.status, xhr.responseText)
+                    : (xhr.status >= 200 && xhr.status < 300)
+                        || (xhr.status === 0 && typeof xhr.responseText === 'string' && xhr.responseText.length > 0);
+                if (contentInspected) {
+                    var patchedText = patchSubtitleRendererScriptText(xhr.responseText, task.src);
+                    if (patchedText !== xhr.responseText) {
+                        // The content was seen, so a URL hint from this script that
+                        // its content did not confirm is noise even when another
+                        // patch (ASS) applied. Retire it so it cannot stay
+                        // correctable by a marker in some later bundle. No-op when
+                        // the content confirmed or replaced the hint.
+                        retireUnconfirmedPgsRendererUrlHint(task.src, true);
+                        insertPatchedScriptTask(task, patchedText);
+                        return;
+                    }
                 }
-            }
 
-            // Only a usable response can disprove the URL hint. An HTTP error
-            // leaves it intact because the original script may still load.
-            retireUnconfirmedPgsRendererUrlHint(task.src, contentInspected);
-            insertOriginalScriptTask(task);
+                // Only a usable response can disprove the URL hint. An HTTP error
+                // leaves it intact because the original script may still load.
+                retireUnconfirmedPgsRendererUrlHint(task.src, contentInspected);
+                if (contentInspected && task.src) {
+                    // Content was read in full and nothing matched, so this URL
+                    // can never need patching in this session.
+                    externalScriptPatchNoOpUrls[task.src] = true;
+                }
+                insertOriginalScriptTask(task);
+            } catch (error) {
+                recoverExternalScriptPatchTask(task, error);
+            }
         };
         xhr.onerror = function () {
             clearTimeout(timeoutId);
@@ -2721,7 +2807,9 @@
             return webOSAssTimeSync.evaluateVideoTimeSample(entry, message, now, {
                 enabled: assTimeSyncFixEnabled,
                 backwardToleranceSeconds: ASS_TIME_SYNC_BACKWARD_TOLERANCE_SECONDS,
-                seekBackSeconds: ASS_TIME_SYNC_SEEK_BACK_SECONDS
+                seekBackSeconds: ASS_TIME_SYNC_SEEK_BACK_SECONDS,
+                maxClampLeadSeconds: ASS_TIME_SYNC_MAX_CLAMP_LEAD_SECONDS,
+                maxClampRunSeconds: ASS_TIME_SYNC_MAX_CLAMP_RUN_SECONDS
             });
         }
 
@@ -2762,12 +2850,16 @@
 
             entry.lastPostedCurrentTime = timeSample.currentTime;
             entry.lastPostedAt = now;
+            // Tracks how long the clamp has been holding continuously so it can
+            // resync instead of carrying a lead forever.
+            entry.clampRunStartedAt = timeSample.clampRunStartedAt || 0;
         } else if (timeSample.resetAnchor) {
             // A control-only pause/rate change has no authoritative switch
             // timestamp. Let the next real time sample establish a new anchor
             // instead of applying the new clock slope to the previous period.
             entry.lastPostedCurrentTime = null;
             entry.lastPostedAt = now;
+            entry.clampRunStartedAt = 0;
         }
 
         entry.lastPostedPaused = timeSample.isPaused;
@@ -3636,8 +3728,27 @@
         clearScheduledSettingsEnsure();
     }
 
+    // The route hooks below already fire on every navigation, but this used to
+    // pass true unconditionally, so a body-wide childList+subtree observer ran
+    // for the whole session and every library scroll paid its selector matching.
+    // Gate it on the settings route instead -- the predicates for exactly this
+    // were already written and simply never wired up.
     function refreshSettingsInjectionObserverState() {
-        setSettingsInjectionObserverEnabled(true);
+        setSettingsInjectionObserverEnabled(isLikelyPlaybackSettingsRoute() || hasPlaybackSettingsDom());
+    }
+
+    // A route change can land before jellyfin-web has rendered the settings DOM,
+    // and with the observer off nothing else would notice it appear. Re-check
+    // once shortly after navigating so the injection is not missed.
+    function scheduleSettingsInjectionObserverRecheck() {
+        refreshSettingsInjectionObserverState();
+        if (settingsInjectionObserverRecheckTimer) {
+            clearTimeout(settingsInjectionObserverRecheckTimer);
+        }
+        settingsInjectionObserverRecheckTimer = setTimeout(function () {
+            settingsInjectionObserverRecheckTimer = null;
+            refreshSettingsInjectionObserverState();
+        }, SETTINGS_INJECTION_ROUTE_RECHECK_MS);
     }
 
     function initWebOSSettingsInjection() {
@@ -3652,10 +3763,10 @@
         });
 
         window.addEventListener('hashchange', function () {
-            refreshSettingsInjectionObserverState();
+            scheduleSettingsInjectionObserverRecheck();
         });
         window.addEventListener('popstate', function () {
-            refreshSettingsInjectionObserverState();
+            scheduleSettingsInjectionObserverRecheck();
         });
         if (window.history) {
             ['pushState', 'replaceState'].forEach(function (methodName) {
@@ -3666,14 +3777,14 @@
 
                 window.history[methodName] = function () {
                     var result = originalMethod.apply(this, arguments);
-                    setTimeout(refreshSettingsInjectionObserverState, 0);
+                    setTimeout(scheduleSettingsInjectionObserverRecheck, 0);
                     return result;
                 };
                 window.history[methodName].__webOsSettingsRouteHooked = true;
             });
         }
 
-        refreshSettingsInjectionObserverState();
+        scheduleSettingsInjectionObserverRecheck();
     }
 
     function getHeaderElement() {
@@ -4306,6 +4417,76 @@
         return decisions && decisions.getDynamicRangeHintFromMediaInfo
             ? decisions.getDynamicRangeHintFromMediaInfo(mediaInfo)
             : 'unknown';
+    }
+
+    var AUDIO_ONLY_MEDIA_SESSION_TYPES = {
+        audio: true,
+        audiobook: true,
+        book: true,
+        musicalbum: true,
+        musicartist: true,
+        playlist: true
+    };
+
+    // jellyfin-web drives the media session for music as well as video, and
+    // treating a music session as a video playback start pins the header off,
+    // arms the startup bitrate force for audio requests and keeps every dynamic
+    // script serialized for the whole listening session.
+    //
+    // The payload carries no media type -- upstream's mediaSessionSubscriber
+    // sends only {action, isLocalPlayer, itemId, title, artist, album, duration,
+    // position, imageUrl, canSeek, isPaused} -- so isLocalPlayer is the signal
+    // that is actually there. Upstream returns early for a local *video*
+    // player ("local players do their own notifications"), which leaves
+    // isLocalPlayer === true meaning local audio. Video on this TV announces
+    // itself through enableFullscreen instead.
+    //
+    // Type fields are still consulted for older clients and for remote players,
+    // where the payload shape is not guaranteed. Absent every signal the old
+    // behaviour stands: guessing "audio" would break video detection outright.
+    function isAudioOnlyMediaSession(mediaInfo) {
+        if (!mediaInfo || typeof mediaInfo !== 'object') {
+            return false;
+        }
+
+        var candidates = [
+            mediaInfo.MediaType,
+            mediaInfo.mediaType,
+            mediaInfo.ItemType,
+            mediaInfo.itemType,
+            mediaInfo.Type,
+            mediaInfo.type
+        ];
+
+        var nowPlaying = mediaInfo.NowPlayingItem || mediaInfo.nowPlayingItem;
+        if (nowPlaying && typeof nowPlaying === 'object') {
+            candidates.push(nowPlaying.MediaType, nowPlaying.mediaType, nowPlaying.Type);
+        }
+
+        var sawAudio = false;
+        for (var i = 0; i < candidates.length; i++) {
+            var value = candidates[i];
+            if (typeof value !== 'string' || !value) {
+                continue;
+            }
+
+            var normalized = value.toLowerCase();
+            // A single video signal wins: MusicVideo is a video item whose
+            // sibling fields ("MusicVideo" contains "music") must not demote it.
+            if (normalized === 'video' || normalized === 'musicvideo') {
+                return false;
+            }
+            if (Object.prototype.hasOwnProperty.call(AUDIO_ONLY_MEDIA_SESSION_TYPES, normalized)
+                && AUDIO_ONLY_MEDIA_SESSION_TYPES[normalized]) {
+                sawAudio = true;
+            }
+        }
+
+        if (sawAudio) {
+            return true;
+        }
+
+        return mediaInfo.isLocalPlayer === true || mediaInfo.IsLocalPlayer === true;
     }
 
     function shouldInspectDynamicRangeUiElement(element) {
@@ -6380,6 +6561,21 @@
         },
 
         updateMediaSession: function (mediaInfo) {
+            // Music sessions must not drive the video state machine at all:
+            // no PLAYING transition, no item tracking (which gates the script
+            // interception), and no HDR probing for a stream that has no video.
+            if (isAudioOnlyMediaSession(mediaInfo)) {
+                // Leaving early is not enough on a video-to-music switch: the
+                // state machine would keep the previous video's PLAYING state
+                // and item id, holding the header unpinned and the script
+                // interception armed for the whole listening session.
+                if (playbackState === PlaybackState.PLAYING) {
+                    setPlaybackState(PlaybackState.IDLE, 'audio-media-session');
+                }
+                postMessage('updateMediaSession', { mediaInfo: mediaInfo });
+                return;
+            }
+
             var itemId = mediaInfo && mediaInfo.itemId ? mediaInfo.itemId.toString() : null;
             var mediaSourceId = getSelectedMediaSourceId(mediaInfo);
             var normalizedMediaSourceId = mediaSourceId ? mediaSourceId.toString() : null;
@@ -6471,7 +6667,9 @@
         ['settings-injection', initWebOSSettingsInjection],
         ['quality-menu-patching', initQualityMenuPatching],
         ['quality-menu-observer', function () {
-            setQualityMenuObserverEnabled(true);
+            // Startup is never mid-playback, so leave it off; setPlaybackState
+            // switches it on when playback actually begins.
+            setQualityMenuObserverEnabled(playbackState === PlaybackState.PLAYING);
         }],
         ['playbackinfo-interception', initPlaybackInfoInterception],
         ['hdr-ui-info-observer', function () {

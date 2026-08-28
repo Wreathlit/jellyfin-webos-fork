@@ -37,6 +37,9 @@
         );
         var tolerance = typeof options.backwardToleranceSeconds === 'number' ? options.backwardToleranceSeconds : 0.03;
         var seekThreshold = typeof options.seekBackSeconds === 'number' ? options.seekBackSeconds : 0.75;
+        var maxLead = typeof options.maxClampLeadSeconds === 'number' ? options.maxClampLeadSeconds : 0.25;
+        var maxClampRun = typeof options.maxClampRunSeconds === 'number' ? options.maxClampRunSeconds : 1;
+        var clampRunStartedAt = entry.clampRunStartedAt || 0;
         var clamped = false;
 
         // Extrapolation is valid only across consecutive playing samples. A
@@ -50,11 +53,30 @@
             && !isRateChange
             && typeof predictedTime === 'number'
             && nextCurrentTime + tolerance < predictedTime) {
+            // The caller anchors on what we return, so an unbounded clamp is
+            // self-sustaining: after a real backward seek every later sample
+            // reproduces the same lead and the subtitle clock stays ahead
+            // forever. Two independent bounds keep the bridge temporary.
             var backwardsBy = predictedTime - nextCurrentTime;
-            if (backwardsBy < seekThreshold) {
+            // backwardsBy is in media seconds, and the extrapolation scales
+            // with rate, so the same wall-clock lag looks twice as large at 2x.
+            // Normalise before comparing, or the bound would tighten with speed
+            // and drop the clamp that smooths ordinary reporting jitter.
+            var leadSeconds = backwardsBy / (nextRate || 1);
+            // Jitter is transient. If the clamp has been holding continuously
+            // for longer than this, the media clock genuinely moved and the
+            // anchor must resync rather than carry the lead indefinitely.
+            var runStartedAt = clampRunStartedAt || now;
+            var runSeconds = (now - runStartedAt) / 1000;
+            if (backwardsBy < seekThreshold && leadSeconds <= maxLead && runSeconds <= maxClampRun) {
                 nextCurrentTime = predictedTime;
                 clamped = true;
+                clampRunStartedAt = runStartedAt;
             }
+        }
+
+        if (!clamped) {
+            clampRunStartedAt = 0;
         }
 
         return {
@@ -64,7 +86,8 @@
             rate: nextRate,
             predictedTime: predictedTime,
             resetAnchor: resetAnchor,
-            clamped: clamped
+            clamped: clamped,
+            clampRunStartedAt: clampRunStartedAt
         };
     }
 

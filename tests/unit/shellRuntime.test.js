@@ -87,6 +87,13 @@ function createFakeElement(tagName) {
             this.children.push(child);
             return child;
         },
+        removeChild(child) {
+            const index = this.children.indexOf(child);
+            if (index !== -1) {
+                this.children.splice(index, 1);
+            }
+            return child;
+        },
         setAttribute(name, value) {
             this.attributes[name] = value;
         },
@@ -685,4 +692,86 @@ function countDeviceInfoInjections(contentDocument) {
     assert.strictEqual(replacement.hosturl, 'https://server.example/web/index.html');
     assert.strictEqual(replacement.auto_connect, false, 'auto connect must be re-confirmed after an ID change');
     assert.strictEqual(replacement.id, false, 'the unknown-id sentinel keeps the next reconnect from warning again');
+}
+
+// refreshServerList reconciles instead of only appending. Rendering used to run
+// once at startup and never remove anything, so an LRU-evicted server kept a
+// clickable card pointing at an entry that no longer existed.
+{
+    const shell = loadShell();
+    shell.seedStorage('connected_servers', {
+        'keep-id': {
+            baseurl: 'https://keep.example',
+            hosturl: 'https://keep.example/web/index.html',
+            Name: 'Keep',
+            Address: 'keep.example',
+            id: 'keep-id'
+        },
+        'drop-id': {
+            baseurl: 'https://drop.example',
+            hosturl: 'https://drop.example/web/index.html',
+            Name: 'Drop',
+            Address: 'drop.example',
+            id: 'drop-id'
+        }
+    });
+
+    shell.context.refreshServerList();
+    assert.ok(shell.getServerCard('server_keep-id'), 'a stored server must be rendered');
+    assert.ok(shell.getServerCard('server_drop-id'), 'both stored servers must be rendered');
+
+    // Evict one entry the way the LRU would, then reconcile again.
+    shell.seedStorage('connected_servers', {
+        'keep-id': {
+            baseurl: 'https://keep.example',
+            hosturl: 'https://keep.example/web/index.html',
+            Name: 'Keep',
+            Address: 'keep.example',
+            id: 'keep-id'
+        }
+    });
+    shell.context.refreshServerList();
+
+    assert.ok(shell.getServerCard('server_keep-id'), 'a still-stored server must keep its card');
+    assert.strictEqual(
+        shell.getServerCard('server_drop-id'),
+        null,
+        'a server that is no longer stored must lose its card'
+    );
+}
+
+// A discovered server may not take over the card of a saved server sitting at a
+// different address: cards are keyed by Id, and discovery rides on
+// unauthenticated UDP, so that overwrite would repoint Connect at the announcer.
+{
+    const shell = loadShell();
+    shell.seedStorage('connected_servers', {
+        'shared-id': {
+            baseurl: 'https://real.example',
+            hosturl: 'https://real.example/web/index.html',
+            Name: 'Real',
+            Address: 'real.example',
+            id: 'shared-id'
+        }
+    });
+
+    const sameAddress = shell.context.getDiscoveredServerCardKey({
+        Id: 'shared-id',
+        Address: 'https://real.example/'
+    });
+    assert.strictEqual(
+        sameAddress,
+        'shared-id',
+        'a trailing slash must not split one server across two cards'
+    );
+
+    const otherAddress = shell.context.getDiscoveredServerCardKey({
+        Id: 'shared-id',
+        Address: 'http://192.168.1.66:8096'
+    });
+    assert.strictEqual(
+        otherAddress,
+        'discovered_shared-id',
+        'a different address under a saved Id must render as its own card'
+    );
 }
