@@ -128,3 +128,102 @@ assertClean('var index = list.findIndex(fn);');
         );
     }
 }
+
+// Template literals used to be blanked whole, interpolations included, so any
+// hazard written inside `${...}` was invisible to the scan that exists to catch
+// exactly that class of parse error.
+{
+    assert.deepStrictEqual(
+        labelsFor('var a = `x ${b ?? c}`;'),
+        ['nullish coalescing `??`'],
+        'a hazard inside a template interpolation must be reported'
+    );
+    assert.deepStrictEqual(
+        labelsFor('var a = `${user?.name}`;'),
+        ['optional chaining `?.`'],
+        'optional chaining inside an interpolation must be reported'
+    );
+    assert.deepStrictEqual(
+        labelsFor('var a = `literal ?? text`;'),
+        [],
+        'the static text of a template literal is still not code'
+    );
+    assert.deepStrictEqual(
+        labelsFor('var a = `outer ${ `inner ?? text` } end`;'),
+        [],
+        'a nested template literal keeps its static text out of the scan'
+    );
+}
+
+// Two parse-level violations Node 22 accepts, so check:syntax cannot see them
+// either: without these rules they reached the TV and white-screened on load.
+{
+    assert.deepStrictEqual(
+        labelsFor('var n = 1_000_000;'),
+        ['numeric separator `1_000`'],
+        'numeric separators must be reported'
+    );
+    assert.deepStrictEqual(
+        labelsFor('var a = 0xFF, b = 1000, c = 1.5e3;'),
+        [],
+        'ordinary numeric literals must not trip the separator rule'
+    );
+
+    assert.deepStrictEqual(
+        labelsFor('class A { count = 1; }'),
+        ['public class field `x = 1`'],
+        'public class fields must be reported'
+    );
+    assert.deepStrictEqual(
+        labelsFor('class A { static x = 2; }'),
+        ['public class field `x = 1`'],
+        'static public class fields must be reported'
+    );
+    assert.deepStrictEqual(
+        labelsFor('class A { m() { var x = 1; x = 2; this.y = 3; } }'),
+        [],
+        'assignment inside a method body is not a field declaration'
+    );
+    assert.deepStrictEqual(
+        labelsFor('function f() { var count = 1; count = 2; }'),
+        [],
+        'plain assignment outside a class must not be reported'
+    );
+}
+
+// services/ ships untranspiled to a much older Node than the CI host, and used
+// to be scanned by nothing: `node --check` runs on Node 22 and accepts anything
+// it can parse. A service that throws at load looks like discovery silently
+// breaking, not like a crash.
+{
+    const { BANNED_NODE, SCAN_TARGETS } = require('../../tools/check-baseline');
+
+    assert.ok(
+        SCAN_TARGETS.some(function (target) {
+            return target.root === 'services';
+        }),
+        'services/ must be part of the baseline scan'
+    );
+
+    const nodeLabels = findViolations('try { risky(); } catch { }', BANNED_NODE)
+        .map(function (violation) {
+            return violation.label;
+        });
+    assert.deepStrictEqual(
+        nodeLabels,
+        ['optional catch binding `catch {`'],
+        'optional catch binding parses on Chromium 68 but not on Node 8'
+    );
+    assert.deepStrictEqual(
+        labelsFor('try { risky(); } catch { }'),
+        [],
+        'the browser table must not report optional catch binding'
+    );
+
+    const serviceSource = fs.readFileSync(path.join(root, 'services', 'service.js'), 'utf8');
+    assert.deepStrictEqual(
+        findViolations(serviceSource, BANNED_NODE),
+        [],
+        'services/service.js must stay within the Node 8 baseline'
+    );
+}

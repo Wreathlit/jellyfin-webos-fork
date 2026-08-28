@@ -73,6 +73,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # upload-artifact and download-artifact stopped sharing a major line after
+      # v4 (upload is on v7, download on v8), so the mismatch with the upload
+      # step above is expected -- both are the current major and both speak the
+      # v4+ artifact backend. Do not "fix" it by pinning them to one number.
       - name: Download built artifacts
         uses: actions/download-artifact@v8
         with:

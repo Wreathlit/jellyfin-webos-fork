@@ -10,15 +10,16 @@
     "check": "ares-package --check services frontend",
     "package": "ares-package --no-minify --outdir build/ services frontend",
     "clean": "node -e \"require('fs').rmSync('build', { recursive: true, force: true })\"",
-    "deploy": "ares-install build/org.jellyfin.webos_${npm_package_version}_all.ipk",
+    "deploy": "node tools/deploy.js",
     "launch": "ares-launch org.jellyfin.webos",
     "manifest": "node tools/gen-manifest.js build/org.jellyfin.webos.manifest.json",
     "version": "node tools/sync-version.js && git add frontend/appinfo.json",
     "check:assets": "node tools/check-injected-assets.js",
     "check:syntax": "node tools/check-js-syntax.js",
     "check:baseline": "node tools/check-baseline.js",
+    "check:version": "node tools/check-version-sync.js",
     "test:unit": "node tests/run.js",
-    "test": "npm run check:assets && npm run check:syntax && npm run check:baseline && npm run test:unit"
+    "test": "npm run check:assets && npm run check:syntax && npm run check:baseline && npm run check:version && npm run test:unit"
   },
   "author": "Jellyfin contributors",
   "license": "MPL-2.0",

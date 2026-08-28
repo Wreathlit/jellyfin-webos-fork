@@ -24,42 +24,176 @@ const path = require('path');
 
 const root = path.resolve(__dirname, '..');
 
-// Only first-party code that ships inside the frontend. The vendored
-// webOSTVjs SDK is shipped as delivered by LG and is not ours to police.
-const SCAN_ROOTS = ['frontend'];
+// Two first-party trees ship untranspiled, to two different engines.
+//
+//   frontend/  -> webOS 5.0 web engine == Chromium 68 == ES2018
+//   services/  -> webOS 5.0 Node service runtime, roughly Node 8
+//
+// services/ used to be scanned by nothing at all: `npm run check:syntax` runs
+// `node --check` on the CI host's Node 22, so anything it can parse passed. A
+// background service that throws at load is harder to notice than a white
+// screen -- it just looks like server discovery quietly stopped working.
+//
+// The vendored webOSTVjs SDK is shipped as delivered by LG and is not ours to
+// police.
+const SCAN_TARGETS = [
+    { root: 'frontend', engine: 'Chromium 68 (webOS 5.0)', banned: 'browser' },
+    { root: 'services', engine: 'Node 8 (webOS 5.0 service runtime)', banned: 'node' }
+];
 const IGNORED_PATH_PATTERN = /(^|[\\/])webOSTVjs-/;
 
-const BANNED = [
+// Each rule carries the first version of *each* engine that supports it, so one
+// table serves both trees. A null means the baseline already has it.
+const RULES = [
     // Syntax — a violation here is a parse error, so the whole file dies.
-    { pattern: /\?\.(?!\d)/g, label: 'optional chaining `?.`', since: 'Chromium 80' },
-    { pattern: /\?\?=/g, label: 'logical assignment `??=`', since: 'Chromium 85' },
-    { pattern: /\|\|=/g, label: 'logical assignment `||=`', since: 'Chromium 85' },
-    { pattern: /&&=/g, label: 'logical assignment `&&=`', since: 'Chromium 85' },
-    { pattern: /\?\?/g, label: 'nullish coalescing `??`', since: 'Chromium 80' },
-    { pattern: /(^|[^\w$.])#[A-Za-z_$]/g, label: 'private class field `#name`', since: 'Chromium 74' },
-    { pattern: /\bstatic\s*\{/g, label: 'class static initialization block', since: 'Chromium 94' },
+    { pattern: /\?\.(?!\d)/g, label: 'optional chaining `?.`', browser: 'Chromium 80', node: 'Node 14' },
+    { pattern: /\?\?=/g, label: 'logical assignment `??=`', browser: 'Chromium 85', node: 'Node 15' },
+    { pattern: /\|\|=/g, label: 'logical assignment `||=`', browser: 'Chromium 85', node: 'Node 15' },
+    { pattern: /&&=/g, label: 'logical assignment `&&=`', browser: 'Chromium 85', node: 'Node 15' },
+    { pattern: /\?\?/g, label: 'nullish coalescing `??`', browser: 'Chromium 80', node: 'Node 14' },
+    { pattern: /(^|[^\w$.])#[A-Za-z_$]/g, label: 'private class field `#name`', browser: 'Chromium 74', node: 'Node 12' },
+    { pattern: /\bstatic\s*\{/g, label: 'class static initialization block', browser: 'Chromium 94', node: 'Node 16.11' },
+    // Optional catch binding parses on Chromium 68 but not on Node 8.
+    { pattern: /\bcatch\s*\{/g, label: 'optional catch binding `catch {`', browser: null, node: 'Node 10' },
+    { pattern: /\bfor\s+await\b/g, label: 'async iteration `for await`', browser: null, node: 'Node 10' },
+    // A digit run containing an underscore. Strings and comments are already
+    // blanked out by this point, so a false positive would need a bare numeric
+    // literal spelled with separators -- which is the thing being banned.
+    { pattern: /\b\d[\d_]*_[\d_]*\b/g, label: 'numeric separator `1_000`', browser: 'Chromium 75', node: 'Node 12.5' },
+    // Public class fields. Matched inside a class body only, because
+    // `identifier =` is ordinary assignment anywhere else; see
+    // findClassFieldViolations below.
+    { pattern: null, classField: true, label: 'public class field `x = 1`', browser: 'Chromium 72', node: 'Node 12' },
 
     // Builtins — a violation here is a TypeError at the call site, so it only
     // breaks the feature that touches it. Still a white screen if it runs at
     // startup.
-    { pattern: /\bglobalThis\b/g, label: '`globalThis`', since: 'Chromium 71' },
-    { pattern: /\bqueueMicrotask\s*\(/g, label: '`queueMicrotask()`', since: 'Chromium 71' },
-    { pattern: /\bObject\.fromEntries\b/g, label: '`Object.fromEntries()`', since: 'Chromium 73' },
-    { pattern: /\bObject\.hasOwn\b/g, label: '`Object.hasOwn()`', since: 'Chromium 93' },
-    { pattern: /\bPromise\.allSettled\b/g, label: '`Promise.allSettled()`', since: 'Chromium 76' },
-    { pattern: /\bPromise\.any\b/g, label: '`Promise.any()`', since: 'Chromium 85' },
-    { pattern: /\bstructuredClone\s*\(/g, label: '`structuredClone()`', since: 'Chromium 98' },
-    { pattern: /\.flat\s*\(/g, label: '`Array.prototype.flat()`', since: 'Chromium 69' },
-    { pattern: /\.flatMap\s*\(/g, label: '`Array.prototype.flatMap()`', since: 'Chromium 69' },
-    { pattern: /\.matchAll\s*\(/g, label: '`String.prototype.matchAll()`', since: 'Chromium 73' },
-    { pattern: /\.replaceAll\s*\(/g, label: '`String.prototype.replaceAll()`', since: 'Chromium 85' },
-    { pattern: /\.findLast(Index)?\s*\(/g, label: '`Array.prototype.findLast()`', since: 'Chromium 97' },
-    { pattern: /\.at\s*\(/g, label: '`Array.prototype.at()`', since: 'Chromium 92' }
+    { pattern: /\bglobalThis\b/g, label: '`globalThis`', browser: 'Chromium 71', node: 'Node 12' },
+    { pattern: /\bqueueMicrotask\s*\(/g, label: '`queueMicrotask()`', browser: 'Chromium 71', node: 'Node 11' },
+    { pattern: /\bObject\.fromEntries\b/g, label: '`Object.fromEntries()`', browser: 'Chromium 73', node: 'Node 12' },
+    { pattern: /\bObject\.hasOwn\b/g, label: '`Object.hasOwn()`', browser: 'Chromium 93', node: 'Node 16.9' },
+    { pattern: /\bPromise\.allSettled\b/g, label: '`Promise.allSettled()`', browser: 'Chromium 76', node: 'Node 12.9' },
+    { pattern: /\bPromise\.any\b/g, label: '`Promise.any()`', browser: 'Chromium 85', node: 'Node 15' },
+    { pattern: /\bstructuredClone\s*\(/g, label: '`structuredClone()`', browser: 'Chromium 98', node: 'Node 17' },
+    { pattern: /\.flat\s*\(/g, label: '`Array.prototype.flat()`', browser: 'Chromium 69', node: 'Node 11' },
+    { pattern: /\.flatMap\s*\(/g, label: '`Array.prototype.flatMap()`', browser: 'Chromium 69', node: 'Node 11' },
+    { pattern: /\.matchAll\s*\(/g, label: '`String.prototype.matchAll()`', browser: 'Chromium 73', node: 'Node 12' },
+    { pattern: /\.replaceAll\s*\(/g, label: '`String.prototype.replaceAll()`', browser: 'Chromium 85', node: 'Node 15' },
+    { pattern: /\.findLast(Index)?\s*\(/g, label: '`Array.prototype.findLast()`', browser: 'Chromium 97', node: 'Node 18' },
+    { pattern: /\.at\s*\(/g, label: '`Array.prototype.at()`', browser: 'Chromium 92', node: 'Node 16.6' }
 ];
+
+function rulesFor(engine) {
+    return RULES
+        .filter((rule) => rule[engine])
+        .map((rule) => ({
+            pattern: rule.pattern,
+            classField: rule.classField,
+            label: rule.label,
+            since: rule[engine]
+        }));
+}
+
+// The browser table stays exported under its original name: it is what the
+// README documents and what checkBaseline.test.js asserts against.
+const BANNED = rulesFor('browser');
+const BANNED_NODE = rulesFor('node');
 
 // A `/` opens a regex literal only where a value cannot already have ended.
 const REGEX_ALLOWED_AFTER = /[(,=:[!&|?{};+\-*%~^<>]$/;
 const REGEX_ALLOWED_KEYWORDS = /\b(return|typeof|instanceof|in|of|new|delete|void|case|do|else|yield|await)$/;
+
+function blankOut(text) {
+    return text.replace(/[^\n]/g, ' ');
+}
+
+// Blank a plain quoted string starting at `start`. Returns the replacement text
+// (same length as what it consumed) and the index just past the literal.
+function stripQuotedLiteral(source, start) {
+    const quote = source[start];
+    let cursor = start + 1;
+    while (cursor < source.length) {
+        if (source[cursor] === '\\') {
+            cursor += 2;
+            continue;
+        }
+        if (source[cursor] === quote) {
+            cursor++;
+            break;
+        }
+        cursor++;
+    }
+    return { text: blankOut(source.slice(start, cursor)), end: cursor };
+}
+
+// Blank a template literal's static text while keeping each `${...}` expression
+// as code. Recurses so a literal nested inside an interpolation is handled the
+// same way instead of its opening backtick being read as the outer one's close.
+function stripTemplateLiteral(source, start) {
+    let text = ' ';
+    let cursor = start + 1;
+    let staticStart = cursor;
+
+    while (cursor < source.length) {
+        if (source[cursor] === '\\') {
+            cursor += 2;
+            continue;
+        }
+
+        if (source[cursor] === '$' && source[cursor + 1] === '{') {
+            text += blankOut(source.slice(staticStart, cursor)) + '  ';
+            cursor += 2;
+
+            let depth = 1;
+            while (cursor < source.length && depth > 0) {
+                const current = source[cursor];
+
+                if (current === '\\') {
+                    text += source.slice(cursor, cursor + 2);
+                    cursor += 2;
+                    continue;
+                }
+                if (current === '`') {
+                    const nested = stripTemplateLiteral(source, cursor);
+                    text += nested.text;
+                    cursor = nested.end;
+                    continue;
+                }
+                if (current === '"' || current === '\'') {
+                    const nested = stripQuotedLiteral(source, cursor);
+                    text += nested.text;
+                    cursor = nested.end;
+                    continue;
+                }
+                if (current === '{') {
+                    depth++;
+                } else if (current === '}') {
+                    depth--;
+                    if (depth === 0) {
+                        text += ' ';
+                        cursor++;
+                        break;
+                    }
+                }
+
+                text += current;
+                cursor++;
+            }
+
+            staticStart = cursor;
+            continue;
+        }
+
+        if (source[cursor] === '`') {
+            cursor++;
+            break;
+        }
+        cursor++;
+    }
+
+    text += blankOut(source.slice(staticStart, cursor));
+    return { text: text, end: cursor };
+}
 
 // Replace every non-code region with spaces, preserving newlines so reported
 // line numbers still match the original file.
@@ -93,7 +227,20 @@ function stripNonCode(source) {
 
         const char = source[index];
 
-        if (char === '"' || char === '\'' || char === '`') {
+        // Template literals need their `${...}` interpolations kept as code:
+        // blanking the whole literal hid every hazard written inside one, which
+        // is exactly the parse error this scan exists to catch. Every branch
+        // below emits exactly as many characters as it consumes, so reported
+        // line numbers keep matching the original file.
+        if (char === '`') {
+            const scanned = stripTemplateLiteral(source, index);
+            out += scanned.text;
+            index = scanned.end;
+            lastSignificant = 'x';
+            continue;
+        }
+
+        if (char === '"' || char === '\'') {
             let cursor = index + 1;
             while (cursor < source.length) {
                 if (source[cursor] === '\\') {
@@ -165,11 +312,88 @@ function stripNonCode(source) {
     return out;
 }
 
-function findViolations(source) {
+// `name = value` is ordinary assignment everywhere except directly inside a
+// class body, where it declares a public class field -- a parse error on the
+// baseline. Walk each class body's braces so the check stays lexical without
+// mistaking assignments in methods for field declarations.
+function findClassFieldViolations(code) {
+    const violations = [];
+    const classPattern = /\bclass\b[^{;]*\{/g;
+    let match;
+
+    while ((match = classPattern.exec(code)) !== null) {
+        let cursor = classPattern.lastIndex;
+        let depth = 1;
+        const bodyStart = cursor;
+
+        while (cursor < code.length && depth > 0) {
+            const char = code[cursor];
+            if (char === '{') {
+                depth++;
+            } else if (char === '}') {
+                depth--;
+            }
+            cursor++;
+        }
+
+        // Only depth-1 text is the class body itself; anything deeper is a
+        // method body where assignment is legal.
+        const body = code.slice(bodyStart, cursor - 1);
+        let bodyDepth = 0;
+        let lineOffset = bodyStart;
+        const fieldPattern = /(^|[;}\n])\s*(?:static\s+)?([A-Za-z_$][\w$]*)\s*=[^=]/g;
+
+        for (let i = 0; i < body.length; i++) {
+            if (body[i] === '{') {
+                bodyDepth++;
+            } else if (body[i] === '}') {
+                bodyDepth--;
+            }
+        }
+
+        if (bodyDepth !== 0) {
+            continue;
+        }
+
+        let fieldMatch;
+        fieldPattern.lastIndex = 0;
+        while ((fieldMatch = fieldPattern.exec(body)) !== null) {
+            // Reject matches nested inside a method body.
+            let nesting = 0;
+            for (let i = 0; i < fieldMatch.index; i++) {
+                if (body[i] === '{') {
+                    nesting++;
+                } else if (body[i] === '}') {
+                    nesting--;
+                }
+            }
+            if (nesting !== 0) {
+                continue;
+            }
+
+            const absolute = lineOffset + fieldMatch.index;
+            violations.push({
+                line: code.slice(0, absolute).split('\n').length,
+                label: 'public class field `x = 1`',
+                since: 'Chromium 72'
+            });
+        }
+    }
+
+    return violations;
+}
+
+function findViolations(source, banned) {
     const code = stripNonCode(source);
     const violations = [];
 
-    for (const rule of BANNED) {
+    for (const rule of (banned || BANNED)) {
+        if (rule.classField) {
+            for (const violation of findClassFieldViolations(code)) {
+                violations.push({ line: violation.line, label: rule.label, since: rule.since });
+            }
+            continue;
+        }
         rule.pattern.lastIndex = 0;
         let match;
         while ((match = rule.pattern.exec(code)) !== null) {
@@ -204,36 +428,43 @@ function collectJavaScriptFiles(directory, files) {
 }
 
 function main() {
-    const files = [];
-    for (const scanRoot of SCAN_ROOTS) {
-        collectJavaScriptFiles(path.join(root, scanRoot), files);
-    }
-    files.sort();
-
     let failures = 0;
-    for (const file of files) {
-        const relativePath = path.relative(root, file).replace(/\\/g, '/');
-        for (const violation of findViolations(fs.readFileSync(file, 'utf8'))) {
-            failures++;
-            console.error(
-                relativePath + ':' + violation.line + '  ' + violation.label
-                + ' requires ' + violation.since + ', baseline is Chromium 68 (webOS 5.0)'
-            );
+    let scanned = 0;
+
+    for (const target of SCAN_TARGETS) {
+        const files = collectJavaScriptFiles(path.join(root, target.root), []).sort();
+        const banned = target.banned === 'node' ? BANNED_NODE : BANNED;
+        scanned += files.length;
+
+        for (const file of files) {
+            const relativePath = path.relative(root, file).replace(/\\/g, '/');
+            for (const violation of findViolations(fs.readFileSync(file, 'utf8'), banned)) {
+                failures++;
+                console.error(
+                    relativePath + ':' + violation.line + '  ' + violation.label
+                    + ' requires ' + violation.since + ', baseline is ' + target.engine
+                );
+            }
         }
     }
 
     if (failures) {
         console.error(
-            '\nBrowser baseline check failed (' + failures + ').\n'
-            + 'frontend/ ships untranspiled to webOS 5.0 (Chromium 68 / ES2018).\n'
-            + 'Use an ES2018-compatible form, or raise the baseline deliberately in\n'
+            '\nEngine baseline check failed (' + failures + ').\n'
+            + 'frontend/ and services/ both ship untranspiled to webOS 5.0:\n'
+            + '  frontend/ -> Chromium 68 / ES2018\n'
+            + '  services/ -> Node 8 service runtime\n'
+            + 'Use a compatible form, or raise the baseline deliberately in\n'
             + 'tools/check-baseline.js and README.md together.'
         );
         process.exitCode = 1;
         return;
     }
 
-    console.log('Browser baseline check passed (' + files.length + ' files, Chromium 68 / ES2018).');
+    console.log(
+        'Engine baseline check passed (' + scanned + ' files; '
+        + 'frontend Chromium 68, services Node 8).'
+    );
 }
 
 if (require.main === module) {
@@ -243,5 +474,7 @@ if (require.main === module) {
 module.exports = {
     stripNonCode: stripNonCode,
     findViolations: findViolations,
-    BANNED: BANNED
+    BANNED: BANNED,
+    BANNED_NODE: BANNED_NODE,
+    SCAN_TARGETS: SCAN_TARGETS
 };
