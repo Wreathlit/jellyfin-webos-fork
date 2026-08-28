@@ -22,6 +22,7 @@ const root = path.resolve(__dirname, '..', '..');
 const BUNDLE_FILES = [
     'frontend/js/injected/core/runtime.js',
     'frontend/js/injected/core/features.js',
+    'frontend/js/injected/core/mediaStreams.js',
     'frontend/js/injected/playback/profilePatches.js',
     'frontend/js/injected/playback/hdrDecisions.js',
     'frontend/js/injected/playback/playbackInfoPatches.js',

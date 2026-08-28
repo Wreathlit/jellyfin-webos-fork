@@ -201,22 +201,13 @@
         return Object.prototype.toString.call(value) === '[object Array]' ? value : [];
     }
 
+    // Delegates to core.mediaStreams so the whole bundle answers "is this a
+    // video stream" the same way. This copy used to treat a stream with no Type
+    // as video, which let an audio track's title reach the HDR text scan and an
+    // audio codec drive the stream-copy prediction.
     function isVideoMediaStream(stream) {
-        if (!stream || typeof stream !== 'object') {
-            return false;
-        }
-
-        var type = Object.prototype.hasOwnProperty.call(stream, 'Type') ? stream.Type : stream.type;
-        if (type === null || type === undefined || type === '') {
-            return true;
-        }
-
-        if (typeof type === 'number') {
-            return type === 1;
-        }
-
-        var normalizedType = type.toString().toLowerCase();
-        return normalizedType === 'video' || normalizedType === '1';
+        var streams = Runtime.get('core.mediaStreams');
+        return streams ? streams.isVideoMediaStream(stream) : false;
     }
 
     function getDynamicRangeHintFromVideoStream(videoStream) {

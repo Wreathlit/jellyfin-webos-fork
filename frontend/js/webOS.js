@@ -1014,7 +1014,18 @@
             + '/' + pgsRenderDropCount.toString()
             + ' main=' + pgsMainThreadRequestCount.toString()
             + '/' + pgsMainThreadDrawCount.toString()
-            + '/' + pgsMainThreadDropCount.toString();
+            + '/' + pgsMainThreadDropCount.toString()
+            // The counters say how often something happened; these say what
+            // happened last. On a TV there is no debugger to attach, so the
+            // most recent clamp/drop is often the only way to tell which
+            // subtitle path misbehaved. They were tracked all along and simply
+            // never surfaced.
+            + '\nPGS last'
+            + ' clamp=' + pgsTimeLastClampInfo
+            + ' async=' + pgsAsyncLastInfo
+            + ' render=' + pgsRenderLastInfo
+            + ' main=' + pgsMainThreadLastInfo
+            + '\nASS script ' + assScriptLastPatchInfo;
     }
 
     function getPlaybackDiagnosticsPgsLine() {
@@ -5343,18 +5354,19 @@
     }
 
     function isSubtitleMediaStream(stream) {
-        if (!stream || typeof stream !== 'object') {
+        var streams = getMediaStreamHelpers();
+        if (!streams) {
             return false;
         }
 
-        var type = Object.prototype.hasOwnProperty.call(stream, 'Type') ? stream.Type : stream.type;
-        if (typeof type === 'number') {
-            return type === 2;
-        }
-        if (type !== null && type !== undefined && type !== '') {
-            return type.toString().toLowerCase() === 'subtitle' || type.toString() === '2';
+        if (streams.hasDeclaredStreamType(stream)) {
+            return streams.isSubtitleMediaStream(stream);
         }
 
+        // Diagnostics only: when a stream declares no type at all, a recognised
+        // subtitle codec is still a usable signal here. The shared predicate
+        // deliberately stops at "did not say", so this extra step stays local
+        // rather than changing what the playback decisions classify.
         return !!getClientRenderableSubtitleFormat(stream);
     }
 
@@ -5458,19 +5470,14 @@
         setPlaybackDynamicRange(pendingHint, 'playbackinfo-pending');
     }
 
-    function isVideoMediaStream(stream) {
-        if (!stream || typeof stream !== 'object') {
-            return false;
-        }
+    function getMediaStreamHelpers() {
+        var runtime = window.__JellyfinWebOSPatchRuntime;
+        return runtime && runtime.get ? runtime.get('core.mediaStreams') : null;
+    }
 
-        var type = Object.prototype.hasOwnProperty.call(stream, 'Type') ? stream.Type : stream.type;
-        if (typeof type === 'number') {
-            return type === 1;
-        }
-        if (type === null || type === undefined || type === '') {
-            return false;
-        }
-        return type.toString().toLowerCase() === 'video' || type.toString() === '1';
+    function isVideoMediaStream(stream) {
+        var streams = getMediaStreamHelpers();
+        return streams ? streams.isVideoMediaStream(stream) : false;
     }
 
     function getVideoStreamDiagnostic(payload, mediaSourceId) {

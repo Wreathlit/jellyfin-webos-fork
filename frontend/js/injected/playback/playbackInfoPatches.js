@@ -311,19 +311,11 @@
         return toArray(payload.MediaSources || payload.mediaSources);
     }
 
+    // Delegates to core.mediaStreams; see the note there on why the whole bundle
+    // has to agree on this rather than keeping a copy per module.
     function isSubtitleMediaStream(stream) {
-        if (!stream || typeof stream !== 'object') {
-            return false;
-        }
-
-        var type = Object.prototype.hasOwnProperty.call(stream, 'Type') ? stream.Type : stream.type;
-        if (typeof type === 'number') {
-            return type === 2;
-        }
-        if (type === null || type === undefined || type === '') {
-            return false;
-        }
-        return type.toString().toLowerCase() === 'subtitle' || type.toString() === '2';
+        var streams = Runtime.get('core.mediaStreams');
+        return streams ? streams.isSubtitleMediaStream(stream) : false;
     }
 
     function isClientRenderedDeliveryMethod(value) {

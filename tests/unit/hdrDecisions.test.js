@@ -5,6 +5,9 @@ const vm = require('vm');
 
 const root = path.resolve(__dirname, '..', '..');
 const runtimePath = path.join(root, 'frontend', 'js', 'injected', 'core', 'runtime.js');
+// Stream classification lives in core.mediaStreams so the whole bundle agrees
+// on it; these modules delegate, so the dependency has to be loaded here too.
+const mediaStreamsPath = path.join(root, 'frontend', 'js', 'injected', 'core', 'mediaStreams.js');
 const hdrDecisionsPath = path.join(root, 'frontend', 'js', 'injected', 'playback', 'hdrDecisions.js');
 
 function loadHdrDecisions() {
@@ -15,6 +18,9 @@ function loadHdrDecisions() {
 
     vm.runInNewContext(fs.readFileSync(runtimePath, 'utf8'), context, {
         filename: runtimePath
+    });
+    vm.runInNewContext(fs.readFileSync(mediaStreamsPath, 'utf8'), context, {
+        filename: mediaStreamsPath
     });
     vm.runInNewContext(fs.readFileSync(hdrDecisionsPath, 'utf8'), context, {
         filename: hdrDecisionsPath
