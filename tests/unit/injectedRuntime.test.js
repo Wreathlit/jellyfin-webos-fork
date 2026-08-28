@@ -487,6 +487,53 @@ test('the forced bitrate is applied to a POST body as well as the URL', async ()
     );
 });
 
+// The bitrate window used to double as the "playback is starting" signal the
+// subtitle script interceptor reads. The two now come apart, and this is where
+// that is observable: PlaybackInfo arrives before the state machine reaches
+// PLAYING, so an unrecognised script inserted in that gap is a startup script,
+// and it must get the full inspection budget rather than the 750ms speculative
+// one -- whether or not the bitrate force is still running.
+test('a startup script keeps the full inspection budget after a quality pick', async () => {
+    const runtime = loadInjectedRuntime();
+    runtime.respondToFetch(() => ({ MediaSources: [PLAIN_MEDIA_SOURCE] }));
+
+    // A quality pick is what ends the bitrate force, so drive the real menu.
+    const sheet = buildQualityActionSheet(runtime, ['Auto', '3 Mbps', '2 Mbps']);
+    announceAddedNode(runtime, sheet.dialog);
+    await runtime.settle(400);
+
+    // PlaybackInfo for a new item arms playback-start while still IDLE.
+    await runtime.window.fetch(playbackInfoUrl('item-1', 'src-plain'));
+    await runtime.settle(0);
+
+    // Ending the bitrate force must not shorten the script budget with it.
+    sheet.scroller.children[1].dispatchEvent({ type: 'click' });
+    await runtime.settle(0);
+
+    const script = runtime.createElement('script');
+    // No renderer keyword: this reaches the interceptor only via the
+    // playback-start signal, which is exactly the coupling under test.
+    script.src = 'https://server.example/web/chunk.4f2a.js';
+    runtime.document.head.appendChild(script);
+
+    const inspection = runtime.state.xhrRequests[runtime.state.xhrRequests.length - 1];
+    assert.ok(inspection, 'the startup script must still be inspected');
+    assert.strictEqual(inspection.url, 'https://server.example/web/chunk.4f2a.js');
+
+    // The speculative budget is 750ms; the startup budget is 8s. If the two
+    // signals were still one variable, the quality pick would have demoted this
+    // to speculative and the inspection would already be dead here.
+    runtime.clock.tick(1000);
+    assert.strictEqual(
+        inspection.aborted,
+        false,
+        'a startup script must keep the full budget after the bitrate force ends'
+    );
+
+    runtime.clock.tick(8000);
+    assert.strictEqual(inspection.aborted, true, 'the full budget still expires');
+});
+
 // The ASS interception patches Worker.prototype.postMessage, and webOS.js
 // returns immediately when window.Worker is absent. The harness had no Worker,
 // so this whole path -- worker identification, the backward-time clamp, the

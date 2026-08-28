@@ -138,8 +138,14 @@
     var QUALITY_MENU_LEGACY_CAP_BITRATE = 60000000;
     var PLAYBACK_INFO_MAX_BITRATE_PARAM = 'MaxStreamingBitrate';
     var PLAYBACK_START_MAX_BITRATE_FORCE_WINDOW_MS = 15000;
+    // How long after a playback start the script interceptor still treats an
+    // unclassified bundle as worth fetching. Deliberately its own constant: it
+    // answers "is playback starting", not "is the bitrate still being forced",
+    // and those two stop being true at different moments.
+    var PLAYBACK_STARTING_WINDOW_MS = 15000;
     var PLAYBACK_START_MAX_BITRATE_FORCE_REQUEST_LIMIT = 16;
     var forcePlaybackStartMaxBitrateUntil = 0;
+    var playbackStartingUntil = 0;
     var forcePlaybackStartMaxBitrateRequestsLeft = 0;
     var lastPlaybackInfoMaxBitrateItemId = null;
     // Set as soon as the user explicitly picks any quality value (including
@@ -502,6 +508,13 @@
     }
 
     function startPlaybackStartMaxBitrateForce(reason) {
+        // Two separate facts get established here, and they used to be the same
+        // variable: "force the max bitrate on the next few requests" and
+        // "playback is starting". Picking a quality clears the first, and while
+        // they shared a window that silently changed the second -- the subtitle
+        // script interceptor would stop treating an early bundle as worth
+        // fetching, so a bitrate tweak moved subtitle patch hit rates.
+        playbackStartingUntil = Date.now() + PLAYBACK_STARTING_WINDOW_MS;
         forcePlaybackStartMaxBitrateUntil = Date.now() + PLAYBACK_START_MAX_BITRATE_FORCE_WINDOW_MS;
         forcePlaybackStartMaxBitrateRequestsLeft = PLAYBACK_START_MAX_BITRATE_FORCE_REQUEST_LIMIT;
         storedConcreteQualityPickAtArm = hasStoredConcreteQualitySelection();
@@ -531,11 +544,24 @@
             : 'manual-' + source + '-quality-auto');
     }
 
+    // "Playback is starting", independent of whether the bitrate is still being
+    // forced. Consumers that only care about startup timing -- the subtitle
+    // script interceptor and its speculative fetch budget -- read this, so a
+    // quality pick can end the bitrate force without moving them.
+    function isPlaybackStarting() {
+        if (!playbackStartingUntil) {
+            return false;
+        }
+
+        if (Date.now() > playbackStartingUntil) {
+            playbackStartingUntil = 0;
+            return false;
+        }
+
+        return true;
+    }
+
     function shouldForcePlaybackStartMaxBitrate() {
-        // The window gates the bitrate force and doubles as a "playback is
-        // starting up" signal: it guards the per-item re-arm and tells the
-        // script interceptor that an early, not-yet-classified bundle is worth
-        // fetching speculatively.
         if (!forcePlaybackStartMaxBitrateUntil || forcePlaybackStartMaxBitrateRequestsLeft <= 0) {
             return false;
         }
@@ -737,6 +763,9 @@
             clearPlaybackStartFallbackTimers();
             clearPlaybackSessionProbeTimers(true);
             clearPlaybackStartMaxBitrateForce('playback-state-change');
+            // Playback is no longer starting either; leaving this armed would
+            // keep the script interceptor engaged while the user browses.
+            playbackStartingUntil = 0;
             clearHdrUiInfoCorrectionWindow();
         }
         if (nextState === PlaybackState.IDLE) {
@@ -2421,7 +2450,7 @@
 
     function isDuringPlaybackScriptWindow() {
         return playbackState === PlaybackState.PLAYING
-            || shouldForcePlaybackStartMaxBitrate()
+            || isPlaybackStarting()
             || !!currentMediaSessionItemId;
     }
 
@@ -2681,7 +2710,7 @@
         }
         var speculative = !isLikelySubtitleRendererScriptUrl(src)
             && playbackState !== PlaybackState.PLAYING
-            && !shouldForcePlaybackStartMaxBitrate()
+            && !isPlaybackStarting()
             && !currentMediaSessionItemId;
         script.__webOsAssScriptIntercepted = true;
         externalScriptPatchQueue.push({
