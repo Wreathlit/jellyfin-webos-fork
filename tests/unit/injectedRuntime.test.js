@@ -439,6 +439,193 @@ test('an inspected renderer script is patched and swapped for an inline copy', a
     );
 });
 
+// The suite only ever asserted that the force *stops* after a quality pick.
+// If arming it regressed to a no-op, every one of those assertions still
+// passed while the fork's headline feature -- high-bitrate startup on a local
+// network -- silently did nothing.
+test('the playback-start window forces the max bitrate onto PlaybackInfo', async () => {
+    const runtime = loadInjectedRuntime();
+    runtime.respondToFetch(() => ({ MediaSources: [PLAIN_MEDIA_SOURCE] }));
+
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+    await runtime.window.fetch(playbackInfoUrl('item-1', 'src-plain'));
+
+    assert.ok(
+        lastFetchUrl(runtime).indexOf('MaxStreamingBitrate=120000000') !== -1,
+        'the startup window must raise MaxStreamingBitrate, got ' + lastFetchUrl(runtime)
+    );
+});
+
+test('the forced bitrate is applied to a POST body as well as the URL', async () => {
+    const runtime = loadInjectedRuntime();
+    runtime.respondToFetch(() => ({ MediaSources: [PLAIN_MEDIA_SOURCE] }));
+
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+
+    // jellyfin-web POSTs PlaybackInfo with the device profile in the body.
+    await runtime.window.fetch(playbackInfoUrl('item-1', 'src-plain'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            MaxStreamingBitrate: 3000000,
+            DeviceProfile: { DirectPlayProfiles: [], SubtitleProfiles: [] }
+        })
+    });
+
+    const call = runtime.state.fetchCalls[runtime.state.fetchCalls.length - 1];
+    const sent = JSON.parse(call.body);
+    assert.strictEqual(
+        sent.MaxStreamingBitrate,
+        120000000,
+        'the body bitrate must be raised alongside the query parameter'
+    );
+    assert.ok(
+        sent.DeviceProfile && sent.DeviceProfile.SubtitleProfiles.length > 0,
+        'the device profile in the body must still receive the compatibility patches'
+    );
+});
+
+// The ASS interception patches Worker.prototype.postMessage, and webOS.js
+// returns immediately when window.Worker is absent. The harness had no Worker,
+// so this whole path -- worker identification, the backward-time clamp, the
+// destroy/terminate cleanup -- never executed in any test; assTimeSync.test.js
+// covered the pure function while hand-copying the wiring around it.
+function createAssWorker(runtime) {
+    const worker = new runtime.window.Worker('https://server.example/libass.js');
+    // libass-wasm announces itself with a worker-init carrying its render mode
+    // and subtitle source; that shape is what marks the worker for clamping.
+    worker.postMessage({
+        target: 'worker-init',
+        renderMode: 'wasm-blend',
+        subUrl: 'https://server.example/Videos/item-1/Subtitles/2/Stream.ass',
+        targetFps: 24
+    });
+    return worker;
+}
+
+test('a backwards ASS time sample is clamped before it reaches the worker', async () => {
+    const runtime = loadInjectedRuntime();
+    const worker = createAssWorker(runtime);
+
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+
+    worker.postMessage({ target: 'video', currentTime: 10, isPaused: false });
+    await runtime.settle(100);
+    worker.postMessage({ target: 'video', currentTime: 10, isPaused: false });
+
+    const videoMessages = worker.posted.filter(function (message) {
+        return message && message.target === 'video';
+    });
+    assert.strictEqual(videoMessages.length, 2, 'both time samples must reach the worker');
+    assert.ok(
+        videoMessages[1].currentTime > 10,
+        'a stalled clock must be advanced rather than replayed, got ' + videoMessages[1].currentTime
+    );
+});
+
+test('a real backward seek passes through to the worker untouched', async () => {
+    const runtime = loadInjectedRuntime();
+    const worker = createAssWorker(runtime);
+
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+
+    worker.postMessage({ target: 'video', currentTime: 30, isPaused: false });
+    await runtime.settle(100);
+    // Well past the seek threshold: this is a seek, not reporting jitter.
+    worker.postMessage({ target: 'video', currentTime: 20, isPaused: false });
+
+    const videoMessages = worker.posted.filter(function (message) {
+        return message && message.target === 'video';
+    });
+    assert.strictEqual(
+        videoMessages[1].currentTime,
+        20,
+        'a large backward seek must not be clamped'
+    );
+});
+
+test('terminating an ASS worker drops its tracked time state', async () => {
+    const runtime = loadInjectedRuntime();
+    const worker = createAssWorker(runtime);
+
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+    worker.postMessage({ target: 'video', currentTime: 10, isPaused: false });
+
+    worker.terminate();
+    assert.strictEqual(worker.terminated, true, 'terminate must still reach the real worker');
+
+    // A worker reused after terminate must not inherit the old anchor: the
+    // next sample is authoritative, so it passes through unchanged.
+    await runtime.settle(100);
+    worker.postMessage({ target: 'video', currentTime: 10, isPaused: false });
+
+    const videoMessages = worker.posted.filter(function (message) {
+        return message && message.target === 'video';
+    });
+    assert.strictEqual(
+        videoMessages[videoMessages.length - 1].currentTime,
+        10,
+        'state must be cleared on terminate, so the next sample is taken as-is'
+    );
+});
+
+// The fetch stub used to resolve 200 + JSON unconditionally, so none of the
+// runtime's failure handling was reachable from a test.
+test('a PlaybackInfo response that is not JSON is passed through untouched', async () => {
+    const runtime = loadInjectedRuntime();
+
+    runtime.respondToFetch(() => ({ status: 200, bodyText: '<html>not json</html>', contentType: 'text/html' }));
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+
+    const response = await runtime.window.fetch(playbackInfoUrl('item-1', 'src-plain'));
+    await runtime.settle(50);
+
+    assert.strictEqual(response.status, 200, 'the original response must still reach the caller');
+    assert.strictEqual(
+        await response.text(),
+        '<html>not json</html>',
+        'an unparseable body must not be swallowed or rewritten'
+    );
+});
+
+test('a failed PlaybackInfo request rejects to the caller rather than hanging', async () => {
+    const runtime = loadInjectedRuntime();
+
+    runtime.respondToFetch(() => ({ reject: 'Failed to fetch' }));
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+
+    let rejected = null;
+    try {
+        await runtime.window.fetch(playbackInfoUrl('item-1', 'src-plain'));
+    } catch (error) {
+        rejected = error;
+    }
+    await runtime.settle(50);
+
+    assert.ok(rejected, 'a network failure must propagate to the caller');
+});
+
+test('a non-2xx PlaybackInfo response is left alone', async () => {
+    const runtime = loadInjectedRuntime();
+
+    runtime.respondToFetch(() => ({ status: 500, body: { error: 'boom' } }));
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+
+    const response = await runtime.window.fetch(playbackInfoUrl('item-1', 'src-plain'));
+    await runtime.settle(50);
+
+    assert.strictEqual(response.status, 500);
+    assert.strictEqual(response.ok, false, 'the error status must survive the interception');
+});
+
 module.exports = async function runInjectedRuntimeTests() {
     for (const testCase of cases) {
         try {

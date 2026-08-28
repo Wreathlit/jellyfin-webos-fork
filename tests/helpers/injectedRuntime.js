@@ -509,15 +509,50 @@ function createFetchStub(state) {
         state.fetchCalls.push(record);
 
         const handler = state.fetchResponders[state.fetchResponders.length - 1];
-        const payload = handler ? handler(record) : null;
-        const bodyText = payload === null || payload === undefined ? '' : JSON.stringify(payload);
+        const result = handler ? handler(record) : null;
 
+        // A responder may describe a failure instead of a payload. Without this
+        // the stub always resolved 200 + JSON, so every defensive branch in the
+        // runtime -- json() rejecting, a non-2xx passthrough, a probe retrying
+        // after a network error -- was unreachable from the tests.
+        const isEnvelope = result !== null
+            && typeof result === 'object'
+            && (
+                Object.prototype.hasOwnProperty.call(result, 'reject')
+                || Object.prototype.hasOwnProperty.call(result, 'status')
+                || Object.prototype.hasOwnProperty.call(result, 'bodyText')
+                || Object.prototype.hasOwnProperty.call(result, 'ok')
+            );
+
+        if (isEnvelope && result.reject) {
+            const error = result.reject instanceof Error
+                ? result.reject
+                : new TypeError(typeof result.reject === 'string' ? result.reject : 'Failed to fetch');
+            record.rejected = error;
+            return Promise.reject(error);
+        }
+
+        const status = isEnvelope && typeof result.status === 'number' ? result.status : 200;
+        const ok = isEnvelope && typeof result.ok === 'boolean' ? result.ok : (status >= 200 && status < 300);
+        const contentType = isEnvelope && result.contentType ? result.contentType : 'application/json';
+        const payload = isEnvelope
+            ? (Object.prototype.hasOwnProperty.call(result, 'body') ? result.body : null)
+            : result;
+
+        let bodyText;
+        if (isEnvelope && typeof result.bodyText === 'string') {
+            bodyText = result.bodyText;
+        } else {
+            bodyText = payload === null || payload === undefined ? '' : JSON.stringify(payload);
+        }
+
+        record.status = status;
         record.responseText = bodyText;
         return Promise.resolve({
-            ok: true,
-            status: 200,
+            ok: ok,
+            status: status,
             url: url,
-            headers: { get() { return 'application/json'; } },
+            headers: { get() { return contentType; } },
             clone() {
                 return this;
             },
@@ -525,7 +560,13 @@ function createFetchStub(state) {
                 return Promise.resolve(bodyText);
             },
             json() {
-                return Promise.resolve(payload);
+                // Mirror the browser: json() rejects on a body that is not JSON
+                // rather than resolving a parsed value the caller never sent.
+                try {
+                    return Promise.resolve(bodyText === '' ? null : JSON.parse(bodyText));
+                } catch (error) {
+                    return Promise.reject(error);
+                }
             }
         });
     };
@@ -641,7 +682,8 @@ function loadInjectedRuntime(options) {
         xhrRequests: [],
         observers: [],
         messages: [],
-        warnings: []
+        warnings: [],
+        workers: []
     };
 
     const localStorage = createLocalStorage(options.localStorage);
@@ -657,6 +699,27 @@ function loadInjectedRuntime(options) {
             state.warnings.push(Array.prototype.slice.call(arguments).join(' '));
         }
     };
+
+    // webOS.js installs the ASS time-sync interception by patching
+    // Worker.prototype.postMessage, and returns immediately when window.Worker
+    // is missing. Without this stub that whole path -- worker identification,
+    // the backward-time clamp, and the destroy/terminate cleanup -- never ran
+    // in any harness test, so it was covered only by a hand-copy of the wiring
+    // in assTimeSync.test.js.
+    function FakeWorker(scriptUrl) {
+        this.scriptUrl = scriptUrl || '';
+        this.posted = [];
+        this.terminated = false;
+        state.workers.push(this);
+    }
+    FakeWorker.prototype.postMessage = function (message) {
+        this.posted.push(message);
+    };
+    FakeWorker.prototype.terminate = function () {
+        this.terminated = true;
+    };
+    FakeWorker.prototype.addEventListener = function () {};
+    FakeWorker.prototype.removeEventListener = function () {};
 
     const windowListeners = {};
     const window = {
@@ -679,6 +742,7 @@ function loadInjectedRuntime(options) {
         Promise: Promise,
         MutationObserver: FakeMutationObserver,
         XMLHttpRequest: FakeXMLHttpRequest,
+        Worker: FakeWorker,
         Node: dom.Node,
         addEventListener(type, listener) {
             windowListeners[type] = windowListeners[type] || [];
@@ -740,6 +804,7 @@ function loadInjectedRuntime(options) {
         Promise: Promise,
         MutationObserver: FakeMutationObserver,
         XMLHttpRequest: FakeXMLHttpRequest,
+        Worker: FakeWorker,
         Node: dom.Node,
         setTimeout: clock.setTimeout,
         clearTimeout: clock.clearTimeout,

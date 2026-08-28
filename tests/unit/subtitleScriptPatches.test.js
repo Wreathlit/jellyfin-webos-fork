@@ -261,3 +261,43 @@ assert(patches, 'subtitles.scriptPatches should register');
     assert.strictEqual(result.pgs.patched, false, 'a libbitsub URL should gate legacy PGS patching before source inspection');
     assert.strictEqual(result.text, source);
 }
+
+// These patches are string surgery on a minified vendor bundle, and every
+// assertion above only checks that a marker substring turned up. A replacement
+// template with unbalanced parentheses would satisfy all of them and still make
+// the whole renderer script a parse error on the TV, taking subtitles with it.
+// Compile each patched result so a broken template fails here instead.
+{
+    function assertCompiles(text, label) {
+        try {
+            new vm.Script(text, { filename: label });
+        } catch (error) {
+            assert.fail(label + ' must stay syntactically valid after patching: ' + error.message);
+        }
+    }
+
+    const assSource = 'var opts={renderAhead:90.0};var opts2={renderAhead:90};';
+    assertCompiles(patches.patchAssRendererScriptText(assSource).text, 'patched ASS renderer');
+
+    const pgsSources = {
+        'PGS time patch':
+            'a.prototype.renderAtVideoTimestamp=function(){this.video&&this.renderAtTimestamp(this.video.currentTime+this.$timeOffset)}',
+        'PGS async patch':
+            'e.prototype.render=function(t){this.worker.postMessage({op:"requestSubtitleData",index:t})},e.prototype.onWorkerMessage=function(e){if("subtitleData"===e.data.op){var r=e.data.subtitleData;this.renderer&&this.renderer.draw(r)}else t.prototype.onWorkerMessage.call(this,e)}',
+        'PGS render patch':
+            'transferControlToOffscreen;e.prototype.render=function(t){this.worker.postMessage({op:"render",index:t})}'
+    };
+
+    for (const label of Object.keys(pgsSources)) {
+        const result = patches.patchPgsRendererScriptText(pgsSources[label], {});
+        assertCompiles(result.text, label);
+    }
+
+    // The main-thread and object-reuse options take different branches, so they
+    // need their own compile check rather than riding on the defaults above.
+    const optioned = patches.patchPgsRendererScriptText(
+        pgsSources['PGS render patch'],
+        { forceMainThread: true, patchObjectReuse: true }
+    );
+    assertCompiles(optioned.text, 'PGS renderer with all options');
+}
