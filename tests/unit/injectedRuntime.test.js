@@ -487,6 +487,69 @@ test('the forced bitrate is applied to a POST body as well as the URL', async ()
     );
 });
 
+// Every case in this suite drove playback *into* a state; none drove it out.
+// The exit path is where the most visible regression lives: if the dim class is
+// not removed, the whole UI stays darkened after playback ends and the only fix
+// is restarting the app.
+test('leaving playback removes the HDR dim', async () => {
+    const runtime = loadInjectedRuntime();
+    runtime.respondToFetch(() => ({ MediaSources: [HDR_MEDIA_SOURCE] }));
+
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+    await runtime.window.fetch(playbackInfoUrl('item-1', 'src-hdr'));
+    await runtime.settle(600);
+    assert.strictEqual(runtime.isHdrDimmed(), true, 'HDR direct play should dim');
+
+    runtime.nativeShell.disableFullscreen();
+    // EXITING settles to IDLE on its own after the exit timeout.
+    await runtime.settle(3000);
+
+    assert.strictEqual(runtime.isHdrDimmed(), false, 'the dim must be removed when playback ends');
+});
+
+test('hideMediaSession also clears the dim', async () => {
+    const runtime = loadInjectedRuntime();
+    runtime.respondToFetch(() => ({ MediaSources: [HDR_MEDIA_SOURCE] }));
+
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+    await runtime.window.fetch(playbackInfoUrl('item-1', 'src-hdr'));
+    await runtime.settle(600);
+    assert.strictEqual(runtime.isHdrDimmed(), true);
+
+    runtime.nativeShell.hideMediaSession();
+    await runtime.settle(50);
+
+    assert.strictEqual(runtime.isHdrDimmed(), false, 'stopping the session must undim immediately');
+});
+
+// Going idle bumps the playback epoch so results still in flight from the
+// previous session cannot land on the next one.
+test('a session probe answering after playback ended does not re-dim', async () => {
+    const runtime = loadInjectedRuntime();
+    runtime.respondToFetch(() => ({ MediaSources: [PLAIN_MEDIA_SOURCE] }));
+
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+    await runtime.window.fetch(playbackInfoUrl('item-1', 'src-plain'));
+    await runtime.settle(100);
+
+    runtime.nativeShell.hideMediaSession();
+    await runtime.settle(50);
+    assert.strictEqual(runtime.isHdrDimmed(), false);
+
+    // A late HDR verdict for the finished item must be ignored.
+    runtime.respondToFetch(() => ({ MediaSources: [HDR_MEDIA_SOURCE] }));
+    await runtime.settle(5000);
+
+    assert.strictEqual(
+        runtime.isHdrDimmed(),
+        false,
+        'a stale probe result must not dim a session that already ended'
+    );
+});
+
 // The fetch wrapper's final call used to read a variable declared inside the
 // PlaybackInfo branch, so every unrelated request was handed an undefined
 // context. It only worked because the callee re-checked the URL. Pin the
