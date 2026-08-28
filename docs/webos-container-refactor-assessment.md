@@ -16,14 +16,24 @@ The app is already a Jellyfin Web container:
   webOS device info, and injection of local assets into the hosted Jellyfin Web
   page.
 - `frontend/js/webOS.js` is the injected compatibility layer. It currently owns
-  AppHost bridging, PlaybackInfo interception, HDR UI dimming, ASS and PGS
-  subtitle patches, settings injection, quality menu injection, pointer/focus
-  fixes, playback state tracking, and diagnostics. Device profile compatibility
-  transforms have been extracted to `frontend/js/injected/playback/profilePatches.js`,
-  and pure HDR/Dolby Vision / video-delivery decisions have been extracted to
-  `frontend/js/injected/playback/hdrDecisions.js`. Pure PlaybackInfo bitrate
-  URL/body transforms have been extracted to
-  `frontend/js/injected/playback/playbackInfoPatches.js`.
+  AppHost bridging, PlaybackInfo interception (fetch and XHR), HDR UI dimming
+  and its correction window, `/Sessions` runtime probing, header pinning, the
+  external-script interception queue that applies the ASS/PGS patches, the ASS
+  worker time-sync hook, settings injection, quality menu injection (including
+  the native dropdown patch), burned-in subtitle delivery correction, subtitle
+  fetch diagnostics, pointer/focus fixes, playback state tracking, and the
+  diagnostics overlay.
+
+  Extracted so far, all of it pure decisions and text transforms:
+  `injected/core/runtime.js` (the module registry), `injected/core/features.js`
+  (the feature registry that now drives load/save/broadcast),
+  `injected/core/mediaStreams.js` (stream classification),
+  `injected/playback/profilePatches.js` (device profile transforms),
+  `injected/playback/hdrDecisions.js` (HDR/Dolby Vision and video-delivery
+  decisions), `injected/playback/playbackInfoPatches.js` (PlaybackInfo bitrate
+  and subtitle-delivery transforms), and `injected/subtitles/scriptPatches.js`
+  (the renderer script text surgery and ASS time-sync evaluation). webOS.js
+  keeps the interception, state and DOM side effects around them.
 - `frontend/css/webOS.css` contains local CSS fixes for TV layout, HDR UI
   brightness, and subtitle overlays.
 - `services/service.js` provides Jellyfin UDP discovery.
@@ -129,19 +139,37 @@ failure mode.
 
 ## When To Reconsider The Larger Refactor
 
-Revisit the container/module refactor if any of these become true:
+Revisit the container/module refactor if any of these become true. Status as of
+the 2026-08 review, which is the point of writing them down:
 
-- `frontend/js/webOS.js` continues to grow in unrelated areas and CR starts
-  missing real regressions;
-- settings/menu injection and playback request patches keep interfering with
-  each other;
-- upstream Jellyfin Web changes repeatedly break the same class of patches;
-- ASS/PGS renderer patches need multiple version-specific implementations;
-- diagnostics need structured state from several independent patches;
-- the app needs to support non-LAN scenarios with different bitrate policies.
+- **Met.** `frontend/js/webOS.js` continues to grow in unrelated areas and CR
+  starts missing real regressions — the file crossed 6,400 lines with ~218
+  top-level mutable variables across ten unrelated subsystems, and the review
+  found defects that had survived precisely because a single `setPlaybackState`
+  call reads and writes state belonging to five of them.
+- **Met, and since fixed.** Settings/menu injection and playback request patches
+  keep interfering with each other — the bitrate-force window doubled as the
+  "playback is starting" signal the subtitle script interceptor read, so a
+  quality pick silently changed subtitle patch behaviour. The two signals are
+  separate now, but the coupling was invisible until it was looked for.
+- Not met. Upstream Jellyfin Web changes repeatedly break the same class of
+  patches.
+- Not met. ASS/PGS renderer patches need multiple version-specific
+  implementations.
+- **Met.** Diagnostics need structured state from several independent patches —
+  the overlay reads roughly forty counters owned by the interception queue, the
+  HDR arbitration, the PGS render paths and the session probe.
+- Not met. The app needs to support non-LAN scenarios with different bitrate
+  policies.
 
-Until then, prefer narrow behavior-preserving changes around the existing
-runtime patch layer.
+Three of six are met, so "prefer narrow behavior-preserving changes" is no
+longer the whole answer. The extraction has continued in the meantime and the
+seam it established works: pure decisions move out to `injected/` with tests,
+and webOS.js keeps the interception and DOM side effects. The next candidates
+are the ones with the least entanglement with playback state — pointer-first-
+click and header pinning are self-contained — followed by an explicit HDR
+arbitrator, where the review found the state spread across four window
+variables plus an implicit parameter and a duplicated predicate.
 
 ## Current Decision
 

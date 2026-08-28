@@ -4,6 +4,30 @@ This fork carries local webOS fixes on top of Jellyfin for webOS. It is aimed at
 real LG webOS devices where the hosted Jellyfin Web UI exposes TV-specific
 problems that are hard to solve from the server alone.
 
+## Relationship to upstream
+
+This is a fork of [jellyfin/jellyfin-webos](https://github.com/jellyfin/jellyfin-webos).
+It keeps the full upstream history; the local work sits on top of it as ordinary
+commits rather than on a tracked branch, so `git log` is the record of what
+diverges. `CONTRIBUTORS.md` is inherited from upstream unchanged and lists
+upstream's contributors, not this fork's.
+
+**The build is deliberately indistinguishable from the official app, and that
+has consequences.** `frontend/appinfo.json` keeps upstream's app id
+(`org.jellyfin.webos`) and version, so:
+
+- installing this ipk **replaces** an official Jellyfin install on the TV rather
+  than sitting alongside it, and installing the official one replaces this;
+- the TV's app info screen shows the same name and version either way, so there
+  is no way to tell from the TV which build is running. The in-app playback
+  diagnostics overlay is the reliable check — it only exists in this fork.
+
+Keeping the id matters because the Homebrew Channel and the official store treat
+it as the identity of the app; changing it would fork the install rather than
+update it. If you need to tell builds apart at a glance, change the version in
+`frontend/appinfo.json` via `npm version` (which keeps `package.json` in step,
+and `check:version` fails the build if they drift).
+
 ## Platform baseline
 
 This fork targets **webOS 5.0 and later**, which means:
@@ -22,15 +46,23 @@ Because nothing is transpiled, source language *is* target language. ES2018 and
 older is fine — `Promise`, `Object.assign`, `Array.prototype.includes`,
 `String.prototype.trimStart` all exist. Anything newer does not:
 
+This table is the full banned set enforced by the tool; keep the two in step.
+
 | Not available | Since |
 | --- | --- |
 | `?.`, `??` | Chromium 80 |
 | `??=`, `\|\|=`, `&&=` | Chromium 85 |
+| public class fields (`x = 1`) | Chromium 72 |
+| private class fields (`#name`) | Chromium 74 |
+| numeric separators (`1_000`) | Chromium 75 |
+| `class` static initialization blocks | Chromium 94 |
 | `Array.prototype.flat` / `flatMap` | Chromium 69 |
 | `globalThis`, `queueMicrotask` | Chromium 71 |
 | `Object.fromEntries`, `String.prototype.matchAll` | Chromium 73 |
+| `Promise.allSettled` | Chromium 76 |
 | `String.prototype.replaceAll`, `Promise.any` | Chromium 85 |
 | `.at()`, `Object.hasOwn`, `structuredClone` | Chromium 92+ |
+| `findLast` / `findLastIndex` | Chromium 97 |
 
 `npm run check:baseline` enforces this. It exists because `check:syntax` cannot:
 that step shells out to `node --check`, and Node accepts `?.` happily, so a
@@ -41,15 +73,21 @@ accidents rather than proving compatibility.
 To raise the baseline, change the table in `tools/check-baseline.js` and this
 section together, and be explicit about which model years are being dropped.
 
-Older webOS JavaScript service runtimes are intentionally outside the
-compatibility boundary.
+`services/` ships untranspiled too, to the TV's Node service runtime (roughly
+Node 8), and `check:baseline` scans it against its own table. The two trees have
+nearly the same syntax ceiling, but a few things differ — optional catch binding
+(`catch {`) and `for await` parse on Chromium 68 and not on Node 8. A service
+that throws at load does not look like a crash; it looks like server discovery
+quietly not working, which is why it is checked rather than left to discipline.
 
 The main local patch surface is:
 
-- `frontend/js/index.js`
-- `frontend/js/injected/`
-- `frontend/js/webOS.js`
+- `frontend/js/index.js` — the shell: server picker, discovery, handoff
+- `frontend/js/ajax.js`, `frontend/js/storage.js` — shell XHR and storage
+- `frontend/js/injected/` — the injected runtime (see below)
+- `frontend/js/webOS.js` — the injected shell adapter
 - `frontend/css/webOS.css`
+- `services/service.js` — the Luna discovery service
 
 `frontend/js/injected/` is the modular runtime injected into the iframe. The
 split is uniform: each module owns pure decisions and text transforms, and
@@ -112,8 +150,8 @@ Approach:
     for the session through the fork's player-menu hook. `Auto` then runs
     Jellyfin Web's bandwidth detection and switches using the detected rate;
   - a concrete bitrate saved through Jellyfin Web's quality setting is a
-    durable preference. When the window arms, both
-    `enableautobitratebitrate-Video-<isInNetwork>` values are checked: `false`
+    durable preference. On each forced request, both
+    `enableautobitratebitrate-Video-<isInNetwork>` values are read: `false`
     records a concrete bitrate and wins across app restarts, while `true`
     records `Auto` and does not disable the startup correction;
   - the requested bitrate itself carries no intent (bandwidth detection
@@ -758,7 +796,8 @@ Two constraints matter when adding cases:
 New cases should be confirmed to fail against the unfixed code before being
 committed; every case in `tests/unit/injectedRuntime.test.js` was.
 
-Validate the IPK package structure (requires the webOS CLI):
+Validate the IPK package structure (the webOS CLI comes from the
+`@webos-tools/cli` devDependency, so `npm install` is enough):
 
 ```sh
 npm run check
@@ -774,17 +813,24 @@ If you prefer the containerized webOS SDK toolchain over a local install, `dev.s
 the same `ares-*` commands inside a Docker image, e.g. `./dev.sh ares-package --no-minify
 services frontend`.
 
-When the default `build` output is locked by a previous install/test session,
-write to a new output directory:
-
-```sh
-ares-package --no-minify --outdir build-local services frontend
-```
-
 Install to a configured TV:
 
 ```sh
-ares-install -d tv build-local/org.jellyfin.webos_1.2.2_all.ipk
+npm run deploy
+```
+
+`deploy` resolves the ipk name from `frontend/appinfo.json`, which is what
+`ares-package` names the file after, so it does not go stale when the version
+changes. It is a node script rather than a shell one-liner because npm runs
+scripts through `cmd.exe` on Windows, where `${npm_package_version}` does not
+expand.
+
+When the default `build` output is locked by a previous install/test session,
+write to a new output directory and point `deploy` at it:
+
+```sh
+ares-package --no-minify --outdir build-local services frontend
+npm run deploy -- build-local
 ```
 
 Launch:

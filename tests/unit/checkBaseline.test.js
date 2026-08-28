@@ -227,3 +227,65 @@ assertClean('var index = list.findIndex(fn);');
         'services/service.js must stay within the Node 8 baseline'
     );
 }
+
+// README documents the baseline and check-baseline.js enforces it, and the
+// README itself asks for the two to be changed together. They had already
+// drifted: the table was missing Promise.allSettled, both class-field forms,
+// static blocks and findLast, so a contributor could read the table, use one of
+// them, and be rejected by CI -- or read it as a whitelist and be misled.
+{
+    const readmePath = path.join(root, 'README.md');
+    const readme = fs.readFileSync(readmePath, 'utf8');
+
+    const tableStart = readme.indexOf('| Not available | Since |');
+    assert.notStrictEqual(tableStart, -1, 'README must document the banned baseline features');
+    const tableEnd = readme.indexOf('\n\n', tableStart);
+    const table = readme.slice(tableStart, tableEnd === -1 ? readme.length : tableEnd);
+
+    // A distinctive fragment of each rule that must appear somewhere in the
+    // table. Matching the label verbatim would just re-encode the tool's
+    // strings; this checks the reader can actually find the construct.
+    const documented = {
+        'optional chaining `?.`': '?.',
+        'logical assignment `??=`': '??=',
+        'logical assignment `||=`': '|=',
+        'logical assignment `&&=`': '&&=',
+        'nullish coalescing `??`': '??',
+        'private class field `#name`': '#name',
+        'class static initialization block': 'static initialization',
+        'numeric separator `1_000`': '1_000',
+        'public class field `x = 1`': 'x = 1',
+        '`globalThis`': 'globalThis',
+        '`queueMicrotask()`': 'queueMicrotask',
+        '`Object.fromEntries()`': 'Object.fromEntries',
+        '`Object.hasOwn()`': 'Object.hasOwn',
+        '`Promise.allSettled()`': 'Promise.allSettled',
+        '`Promise.any()`': 'Promise.any',
+        '`structuredClone()`': 'structuredClone',
+        '`Array.prototype.flat()`': 'flat',
+        '`Array.prototype.flatMap()`': 'flatMap',
+        '`String.prototype.matchAll()`': 'matchAll',
+        '`String.prototype.replaceAll()`': 'replaceAll',
+        '`Array.prototype.findLast()`': 'findLast',
+        '`Array.prototype.at()`': '.at()'
+    };
+
+    const { BANNED } = require('../../tools/check-baseline');
+    const undocumented = [];
+    for (const rule of BANNED) {
+        const probe = documented[rule.label];
+        if (!probe) {
+            undocumented.push(rule.label + ' (no README probe defined)');
+            continue;
+        }
+        if (table.indexOf(probe) === -1) {
+            undocumented.push(rule.label);
+        }
+    }
+
+    assert.deepStrictEqual(
+        undocumented,
+        [],
+        'every banned construct must appear in the README baseline table'
+    );
+}
