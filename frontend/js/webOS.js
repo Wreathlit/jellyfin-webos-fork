@@ -1872,17 +1872,79 @@
         debugLog('HDR subtitle opacity changed (' + reason + '): ' + formatHdrSubtitleOpacity(hdrSubtitleOpacity));
     }
 
+    // The one place that ties a registered feature key to the variable holding
+    // its value. Loading, saving and the override broadcast all walk the
+    // registry through this table, so adding a feature means writing a
+    // definition in core/features.js and one entry here -- rather than editing
+    // three parallel enumerations, each of which failed silently and
+    // differently when it was the one forgotten.
+    var BOOLEAN_FEATURE_ACCESSORS = {
+        playbackDiagnosticsEnabled: {
+            storageKey: PLAYBACK_DIAGNOSTICS_KEY,
+            get: function () { return playbackDiagnosticsEnabled; },
+            set: function (value) { playbackDiagnosticsEnabled = value; }
+        },
+        disableAssRenderAhead: {
+            storageKey: DISABLE_ASS_RENDER_AHEAD_KEY,
+            get: function () { return disableAssRenderAhead; },
+            set: function (value) { disableAssRenderAhead = value; }
+        },
+        assTimeSyncFixEnabled: {
+            storageKey: ASS_TIME_SYNC_FIX_KEY,
+            get: function () { return assTimeSyncFixEnabled; },
+            set: function (value) { assTimeSyncFixEnabled = value; }
+        },
+        pgsForceMainThread: {
+            storageKey: PGS_FORCE_MAIN_THREAD_KEY,
+            get: function () { return pgsForceMainThread; },
+            set: function (value) { pgsForceMainThread = value; }
+        },
+        pgsPatchObjectReuse: {
+            storageKey: PGS_PATCH_OBJECT_REUSE_KEY,
+            get: function () { return pgsPatchObjectReuse; },
+            set: function (value) { pgsPatchObjectReuse = value; }
+        },
+        lpcmAudioCopyEnabled: {
+            storageKey: LPCM_AUDIO_COPY_KEY,
+            get: function () { return lpcmAudioCopyEnabled; },
+            set: function (value) { lpcmAudioCopyEnabled = value; }
+        }
+    };
+
+    var missingFeatureAccessorsWarned = false;
+
+    function forEachBooleanFeature(callback) {
+        var definitions = webOSFeatureRegistry && webOSFeatureRegistry.getBooleanDefinitions
+            ? webOSFeatureRegistry.getBooleanDefinitions()
+            : [];
+
+        // A definition with no accessor would be persisted nowhere and
+        // broadcast as undefined, so say so once instead of losing it quietly.
+        var unmapped = [];
+        for (var i = 0; i < definitions.length; i++) {
+            var definition = definitions[i];
+            var accessor = BOOLEAN_FEATURE_ACCESSORS[definition.key];
+            if (!accessor) {
+                unmapped.push(definition.key);
+                continue;
+            }
+            callback(definition, accessor);
+        }
+
+        if (unmapped.length && !missingFeatureAccessorsWarned) {
+            missingFeatureAccessorsWarned = true;
+            warnLog('Registered feature(s) with no webOS.js accessor: ' + unmapped.join(', '));
+        }
+    }
+
     function loadPersistedPlaybackDiagnosticsSettings() {
         try {
             if (!window.localStorage) {
                 return;
             }
-            playbackDiagnosticsEnabled = loadRegisteredBooleanFeature('playbackDiagnosticsEnabled', PLAYBACK_DIAGNOSTICS_KEY, playbackDiagnosticsEnabled);
-            disableAssRenderAhead = loadRegisteredBooleanFeature('disableAssRenderAhead', DISABLE_ASS_RENDER_AHEAD_KEY, disableAssRenderAhead);
-            assTimeSyncFixEnabled = loadRegisteredBooleanFeature('assTimeSyncFixEnabled', ASS_TIME_SYNC_FIX_KEY, assTimeSyncFixEnabled);
-            pgsForceMainThread = loadRegisteredBooleanFeature('pgsForceMainThread', PGS_FORCE_MAIN_THREAD_KEY, pgsForceMainThread);
-            pgsPatchObjectReuse = loadRegisteredBooleanFeature('pgsPatchObjectReuse', PGS_PATCH_OBJECT_REUSE_KEY, pgsPatchObjectReuse);
-            lpcmAudioCopyEnabled = loadRegisteredBooleanFeature('lpcmAudioCopyEnabled', LPCM_AUDIO_COPY_KEY, lpcmAudioCopyEnabled);
+            forEachBooleanFeature(function (definition, accessor) {
+                accessor.set(loadRegisteredBooleanFeature(definition.key, accessor.storageKey, accessor.get()));
+            });
         } catch (error) {
             warnLog('Failed to load persisted webOS diagnostics settings:', error);
         }
@@ -1893,12 +1955,9 @@
             if (!window.localStorage) {
                 return;
             }
-            saveRegisteredBooleanFeature('playbackDiagnosticsEnabled', PLAYBACK_DIAGNOSTICS_KEY, playbackDiagnosticsEnabled);
-            saveRegisteredBooleanFeature('disableAssRenderAhead', DISABLE_ASS_RENDER_AHEAD_KEY, disableAssRenderAhead);
-            saveRegisteredBooleanFeature('assTimeSyncFixEnabled', ASS_TIME_SYNC_FIX_KEY, assTimeSyncFixEnabled);
-            saveRegisteredBooleanFeature('pgsForceMainThread', PGS_FORCE_MAIN_THREAD_KEY, pgsForceMainThread);
-            saveRegisteredBooleanFeature('pgsPatchObjectReuse', PGS_PATCH_OBJECT_REUSE_KEY, pgsPatchObjectReuse);
-            saveRegisteredBooleanFeature('lpcmAudioCopyEnabled', LPCM_AUDIO_COPY_KEY, lpcmAudioCopyEnabled);
+            forEachBooleanFeature(function (definition, accessor) {
+                saveRegisteredBooleanFeature(definition.key, accessor.storageKey, accessor.get());
+            });
         } catch (error) {
             warnLog('Failed to save webOS diagnostics settings:', error);
         }
@@ -1977,14 +2036,10 @@
     }
 
     function emitFeatureOverridesChanged() {
-        var values = {
-            playbackDiagnosticsEnabled: !!playbackDiagnosticsEnabled,
-            disableAssRenderAhead: !!disableAssRenderAhead,
-            assTimeSyncFixEnabled: !!assTimeSyncFixEnabled,
-            pgsForceMainThread: !!pgsForceMainThread,
-            pgsPatchObjectReuse: !!pgsPatchObjectReuse,
-            lpcmAudioCopyEnabled: !!lpcmAudioCopyEnabled
-        };
+        var values = {};
+        forEachBooleanFeature(function (definition, accessor) {
+            values[definition.key] = !!accessor.get();
+        });
         postMessage('WebOS.featureOverrides', webOSFeatureRegistry && webOSFeatureRegistry.createOverridePayload
             ? webOSFeatureRegistry.createOverridePayload(values)
             : values);

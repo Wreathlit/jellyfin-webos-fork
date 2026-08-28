@@ -94,3 +94,46 @@ const root = path.resolve(__dirname, '..', '..');
         assert.ok(parseError, 'json() must reject on a body that is not JSON, as the browser does');
     })();
 }
+
+// Feature handling is registry-driven now: load, save and the override
+// broadcast all walk core.features rather than repeating the list. The one
+// remaining hand-written piece is the accessor table in webOS.js that maps a
+// key to the variable holding it, so assert every registered boolean has one --
+// a definition without an accessor would persist nowhere and broadcast as
+// undefined.
+{
+    const runtime = loadInjectedRuntime();
+    const registry = runtime.window.__JellyfinWebOSPatchRuntime.get('core.features');
+    assert.ok(registry, 'core.features must register');
+
+    const definitions = registry.getBooleanDefinitions();
+    assert.ok(definitions.length > 0, 'there must be boolean features to check');
+
+    // The accessor table is internal, so observe it through the broadcast: an
+    // unmapped key would be missing from the payload, and webOS.js warns.
+    runtime.state.messages.length = 0;
+    runtime.nativeShell.AppHost.init();
+
+    const overrides = runtime.state.messages.filter(function (message) {
+        return message && message.type === 'WebOS.featureOverrides';
+    });
+
+    if (overrides.length) {
+        const payload = overrides[overrides.length - 1].data;
+        for (const definition of definitions) {
+            assert.strictEqual(
+                typeof payload[definition.key],
+                'boolean',
+                definition.key + ' must reach the override payload as a boolean'
+            );
+        }
+    }
+
+    assert.deepStrictEqual(
+        runtime.state.warnings.filter(function (warning) {
+            return String(warning).indexOf('no webOS.js accessor') !== -1;
+        }),
+        [],
+        'every registered feature must have an accessor in webOS.js'
+    );
+}
