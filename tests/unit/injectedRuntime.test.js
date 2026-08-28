@@ -487,6 +487,51 @@ test('the forced bitrate is applied to a POST body as well as the URL', async ()
     );
 });
 
+// The fetch wrapper's final call used to read a variable declared inside the
+// PlaybackInfo branch, so every unrelated request was handed an undefined
+// context. It only worked because the callee re-checked the URL. Pin the
+// passthrough so a future edit there cannot start depending on that context.
+test('an unrelated fetch passes through the wrapper unchanged', async () => {
+    const runtime = loadInjectedRuntime();
+    runtime.respondToFetch(() => ({ ServerName: 'Test' }));
+
+    const response = await runtime.window.fetch('https://server.example/System/Info/Public');
+    const body = await response.json();
+
+    assert.strictEqual(body.ServerName, 'Test', 'the response must reach the caller intact');
+
+    const call = runtime.state.fetchCalls[runtime.state.fetchCalls.length - 1];
+    assert.strictEqual(
+        call.url,
+        'https://server.example/System/Info/Public',
+        'a non-PlaybackInfo URL must not be rewritten'
+    );
+});
+
+test('a POST to an unrelated endpoint keeps its body and init', async () => {
+    const runtime = loadInjectedRuntime();
+    runtime.respondToFetch(() => ({ ok: true }));
+
+    await runtime.window.fetch('https://server.example/Sessions/Playing/Progress', {
+        method: 'POST',
+        headers: { 'X-Emby-Token': 'secret' },
+        body: JSON.stringify({ PositionTicks: 42 })
+    });
+
+    const call = runtime.state.fetchCalls[runtime.state.fetchCalls.length - 1];
+    assert.strictEqual(call.method, 'POST');
+    assert.strictEqual(
+        JSON.parse(call.body).PositionTicks,
+        42,
+        'an unrelated request body must not be rewritten'
+    );
+    assert.strictEqual(
+        call.init.headers['X-Emby-Token'],
+        'secret',
+        'init must be forwarded as given'
+    );
+});
+
 // The bitrate window used to double as the "playback is starting" signal the
 // subtitle script interceptor reads. The two now come apart, and this is where
 // that is observable: PlaybackInfo arrives before the state machine reaches

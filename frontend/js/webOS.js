@@ -2060,7 +2060,7 @@
         }
     }
 
-    function getMonotonicMediaTime(video, namespace, rawTime) {
+    function trackMonotonicMediaTime(video, namespace, rawTime) {
         if (typeof rawTime !== 'number' || isNaN(rawTime) || !video) {
             return rawTime;
         }
@@ -2099,7 +2099,7 @@
 
     function syncMonotonicMediaTimeHelper() {
         window.WebOSMonotonicMediaTime = {
-            get: getMonotonicMediaTime
+            get: trackMonotonicMediaTime
         };
     }
 
@@ -5169,7 +5169,7 @@
         }
     }
 
-    function enforcePlaybackInfoMaxBitrateUrl(url, source) {
+    function applyPlaybackInfoMaxBitrateUrlAndArmForce(url, source) {
         var patches = getPlaybackInfoPatches();
         if (!patches || !patches.enforceMaxBitrateUrl || !patches.isPlaybackInfoUrl || !patches.isPlaybackInfoUrl(url)) {
             return {
@@ -6116,76 +6116,99 @@
                     return inspectSubtitleFetchResult(originalFetch.apply(fetchThis, arguments), url);
                 }
 
-                var requestArgs = arguments;
                 if (isPlaybackInfoUrl(url)) {
-                    var enforcedFetchBitrate = enforcePlaybackInfoMaxBitrateUrl(url, 'fetch');
-                    var nextInput = input;
-                    var nextInit = init;
-                    var responseUrl = enforcedFetchBitrate.url;
-                    var urlWasRewritten = enforcedFetchBitrate.url !== url;
-                    var playbackInfoContext = createPlaybackInfoRequestContext(responseUrl);
-                    playbackInfoContext.sessionFetchInit = createPlaybackSessionFetchInit(input, init);
+                    return handlePlaybackInfoFetch(fetchThis, input, init, hasInitArgument, url);
+                }
 
-                    if (urlWasRewritten) {
-                        if (typeof input === 'string') {
-                            nextInput = enforcedFetchBitrate.url;
-                        } else if (typeof window.Request !== 'undefined' && input instanceof window.Request) {
-                            nextInput = input;
-                        } else {
-                            nextInput = enforcedFetchBitrate.url;
-                        }
-                        url = enforcedFetchBitrate.url;
-                    }
+                // Not a PlaybackInfo request: pass it through untouched. This
+                // used to fall through to the same call as the PlaybackInfo
+                // branch, reading a `var` declared inside that branch and so
+                // always undefined here -- harmless only because the callee
+                // re-checked the URL.
+                return originalFetch.apply(fetchThis, arguments);
+            };
 
-                    if (nextInit && typeof nextInit === 'object' && initHasBody(nextInit)) {
-                        nextInit = cloneShallowObject(nextInit);
-                        nextInit.body = enforcePlaybackInfoMaxBitrateBody(nextInit.body, enforcedFetchBitrate.targetBitrate, 'fetch');
-                    }
+            // Rebuilding a Request around a rewritten URL is needed on both the
+            // sync and the async path, and the block was duplicated verbatim.
+            function rebuildRequestInput(nextInput, input, rewrittenUrl, urlWasRewritten) {
+                if (!urlWasRewritten
+                    || typeof window.Request === 'undefined'
+                    || !(input instanceof window.Request)
+                    || nextInput !== input) {
+                    return nextInput;
+                }
 
-                    var patchedRequestPromise = createFetchRequestFromPatchedBody(
-                        input,
-                        nextInit,
-                        responseUrl,
-                        enforcedFetchBitrate.targetBitrate
-                    );
-                    if (patchedRequestPromise) {
-                        return patchedRequestPromise.then(function (patchedRequest) {
-                            var asyncRequestArgs;
-                            if (patchedRequest) {
-                                asyncRequestArgs = [patchedRequest];
-                            } else {
-                                if (urlWasRewritten && typeof window.Request !== 'undefined' && input instanceof window.Request && nextInput === input) {
-                                    try {
-                                        nextInput = new window.Request(enforcedFetchBitrate.url, input);
-                                    } catch (requestError) {
-                                        nextInput = enforcedFetchBitrate.url;
-                                    }
-                                }
-                                asyncRequestArgs = [nextInput];
-                                if (hasInitArgument || nextInit) {
-                                    asyncRequestArgs.push(nextInit);
-                                }
-                            }
-                            return inspectPlaybackInfoFetchResult(originalFetch.apply(fetchThis, asyncRequestArgs), responseUrl, playbackInfoContext);
-                        });
-                    }
+                try {
+                    return new window.Request(rewrittenUrl, input);
+                } catch (requestError) {
+                    return rewrittenUrl;
+                }
+            }
 
-                    if (urlWasRewritten && typeof window.Request !== 'undefined' && input instanceof window.Request && nextInput === input) {
-                        try {
-                            nextInput = new window.Request(enforcedFetchBitrate.url, input);
-                        } catch (requestError) {
-                            nextInput = enforcedFetchBitrate.url;
-                        }
-                    }
+            function buildFetchArgs(nextInput, nextInit, hasInitArgument) {
+                var args = [nextInput];
+                if (hasInitArgument || nextInit) {
+                    args.push(nextInit);
+                }
+                return args;
+            }
 
-                    requestArgs = [nextInput];
-                    if (hasInitArgument || nextInit) {
-                        requestArgs.push(nextInit);
+            function handlePlaybackInfoFetch(fetchThis, input, init, hasInitArgument, url) {
+                var enforcedFetchBitrate = applyPlaybackInfoMaxBitrateUrlAndArmForce(url, 'fetch');
+                var responseUrl = enforcedFetchBitrate.url;
+                var urlWasRewritten = responseUrl !== url;
+                var nextInput = input;
+                var nextInit = init;
+                var playbackInfoContext = createPlaybackInfoRequestContext(responseUrl);
+                playbackInfoContext.sessionFetchInit = createPlaybackSessionFetchInit(input, init);
+
+                if (urlWasRewritten) {
+                    // A Request object keeps its identity here and is rebuilt
+                    // later, once it is known whether the body was patched.
+                    if (typeof window.Request === 'undefined' || !(input instanceof window.Request)) {
+                        nextInput = responseUrl;
                     }
                 }
 
-                return inspectPlaybackInfoFetchResult(originalFetch.apply(this, requestArgs), url, playbackInfoContext);
-            };
+                if (nextInit && typeof nextInit === 'object' && initHasBody(nextInit)) {
+                    nextInit = cloneShallowObject(nextInit);
+                    nextInit.body = enforcePlaybackInfoMaxBitrateBody(nextInit.body, enforcedFetchBitrate.targetBitrate, 'fetch');
+                }
+
+                var patchedRequestPromise = createFetchRequestFromPatchedBody(
+                    input,
+                    nextInit,
+                    responseUrl,
+                    enforcedFetchBitrate.targetBitrate
+                );
+
+                if (patchedRequestPromise) {
+                    return patchedRequestPromise.then(function (patchedRequest) {
+                        var asyncRequestArgs = patchedRequest
+                            ? [patchedRequest]
+                            : buildFetchArgs(
+                                rebuildRequestInput(nextInput, input, responseUrl, urlWasRewritten),
+                                nextInit,
+                                hasInitArgument
+                            );
+                        return inspectPlaybackInfoFetchResult(
+                            originalFetch.apply(fetchThis, asyncRequestArgs),
+                            responseUrl,
+                            playbackInfoContext
+                        );
+                    });
+                }
+
+                return inspectPlaybackInfoFetchResult(
+                    originalFetch.apply(fetchThis, buildFetchArgs(
+                        rebuildRequestInput(nextInput, input, responseUrl, urlWasRewritten),
+                        nextInit,
+                        hasInitArgument
+                    )),
+                    responseUrl,
+                    playbackInfoContext
+                );
+            }
         }
 
         if (window.XMLHttpRequest && window.XMLHttpRequest.prototype) {
@@ -6210,7 +6233,7 @@
                     this.__webOsPlaybackInfoBurnInHandled = false;
                     this.__webOsPlaybackInfoHeaders = {};
                     if (isPlaybackInfoUrl(requestUrl)) {
-                        var enforcedXhrBitrate = enforcePlaybackInfoMaxBitrateUrl(requestUrl, 'xhr');
+                        var enforcedXhrBitrate = applyPlaybackInfoMaxBitrateUrlAndArmForce(requestUrl, 'xhr');
                         requestUrl = enforcedXhrBitrate.url;
                         this.__webOsPlaybackInfoMaxBitrate = enforcedXhrBitrate.targetBitrate;
                         this.__webOsPlaybackInfoContext = createPlaybackInfoRequestContext(requestUrl);
