@@ -67,8 +67,23 @@ This table is the full banned set enforced by the tool; keep the two in step.
 `npm run check:baseline` enforces this. It exists because `check:syntax` cannot:
 that step shells out to `node --check`, and Node accepts `?.` happily, so a
 violation would pass CI green and then white-screen the TV with a parse error at
-load. The check is a lexical scan, not a parser — it catches the common
-accidents rather than proving compatibility.
+load.
+
+It works in two passes. First it parses every file with acorn at the baseline
+grammar — ES2019 for `frontend/`, ES2018 for `services/` — and anything the
+parser rejects is reported with its own line and column. That is the definitive
+test for a *syntax* hazard, because "does this parse on the target engine" is
+exactly the question. It replaced a lexical scan that could not decide `/`
+between regex and division and could not see class-body grammar, so it missed
+`class A { count; }`, `class A { [k] = 1; }`, `/a/d` and a `??` that followed a
+division, while reporting a multi-line default parameter and `if (ok)
+/#tag/.test(s)` as class fields.
+
+Second, the table above is scanned lexically for *builtins*. A missing method is
+a `TypeError` at the call site rather than a parse error, so no parser can judge
+it. The syntax half of that table is kept for documentation and for the tests
+that check this section and the tool agree; it is not consulted for a file that
+parses, since by definition none of it can be true of one.
 
 To raise the baseline, change the table in `tools/check-baseline.js` and this
 section together, and be explicit about which model years are being dropped.

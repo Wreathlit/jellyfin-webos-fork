@@ -284,3 +284,48 @@ assertClean('var index = list.findIndex(fn);');
         'every banned construct must appear in the README baseline table'
     );
 }
+
+// --- the parse gate ---------------------------------------------------------
+//
+// The lexical scan cannot decide `/` between regex and division and cannot see
+// class-body grammar, so it both missed real hazards and blocked valid code.
+// Every case below was verified against the previous implementation.
+{
+    const { findParseViolation } = require('../../tools/check-baseline');
+
+    const rejected = [
+        ['class A { count; }', 'a class field with no initializer'],
+        ['class A { [k] = 1; }', 'a computed class field'],
+        ['var r = /a/d;', 'the regex `d` flag (Chromium 90)'],
+        ['x = i++ / 2; var s = a ?? b;', '`??` after a division the scan read as a regex'],
+        ['var x = a?.b;', 'optional chaining'],
+        ['class A { static { x = 1; } }', 'a class static block'],
+        ['var x = 1_000;', 'a numeric separator']
+    ];
+    for (const [source, what] of rejected) {
+        const violation = findParseViolation(source, 'browser');
+        assert.ok(violation, what + ' must be reported: ' + source);
+        assert.ok(violation.line >= 1, 'a parse violation must carry a line');
+    }
+
+    const accepted = [
+        ['class A { m(a,\n b = 2) {} }', 'a multi-line default parameter in a class method'],
+        ['if (ok) /#tag/.test(s);', 'a regex literal after `if (...)`'],
+        ['try { x(); } catch { y(); }', 'optional catch binding, which Chromium 66 has'],
+        ['var x = { ...y };', 'object spread'],
+        ['var s = `a${b}c`;', 'a template literal']
+    ];
+    for (const [source, what] of accepted) {
+        assert.strictEqual(
+            findParseViolation(source, 'browser'),
+            null,
+            what + ' must not be reported: ' + source
+        );
+    }
+
+    // services/ is held to the older grammar.
+    assert.ok(
+        findParseViolation('try { x(); } catch { y(); }', 'node'),
+        'optional catch binding is a parse error on Node 8'
+    );
+}

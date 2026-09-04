@@ -27,6 +27,7 @@
     "node": ">=22"
   },
   "devDependencies": {
-    "@webos-tools/cli": "^3.2.3"
+    "@webos-tools/cli": "^3.2.3",
+    "acorn": "^8.18.0"
   }
 }
