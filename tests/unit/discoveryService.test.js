@@ -149,3 +149,61 @@ function loadDiscoveryService() {
     assert.strictEqual(Object.keys(service.context.subscriptions).length, 0);
     assert.strictEqual(service.clearedIntervals.length, 1, 'the final cancellation should stop periodic discovery');
 }
+
+// A new subscription's first reply is a complete snapshot, so it has to be
+// flagged as one. index.js only reconciles its cached list when full === true;
+// without the flag, a client reconnecting after stopDiscovery() -- or to a
+// restarted service -- kept cards for servers that had gone away meanwhile.
+{
+    const service = loadDiscoveryService();
+    const responses = [];
+    service.handlers.discover.request({
+        uniqueToken: 'reconnect',
+        isSubscription: true,
+        respond(payload) {
+            responses.push(payload);
+        }
+    });
+
+    assert.strictEqual(responses[0].full, true, 'the initial subscription reply must be flagged as a full snapshot');
+}
+
+// Expiry used to be checked only when a UDP reply arrived. With one server on
+// the network, the server going offline was the only thing that could have
+// announced its own removal, so nothing ever did.
+{
+    const service = loadDiscoveryService();
+    const responses = [];
+
+    service.handlers.discover.request({
+        uniqueToken: 'lonely',
+        isSubscription: true,
+        respond(payload) {
+            responses.push(payload);
+        }
+    });
+
+    service.context.handleDiscoveryResponse(Buffer.from(JSON.stringify({
+        Id: 'only-server',
+        Name: 'Only Server',
+        Address: 'http://192.0.2.30:8096'
+    })), { address: '192.0.2.30', port: 7359 });
+
+    assert.ok(service.context.scanresult['only-server'], 'the server should be discovered');
+    responses.length = 0;
+
+    // Age it past the TTL and let the scan interval run. No further UDP reply
+    // arrives, because the server is gone.
+    service.context.scanresult['only-server'].lastSeen = Date.now() - (10 * 60 * 1000);
+    service.intervalCallbacks[0].callback();
+
+    assert.strictEqual(service.context.scanresult['only-server'], undefined, 'the expired server must be pruned');
+    assert.strictEqual(responses.length, 1, 'subscribers must be told the server went away');
+    assert.strictEqual(responses[0].full, true, 'removal can only be expressed as a full snapshot');
+    assert.deepStrictEqual(Object.keys(responses[0].results), [], 'the snapshot must no longer list it');
+
+    // A quiet interval with nothing expiring must not spam subscribers.
+    responses.length = 0;
+    service.intervalCallbacks[0].callback();
+    assert.strictEqual(responses.length, 0, 'an interval that expires nothing must not publish');
+}

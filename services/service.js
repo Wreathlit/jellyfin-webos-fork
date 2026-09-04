@@ -191,6 +191,21 @@ function sendScanResults(server_id) {
 		server_id = null;
 	}
 
+	publishScanResults(server_id);
+}
+
+// Expiry is the only way a server leaves the list, and sendScanResults() used
+// to run from the UDP handler alone. With a single server on the network, the
+// server going offline was also the only thing that could have announced its
+// own removal, so its card -- Connect button and all -- outlived it for the
+// life of the app. The scan interval checks for expiry too now.
+function pruneExpiredScanResults() {
+	if (pruneScanResults() > 0) {
+		publishScanResults(null);
+	}
+}
+
+function publishScanResults(server_id) {
 	for (var i in subscriptions) {
 		if (hasValue(subscriptions, i)) {
 			var s = subscriptions[i];
@@ -312,6 +327,7 @@ function createInterval() {
 		return;
 	}
 	interval = setInterval(function () {
+		pruneExpiredScanResults();
 		sendJellyfinDiscovery();
 	}, SCAN_INTERVAL);
 }
@@ -319,8 +335,13 @@ function createInterval() {
 var discover = service.register("discover");
 discover.on("request", function (message) {
 	pruneScanResults();
+	// A complete set, not a delta. A client reconnecting after stopDiscovery()
+	// -- or to a service that has restarted -- has to reconcile its cached list
+	// against this, or servers that disappeared while it was unsubscribed keep
+	// their cards until the app is restarted.
 	message.respond({
 		returnValue: true,
+		full: true,
 		results: scanresult
 	});
 

@@ -1560,20 +1560,21 @@ function verifyThenAdd(server) {
 
 
 var discover = null;
-var discoveryToken = 'discovery-' + new Date().getTime();
 
 function startDiscovery() {
     if (discover) {
         return;
     }
     debugLog("Starting server autodiscovery...");
-    discover = webOS.service.request("luna://org.jellyfin.webos.service", {
+    // No resubscribe option: the vendored webOSTV bridge does not implement one
+    // (it reads service/method/parameters/subscribe and the three callbacks and
+    // nothing else), so passing it only made the failure path look handled.
+    // The service keys subscriptions on the uniqueToken LS2 attaches to the
+    // message, not on anything sent in parameters, so that went unread too.
+    var failed = false;
+    var request = webOS.service.request("luna://org.jellyfin.webos.service", {
         method: "discover",
-        parameters: {
-            uniqueToken: discoveryToken
-        },
         subscribe: true,
-        resubscribe: true,
         onSuccess: function (args) {
             debugJsonLog('OK:', args);
 
@@ -1603,8 +1604,18 @@ function startDiscovery() {
         },
         onFailure: function (args) {
             debugJsonLog('ERR:', args);
+            // A lost subscription never comes back on its own. Leaving the
+            // handle set made every later startDiscovery() return at the guard
+            // above, so the picker silently stopped finding servers for the
+            // rest of the app's life.
+            failed = true;
+            if (discover && discover === request) {
+                stopDiscovery();
+            }
         }
     });
+
+    discover = failed ? null : request;
 }
 
 function stopDiscovery() {

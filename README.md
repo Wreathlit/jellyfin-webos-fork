@@ -456,8 +456,29 @@ Approach:
   auto-connect consent — and carry the display fields over; also fall back to the
   address for the card title so a record saved without a name is still readable.
 
-Status: fixed. Covered by `tests/unit/ajaxRequest.test.js` and the server-list
-cases in `tests/unit/shellRuntime.test.js`.
+A later pass found three more defects on the same boundary, all about how a
+server *leaves* the list.
+
+- expiry was only ever checked when a UDP reply arrived: `sendScanResults()` runs
+  from the discovery socket handler, and the 15 s interval merely re-broadcast
+  the probe. With a single server on the network, the server going offline was
+  also the only thing that could have announced its own removal, so its card —
+  Connect button and all — outlived it for the life of the app. That is the
+  symptom the delta/snapshot split above was meant to fix, and it only worked
+  while some *other* server kept answering. The interval prunes and publishes
+  now, and publishes nothing when nothing expired.
+- the first reply to a new subscription is a complete, freshly pruned snapshot,
+  but it was sent without `full: true`, so the shell classified it as a delta.
+  Reconnecting after `stopDiscovery()`, or to a service that had restarted, was
+  therefore the one moment the shell most needed to reconcile and the one moment
+  it did not.
+- `startDiscovery()` passed `resubscribe: true`, which the vendored webOSTV 1.2.11
+  bridge does not implement — it reads service/method/parameters/subscribe and
+  the three callbacks and nothing else. A lost subscription was gone for good
+  while the non-null `discover` handle kept every later `startDiscovery()` at its
+  guard, so the picker silently stopped finding servers. `onFailure` now drops the
+  handle. The `uniqueToken` sent in `parameters` went the same way: the service
+  keys subscriptions on the token LS2 attaches to the message, never on that one.
 
 ### Pointer click activation
 
