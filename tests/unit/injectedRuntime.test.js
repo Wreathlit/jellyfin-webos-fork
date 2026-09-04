@@ -1042,6 +1042,37 @@ test('a PlaybackInfo URL is not mistaken for a Sessions request', async () => {
     );
 });
 
+
+// The inspection queue used to run one fetch at a time, so every lazily loaded
+// chunk waited for the previous one's full download -- up to the whole 8s
+// playback timeout. Several chunks are imported at playback start, and the OSD
+// and first frame wait on them.
+test('script inspections do not queue behind one another', async () => {
+    const runtime = loadInjectedRuntime();
+    runtime.respondToFetch(() => ({ MediaSources: [PLAIN_MEDIA_SOURCE] }));
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+    await runtime.window.fetch(playbackInfoUrl('item-1', 'src-plain'));
+    await runtime.settle(10);
+
+    // Three same-origin chunks inserted together, none of them answered yet.
+    for (let i = 0; i < 3; i++) {
+        const script = runtime.createElement('script');
+        script.src = 'https://server.example/chunk-' + i + '.js';
+        runtime.document.head.appendChild(script);
+    }
+    await runtime.settle(10);
+
+    const inspections = runtime.state.xhrRequests.filter(function (request) {
+        return String(request.url).indexOf('/chunk-') !== -1;
+    });
+    assert.strictEqual(
+        inspections.length,
+        3,
+        'all three inspections must be in flight, got ' + inspections.length
+    );
+});
+
 module.exports = async function runInjectedRuntimeTests() {
     for (const testCase of cases) {
         try {

@@ -355,7 +355,17 @@
     var assScriptPatchCount = 0;
     var assScriptLastPatchInfo = 'none';
     var externalScriptPatchQueue = [];
-    var externalScriptPatchQueueActive = false;
+    // How many inspection fetches may be in flight at once. It used to be one,
+    // which put every lazily loaded chunk behind the previous one's full
+    // download: at playback start Jellyfin Web imports several chunks (the
+    // player plugin, the OSD view, the renderer chunks), and one slow chunk
+    // delayed all of them by up to its whole timeout -- 8s during playback --
+    // before the OSD or the first frame could appear. Ordering was never a
+    // reason to serialise: dynamically inserted scripts are async, so the
+    // un-intercepted path gives no order guarantee either. Bounded rather than
+    // unbounded so a TV is not asked to hold a dozen bundle downloads open.
+    var SCRIPT_PATCH_MAX_CONCURRENT_INSPECTIONS = 3;
+    var externalScriptPatchActiveCount = 0;
     var externalScriptPatchStartTs = Date.now();
     var externalScriptPatchEarlyInspectCount = 0;
     // URLs fetched and inspected once with no patch applied. Re-intercepting
@@ -2617,7 +2627,9 @@
         }
 
         task.finished = true;
-        externalScriptPatchQueueActive = false;
+        if (externalScriptPatchActiveCount > 0) {
+            externalScriptPatchActiveCount--;
+        }
         processExternalScriptPatchQueue();
     }
 
@@ -2650,7 +2662,7 @@
     // Last-resort recovery for the patch pipeline. Everything between clearing
     // the fetch timeout and finishing the task runs unguarded patch code
     // (multiple full-bundle regex passes plus a large string concat), and an
-    // exception there used to strand externalScriptPatchQueueActive at true,
+    // exception there used to strand the in-flight count above zero,
     // which silently blocks every dynamically inserted script from that point
     // on until the app is restarted. Recover by inserting the untouched script
     // when nothing made it into the DOM yet, and always release the queue.
@@ -2658,7 +2670,9 @@
         warnLog('Recovering from intercepted script patch failure:', error);
 
         if (!task || task.finished) {
-            externalScriptPatchQueueActive = false;
+            if (externalScriptPatchActiveCount > 0) {
+                externalScriptPatchActiveCount--;
+            }
             processExternalScriptPatchQueue();
             return;
         }
@@ -2705,11 +2719,12 @@
     }
 
     function processExternalScriptPatchQueue() {
-        if (externalScriptPatchQueueActive || !externalScriptPatchQueue.length) {
+        if (externalScriptPatchActiveCount >= SCRIPT_PATCH_MAX_CONCURRENT_INSPECTIONS
+            || !externalScriptPatchQueue.length) {
             return;
         }
 
-        externalScriptPatchQueueActive = true;
+        externalScriptPatchActiveCount++;
         var task = externalScriptPatchQueue.shift();
         var xhr = new XMLHttpRequest();
         var fetchCompleted = false;
