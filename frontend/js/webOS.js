@@ -4428,9 +4428,11 @@
         return null;
     }
 
-    function isHdrDynamicRangeText(value) {
+    // The OSD scan reads whole containers, title included, so it must not use
+    // the permissive metadata-field test.
+    function isHdrDynamicRangeUiText(value) {
         var decisions = getHdrDecisions();
-        return !!(decisions && decisions.isHdrDynamicRangeText && decisions.isHdrDynamicRangeText(value));
+        return !!(decisions && decisions.isHdrDynamicRangeUiText && decisions.isHdrDynamicRangeUiText(value));
     }
 
     function isSdrDynamicRangeText(value) {
@@ -4558,7 +4560,7 @@
                     continue;
                 }
 
-                if (isHdrDynamicRangeText(text)) {
+                if (isHdrDynamicRangeUiText(text)) {
                     return 'hdr';
                 }
                 if (isSdrDynamicRangeText(text)) {

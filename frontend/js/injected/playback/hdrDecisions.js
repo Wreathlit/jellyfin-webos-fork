@@ -44,6 +44,45 @@
             || /(^|[^a-z0-9])pq([^a-z0-9]|$)/i.test(normalized);
     }
 
+    // Free-form UI text needs a stricter test than a metadata field. The OSD
+    // container the shell scans flattens the item title into the same string as
+    // the media info, and 'dovi' and 'hlg' are short enough to hide inside
+    // ordinary names -- "Ludovico Einaudi", "Ludovic", "Wahlgren", "Kohlgruber"
+    // all contain one of them and used to dim the UI for a whole SDR playback.
+    // Requiring the marker to start a word keeps every real designation,
+    // including composites like DOVIWithHDR10 where it still starts the token.
+    function isHdrDynamicRangeUiText(value) {
+        var normalized = normalizeDynamicRangeText(value);
+        if (!normalized) {
+            return false;
+        }
+
+        // Distinctive enough to stay substring matches: none of these can be
+        // hidden inside a word, and two of them span a separator.
+        if (normalized.indexOf('dolby vision') !== -1
+            || normalized.indexOf('dolbyvision') !== -1
+            || normalized.indexOf('arib-std-b67') !== -1
+            || /smptes*(?:sts*)?2084/.test(normalized)) {
+            return true;
+        }
+
+        var tokens = normalized.split(/[^a-z0-9]+/);
+        for (var i = 0; i < tokens.length; i++) {
+            var token = tokens[i];
+            if (!token) {
+                continue;
+            }
+            if (token === 'hdr' || token === 'pq' || token === 'smpte2084'
+                || token.indexOf('hdr10') === 0
+                || token.indexOf('dovi') === 0
+                || token.indexOf('hlg') === 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     function isPositiveNumberValue(value) {
         if (typeof value === 'number') {
             return value > 0;
@@ -1196,6 +1235,7 @@
     Runtime.define('playback.hdrDecisions', {
         normalizeDynamicRangeText: normalizeDynamicRangeText,
         isHdrDynamicRangeText: isHdrDynamicRangeText,
+        isHdrDynamicRangeUiText: isHdrDynamicRangeUiText,
         isSdrDynamicRangeText: isSdrDynamicRangeText,
         getDynamicRangeHintFromMetadataField: getDynamicRangeHintFromMetadataField,
         getDynamicRangeHintFromObjectFields: getDynamicRangeHintFromObjectFields,

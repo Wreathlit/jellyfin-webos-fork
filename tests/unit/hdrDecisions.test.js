@@ -381,3 +381,56 @@ assert.strictEqual(hdr.isPlaybackVideoCopiedOrDirect('unknown'), false);
         'a lower-cased Static must still be read'
     );
 }
+
+// --- OSD text is not a metadata field ---------------------------------------
+//
+// getDynamicRangeHintFromPlaybackUi flattens whole OSD containers, and the item
+// title lives in one of them (.osdTitle sits inside .videoOsdBottom). A bare
+// substring test for the short markers turned ordinary names into an HDR
+// verdict and dimmed the UI to 30% for the whole playback.
+{
+    const falsePositives = [
+        'Ludovico Einaudi - Live at the Royal Albert Hall',
+        'Ludovic Chancel',
+        'Radovic',
+        'Wahlgren & Wahlgren',
+        'Kohlgruber',
+        'Hdrive'
+    ];
+    for (const title of falsePositives) {
+        assert.strictEqual(
+            hdr.isHdrDynamicRangeUiText(title),
+            false,
+            'an ordinary title must not read as HDR: ' + title
+        );
+    }
+
+    const realBadges = [
+        'HDR',
+        'HDR10',
+        'HDR10+',
+        'HLG',
+        'DoVi',
+        'DOVIWithHDR10',
+        'DOVIWithHLG',
+        'Dolby Vision',
+        'SMPTE ST 2084 PQ',
+        '1080p HEVC HDR10 · EAC3',
+        'S02E04 - Endgame - HDR - 1:23:45'
+    ];
+    for (const badge of realBadges) {
+        assert.strictEqual(
+            hdr.isHdrDynamicRangeUiText(badge),
+            true,
+            'a real dynamic range designation must still be read: ' + badge
+        );
+    }
+
+    // Metadata fields keep the permissive test: a structured value is not free
+    // text, and some of them only carry the marker as a substring.
+    assert.strictEqual(hdr.isHdrDynamicRangeText('DOVIWithHDR10'), true);
+    assert.strictEqual(hdr.getDynamicRangeHintFromVideoStream({ VideoRangeType: 'DOVIWithHDR10' }), 'hdr');
+
+    // Ordinary text still reports SDR when the OSD says so.
+    assert.strictEqual(hdr.isSdrDynamicRangeText('Ludovico Einaudi - SDR'), true);
+}

@@ -551,6 +551,14 @@ Approach:
 - accept both string and legacy numeric video stream types during HDR detection;
 - inspect `VideoRange`, `VideoRangeType`, Dolby Vision, HDR10+, color-transfer,
   display-title, and Playback Info/player-stats text as fallback HDR signals;
+- test UI text with a stricter rule than a metadata field. The scanned OSD
+  containers flatten the item title into the same string as the media info
+  (`.osdTitle` sits inside `.videoOsdBottom`), and `dovi` and `hlg` are short
+  enough to hide inside ordinary names — "Ludovico Einaudi", "Wahlgren" and
+  "Kohlgruber" all used to read as HDR and dim an SDR playback for its whole
+  duration. In text a marker only counts when it starts a word, which still
+  accepts composites such as `DOVIWithHDR10`; metadata fields keep the
+  permissive substring test, because a structured value is not free text;
 - after entering playback, run a short delayed fallback window that reapplies
   cached PlaybackInfo hints, refreshes item metadata detection, and scans visible
   playback UI text again;
