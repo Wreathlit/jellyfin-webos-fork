@@ -144,15 +144,42 @@ function createClassList(element) {
     };
 }
 
+// Blink gives every length in an inline transform a unit when it serializes the
+// declaration back, so 'translateY(0)' reads back as 'translateY(0px)'.
+// Modelling just that keeps a comparison against the literal the bundle writes
+// honest -- storing the raw string made the header pin check look correct here
+// while it could never match on a TV.
+function serializeTransformValue(value) {
+    return String(value).replace(/\(\s*0\s*\)/g, '(0px)');
+}
+
 function createStyle() {
+    let transformValue = '';
     const style = {
+        get transform() {
+            return transformValue;
+        },
+        set transform(value) {
+            transformValue = serializeTransformValue(value);
+        },
         setProperty(name, value) {
+            if (name === 'transform') {
+                transformValue = serializeTransformValue(value);
+                return;
+            }
             style[name] = value;
         },
         removeProperty(name) {
+            if (name === 'transform') {
+                transformValue = '';
+                return;
+            }
             delete style[name];
         },
         getPropertyValue(name) {
+            if (name === 'transform') {
+                return transformValue;
+            }
             return style[name] === undefined ? '' : style[name];
         }
     };

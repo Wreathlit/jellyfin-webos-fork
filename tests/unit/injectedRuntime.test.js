@@ -64,6 +64,24 @@ function announceAddedNode(runtime, node) {
     }
 }
 
+// Deliver the attribute mutation a class or style change on the header would
+// have produced. The harness never invents mutations.
+function announceAttributeChange(runtime, node, attributeName) {
+    const mutation = {
+        type: 'attributes',
+        target: node,
+        attributeName: attributeName || 'class',
+        addedNodes: [],
+        removedNodes: []
+    };
+
+    for (const observer of runtime.state.observers) {
+        if (!observer.disconnected) {
+            observer.trigger([mutation]);
+        }
+    }
+}
+
 function lastFetchUrl(runtime) {
     const calls = runtime.state.fetchCalls;
     return calls.length ? calls[calls.length - 1].url : '';
@@ -919,6 +937,76 @@ test('a URL object reaches the PlaybackInfo interceptors', async () => {
         runtime.isHdrDimmed(),
         true,
         'the response to a URL-object request must still drive HDR detection'
+    );
+});
+
+// Blink serializes an inline transform with units, so the value the bundle set
+// as 'translateY(0)' read back as 'translateY(0px)' and the pin check compared
+// against the literal it had just written. It could therefore never answer
+// "still pinned": every header attribute mutation reset lastHeaderMeasureTs and
+// forced a fresh offsetHeight measurement, defeating the 1500ms throttle. The
+// harness used to store the raw string, which is why nothing here could see it.
+test('a pinned header is not re-measured on every attribute mutation', async () => {
+    const runtime = loadInjectedRuntime();
+    const header = runtime.createElement('div', { className: 'skinHeader' });
+    runtime.document.body.appendChild(header);
+    announceAddedNode(runtime, header);
+    await runtime.settle(50);
+
+    assert.strictEqual(
+        header.style.transform,
+        'translateY(0px)',
+        'the pin must be written in the form the CSSOM reads back'
+    );
+
+    let measurements = 0;
+    Object.defineProperty(header, 'offsetHeight', {
+        configurable: true,
+        get() {
+            measurements++;
+            return 60;
+        }
+    });
+
+    // Jellyfin Web toggles header classes on route changes (home.js adds and
+    // removes noHomeButtonHeader), which is the mutation this observer sees.
+    announceAttributeChange(runtime, header, 'class');
+    await runtime.settle(50);
+
+    assert.strictEqual(
+        measurements,
+        0,
+        'an intact pin must not schedule a re-measure'
+    );
+});
+
+// getVideoPlaybackQuality() is Chromium 80, and this fork targets webOS 5
+// (Chromium 68) and webOS 6 (Chromium 79), so the frame-drop readout was
+// permanently 'n/a' on every panel it runs on. Both engines carry the prefixed
+// counters, which expose the same two values.
+test('the frame drop readout falls back to the prefixed counters', async () => {
+    const runtime = loadInjectedRuntime({
+        localStorage: {
+            webos_playback_diagnostics_overlay: 'true'
+        }
+    });
+
+    // A webOS 5 video element: no getVideoPlaybackQuality, prefixed counters.
+    const video = runtime.createElement('video');
+    video.webkitDroppedFrameCount = 12;
+    video.webkitDecodedFrameCount = 1000;
+    video.paused = false;
+    video.ended = false;
+    runtime.document.body.appendChild(video);
+
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(1200);
+
+    const overlay = runtime.document.querySelector('.webos-playback-diagnostics-overlay');
+    assert.ok(overlay, 'the diagnostics overlay must be present when the feature is on');
+    assert.ok(
+        overlay.textContent.indexOf('drop=12/1000') !== -1,
+        'the prefixed counters must reach the readout, got: ' + overlay.textContent
     );
 });
 

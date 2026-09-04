@@ -912,6 +912,26 @@ Launch:
 ares-launch -d tv org.jellyfin.webos
 ```
 
+### Platform API levels the shell has to respect
+
+Two defects came from assuming a newer engine than the fork ships on.
+
+- `HTMLVideoElement.getVideoPlaybackQuality()` is Chromium 80. webOS 5 runs
+  Chromium 68 and webOS 6 runs 79, so the diagnostics overlay's frame-drop
+  readout was permanently `drop=n/a/n/a` on every panel this fork targets —
+  exactly the TVs a stutter investigation gets run on. Both engines carry
+  `webkitDroppedFrameCount`/`webkitDecodedFrameCount`, which expose the same two
+  values the unprefixed API reports, so the readout falls back to them.
+- Blink serializes an inline transform with units, so a value set as
+  `translateY(0)` reads back as `translateY(0px)`. The header pin compared
+  against the literal it had just written and so could never answer "still
+  pinned": every header attribute mutation — Jellyfin Web adds and removes
+  `noHomeButtonHeader` on route changes — reset `lastHeaderMeasureTs` and forced
+  a fresh `offsetHeight` measurement, defeating `HEADER_MEASURE_INTERVAL`
+  entirely. The neighbouring `top`/`left`/`right` checks already read back the
+  `0px` form. The test harness stored inline styles as raw strings, which is why
+  nothing could see this; it now models that one serialization step.
+
 ## Real-device notes
 
 - For ASS tests, `assWorker clamp` increasing means small backward video-time

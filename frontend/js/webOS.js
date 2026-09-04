@@ -129,6 +129,15 @@
     var cachedHeaderElement = null;
     var lastHeaderMeasureTs = 0;
     var HEADER_MEASURE_INTERVAL = 1500;
+    // Blink round-trips an inline transform through the CSSOM, so a value set as
+    // 'translateY(0)' reads back as 'translateY(0px)'. The pin check compared
+    // against the literal it had just written and so never matched: every header
+    // attribute mutation looked like the pin had been undone, which reset
+    // lastHeaderMeasureTs and forced a fresh offsetHeight measurement, defeating
+    // HEADER_MEASURE_INTERVAL entirely. The neighbouring top/left/right checks
+    // already read back the '0px' form; this one did not. Read tolerantly, since
+    // a serializer that keeps the unitless form is equally valid.
+    var HEADER_PINNED_TRANSFORM = 'translateY(0px)';
     var qualityMenuPatchTimer = null;
     var QUALITY_MENU_EXTRA_BITRATES = [120000000, 100000000, 95000000, 80000000];
     var QUALITY_MENU_LEGACY_CAP_BITRATE = 60000000;
@@ -592,6 +601,10 @@
         }
     }
 
+    function isHeaderPinnedTransform(value) {
+        return value === HEADER_PINNED_TRANSFORM || value === 'translateY(0)';
+    }
+
     function headerNeedsPinnedRefresh(header) {
         if (!header || !header.classList || !header.style) {
             return true;
@@ -601,7 +614,7 @@
             || header.classList.contains('hidden')
             || header.classList.contains('skinHeader-hidden')
             || header.style.position !== 'fixed'
-            || header.style.transform !== 'translateY(0)'
+            || !isHeaderPinnedTransform(header.style.transform)
             || header.style.opacity === '0'
             || header.style.visibility === 'hidden';
     }
@@ -1066,6 +1079,18 @@
 
         var dropped = quality && typeof quality.droppedVideoFrames === 'number' ? quality.droppedVideoFrames : null;
         var total = quality && typeof quality.totalVideoFrames === 'number' ? quality.totalVideoFrames : null;
+
+        // getVideoPlaybackQuality() is Chromium 80. webOS 5 runs Chromium 68 and
+        // webOS 6 runs 79, so on every panel this fork targets the frame-drop
+        // readout was permanently 'n/a' -- on exactly the TVs a stutter
+        // investigation would be run on. Both engines carry the prefixed
+        // counters, which read the same two values the unprefixed API exposes.
+        if (dropped === null && video && typeof video.webkitDroppedFrameCount === 'number') {
+            dropped = video.webkitDroppedFrameCount;
+        }
+        if (total === null && video && typeof video.webkitDecodedFrameCount === 'number') {
+            total = video.webkitDecodedFrameCount;
+        }
         var currentTime = video && typeof video.currentTime === 'number' ? video.currentTime.toFixed(3) : 'n/a';
         var dimensions = video ? ((video.videoWidth || 0).toString() + 'x' + (video.videoHeight || 0).toString()) : 'n/a';
         var rVfcSupported = !!(video && video.requestVideoFrameCallback);
@@ -3892,8 +3917,8 @@
         if (header.style.zIndex !== '9999') {
             header.style.zIndex = '9999';
         }
-        if (header.style.transform !== 'translateY(0)') {
-            header.style.transform = 'translateY(0)';
+        if (!isHeaderPinnedTransform(header.style.transform)) {
+            header.style.transform = HEADER_PINNED_TRANSFORM;
         }
         if (header.style.opacity !== '1') {
             header.style.opacity = '1';
