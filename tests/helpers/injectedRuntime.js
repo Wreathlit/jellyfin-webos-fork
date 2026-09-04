@@ -676,7 +676,10 @@ function createMutationObserverClass(state) {
     function FakeMutationObserver(handler) {
         this.handler = handler;
         this.targets = [];
-        this.disconnected = false;
+        // Not connected until observe() is called. Starting at false let tests
+        // deliver mutations to observers the bundle had merely constructed, so
+        // a case could pass through an observer that never fires on a TV.
+        this.disconnected = true;
         state.observers.push(this);
     }
 

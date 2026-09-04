@@ -1,84 +1,12 @@
 const childProcess = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { extractArray } = require('./extract-array');
 
 const root = path.resolve(__dirname, '..');
 const indexPath = path.join(root, 'frontend', 'js', 'index.js');
 const indexText = fs.readFileSync(indexPath, 'utf8');
 
-// Drop comments while keeping string literals intact. check-baseline's
-// stripNonCode blanks strings too, and the manifest entries *are* the strings,
-// so this only runs over an already-extracted array body -- a region that holds
-// nothing but strings, commas and comments, and therefore cannot contain a
-// regex literal for the '//' scan to trip over.
-function stripCommentsFromArrayBody(source) {
-    let out = '';
-    let i = 0;
-    while (i < source.length) {
-        const ch = source[i];
-        const next = source[i + 1];
-
-        if (ch === '/' && next === '/') {
-            while (i < source.length && source[i] !== '\n') {
-                i++;
-            }
-            continue;
-        }
-
-        if (ch === '/' && next === '*') {
-            i += 2;
-            while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) {
-                i++;
-            }
-            i += 2;
-            continue;
-        }
-
-        if (ch === "'" || ch === '"') {
-            const quote = ch;
-            out += ch;
-            i++;
-            while (i < source.length) {
-                if (source[i] === '\\') {
-                    out += source[i] + (source[i + 1] || '');
-                    i += 2;
-                    continue;
-                }
-                out += source[i];
-                const closed = source[i] === quote;
-                i++;
-                if (closed) {
-                    break;
-                }
-            }
-            continue;
-        }
-
-        out += ch;
-        i++;
-    }
-    return out;
-}
-
-function extractArray(name) {
-    const match = new RegExp('var\\s+' + name + '\\s*=\\s*\\[([\\s\\S]*?)\\];').exec(indexText);
-    if (!match) {
-        throw new Error('Cannot find ' + name + ' in frontend/js/index.js');
-    }
-
-    // Without stripping comments first, an entry commented out during debugging
-    // still satisfied every check here -- the file exists, is tracked, and keeps
-    // its slot in the order assertions -- while the TV never loaded it and the
-    // module chain broke at runtime.
-    const body = stripCommentsFromArrayBody(match[1]);
-    const result = [];
-    const itemPattern = /['"]([^'"]+)['"]/g;
-    let itemMatch;
-    while ((itemMatch = itemPattern.exec(body)) !== null) {
-        result.push(itemMatch[1]);
-    }
-    return result;
-}
 
 // Walk frontend/js/injected for the reverse direction: every module on disk
 // must appear in the manifest. A new file that nobody registered ships inside
@@ -104,8 +32,8 @@ function assertGitTracked(relativePath) {
     });
 }
 
-const injectedScriptUrls = extractArray('injectedScriptUrls');
-const injectedStyleUrls = extractArray('injectedStyleUrls');
+const injectedScriptUrls = extractArray(indexText, 'injectedScriptUrls');
+const injectedStyleUrls = extractArray(indexText, 'injectedStyleUrls');
 const assets = injectedScriptUrls.concat(injectedStyleUrls);
 const missing = [];
 const untracked = [];

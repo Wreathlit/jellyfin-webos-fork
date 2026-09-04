@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { stripNonCode, findViolations } = require('../../tools/check-baseline');
+const { BUNDLE_FILES } = require('../helpers/injectedRuntime');
 
 const root = path.resolve(__dirname, '..', '..');
 
@@ -106,18 +107,12 @@ assertClean('var index = list.findIndex(fn);');
 // --- the shipping tree must actually be clean -------------------------------
 
 {
-    const shippedFiles = [
-        'frontend/js/index.js',
-        'frontend/js/ajax.js',
-        'frontend/js/storage.js',
-        'frontend/js/webOS.js',
-        'frontend/js/injected/core/runtime.js',
-        'frontend/js/injected/core/features.js',
-        'frontend/js/injected/playback/profilePatches.js',
-        'frontend/js/injected/playback/hdrDecisions.js',
-        'frontend/js/injected/playback/playbackInfoPatches.js',
-        'frontend/js/injected/subtitles/scriptPatches.js'
-    ];
+    // Derived, not hand-copied. This list used to be maintained by hand and had
+    // already drifted -- core/mediaStreams.js joined the bundle and was never
+    // added here, so the assertion below silently stopped covering it while
+    // still claiming the shipping tree was clean.
+    const shippedFiles = ['frontend/js/index.js', 'frontend/js/ajax.js', 'frontend/js/storage.js']
+        .concat(BUNDLE_FILES);
 
     for (const relativePath of shippedFiles) {
         const source = fs.readFileSync(path.join(root, relativePath), 'utf8');

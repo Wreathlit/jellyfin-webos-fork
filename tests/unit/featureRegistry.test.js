@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { extractArray } = require('../../tools/extract-array');
 
 const root = path.resolve(__dirname, '..', '..');
 const runtimePath = path.join(root, 'frontend', 'js', 'injected', 'core', 'runtime.js');
@@ -30,17 +31,11 @@ function loadFeatureRegistry() {
 }
 
 function extractAllowedFeatureOverrides() {
-    const text = fs.readFileSync(indexPath, 'utf8');
-    const match = /var\s+allowed\s*=\s*\[([\s\S]*?)\];/.exec(text);
-    assert(match, 'sanitizeFeatureOverrides allowed list should exist');
-
-    const result = [];
-    const itemPattern = /['"]([^'"]+)['"]/g;
-    let itemMatch;
-    while ((itemMatch = itemPattern.exec(match[1])) !== null) {
-        result.push(itemMatch[1]);
-    }
-    return result.sort();
+    // Through the shared reader, which drops commented-out entries. The copy
+    // this replaces stripped no comments at all, so commenting a key out of
+    // the whitelist during debugging still satisfied the assertion below
+    // while the shell silently stopped broadcasting that override.
+    return extractArray(fs.readFileSync(indexPath, 'utf8'), 'allowed').sort();
 }
 
 const registry = loadFeatureRegistry();

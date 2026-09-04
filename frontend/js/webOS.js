@@ -6402,15 +6402,6 @@
                         sendArgs = sendArgsCopy;
                     }
 
-                    if (isPlaybackInfoUrl(this.__webOsPlaybackInfoUrl)
-                        && !this.__webOsPlaybackInfoLoadendHooked
-                        && this.addEventListener) {
-                        this.__webOsPlaybackInfoLoadendHooked = true;
-                        this.addEventListener('loadend', function () {
-                            inspectPlaybackInfoXhrResponse(this);
-                        });
-                    }
-
                     if (this.__webOsSubtitleUrl
                         && !this.__webOsSubtitleLoadendHooked
                         && this.addEventListener) {

@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { BUNDLE_FILES, loadInjectedRuntime } = require('../helpers/injectedRuntime');
+const { extractArray } = require('../../tools/extract-array');
 
 const root = path.resolve(__dirname, '..', '..');
 
@@ -15,17 +16,8 @@ const root = path.resolve(__dirname, '..', '..');
 // warns and every "end-to-end" test silently covers the wrong thing.
 {
     const indexSource = fs.readFileSync(path.join(root, 'frontend', 'js', 'index.js'), 'utf8');
-    const match = /var\s+injectedScriptUrls\s*=\s*\[([\s\S]*?)\];/.exec(indexSource);
-    assert.ok(match, 'injectedScriptUrls must be findable in frontend/js/index.js');
-
-    // Drop comments so a commented-out entry is not read as registered.
-    const body = match[1].replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-    const manifest = [];
-    const itemPattern = /['"]([^'"]+)['"]/g;
-    let item;
-    while ((item = itemPattern.exec(body)) !== null) {
-        manifest.push('frontend/' + item[1]);
-    }
+    const manifest = extractArray(indexSource, 'injectedScriptUrls')
+        .map((url) => 'frontend/' + url);
 
     assert.deepStrictEqual(
         BUNDLE_FILES,
@@ -109,24 +101,26 @@ const root = path.resolve(__dirname, '..', '..');
     const definitions = registry.getBooleanDefinitions();
     assert.ok(definitions.length > 0, 'there must be boolean features to check');
 
-    // The accessor table is internal, so observe it through the broadcast: an
-    // unmapped key would be missing from the payload, and webOS.js warns.
-    runtime.state.messages.length = 0;
-    runtime.nativeShell.AppHost.init();
-
+    // The accessor table is internal, so observe it through the broadcast the
+    // bundle emits at load. This used to clear state.messages first and then
+    // call AppHost.init(), which posts only 'AppHost.init' -- so `overrides` was
+    // always empty and the whole loop below never ran.
     const overrides = runtime.state.messages.filter(function (message) {
         return message && message.type === 'WebOS.featureOverrides';
     });
+    assert.strictEqual(
+        overrides.length,
+        1,
+        'the bundle must broadcast the feature overrides exactly once at load'
+    );
 
-    if (overrides.length) {
-        const payload = overrides[overrides.length - 1].data;
-        for (const definition of definitions) {
-            assert.strictEqual(
-                typeof payload[definition.key],
-                'boolean',
-                definition.key + ' must reach the override payload as a boolean'
-            );
-        }
+    const payload = overrides[0].data;
+    for (const definition of definitions) {
+        assert.strictEqual(
+            typeof payload[definition.key],
+            'boolean',
+            definition.key + ' must reach the override payload as a boolean'
+        );
     }
 
     assert.deepStrictEqual(
