@@ -1010,6 +1010,27 @@ test('the frame drop readout falls back to the prefixed counters', async () => {
     );
 });
 
+// isPlaybackSessionsUrl tested the raw string, so a PlaybackInfo request whose
+// query happened to end in /sessions was classified as a session list -- and the
+// fetch wrapper checks Sessions first, so that request skipped bitrate forcing,
+// the burned-in subtitle patch and HDR detection entirely.
+test('a PlaybackInfo URL is not mistaken for a Sessions request', async () => {
+    const runtime = loadInjectedRuntime();
+    runtime.respondToFetch(() => ({ MediaSources: [HDR_MEDIA_SOURCE] }));
+
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+
+    await runtime.window.fetch(playbackInfoUrl('item-1', 'src-hdr') + '&next=/sessions');
+    await runtime.settle(50);
+
+    assert.strictEqual(
+        runtime.isHdrDimmed(),
+        true,
+        'the request must still be inspected as PlaybackInfo'
+    );
+});
+
 module.exports = async function runInjectedRuntimeTests() {
     for (const testCase of cases) {
         try {

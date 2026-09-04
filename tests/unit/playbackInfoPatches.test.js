@@ -631,3 +631,59 @@ assert.strictEqual(patches.patchBurnedInSubtitleDelivery({}, null), false);
         'leaving this External is what renders the subtitle twice'
     );
 }
+
+// --- URL classification is a path question ----------------------------------
+//
+// isPlaybackInfoUrl was hardened to look at the path only, but webOS.js kept
+// classifying /Sessions and /Subtitles/ on the raw string, and the fetch wrapper
+// checks Sessions first. This helper is what all of them read now.
+{
+    assert.strictEqual(
+        patches.getUrlPathname('https://s.example/Items/abc/PlaybackInfo?next=/sessions'),
+        '/Items/abc/PlaybackInfo',
+        'a query value must not extend the path'
+    );
+    assert.strictEqual(
+        patches.getUrlPathname('https://s.example/web/index.html#/sessions'),
+        '/web/index.html',
+        'a hash route must not extend the path'
+    );
+    assert.strictEqual(patches.getUrlPathname('https://s.example/Sessions?DeviceId=d'), '/Sessions');
+    assert.strictEqual(patches.getUrlPathname('/Videos/1/Subtitles/2/0/Stream.js?x=1'), '/Videos/1/Subtitles/2/0/Stream.js');
+    assert.strictEqual(patches.getUrlPathname('//host/Items/a/PlaybackInfo'), '/Items/a/PlaybackInfo');
+    // Built rather than written as an escape, so the literal cannot be misread.
+    const backslashUrl = 'https://s.example/a' + String.fromCharCode(92) + 'b';
+    assert.strictEqual(
+        patches.getUrlPathname(backslashUrl),
+        '',
+        'a raw backslash is not a path this can judge'
+    );
+    assert.strictEqual(patches.getUrlPathname(null), '');
+}
+
+// --- only a body that can actually be rewritten is rewritten ----------------
+//
+// typeof body === 'object' also matched a Blob, FormData, URLSearchParams,
+// ArrayBuffer, typed array and stream. Those are serialized by the caller, so
+// the bitrate properties written onto them never reached the wire while the
+// patch reported success -- and a typed array's enumerable keys are walked one
+// index at a time, synchronously, inside fetch()/send().
+{
+    const blobLike = { size: 3, type: 'application/json' };
+    Object.defineProperty(blobLike, Symbol.toStringTag, { value: 'Blob' });
+    patches.enforceMaxBitrateBody(blobLike, 9000000, { source: 'test' });
+    assert.deepStrictEqual(
+        Object.keys(blobLike),
+        ['size', 'type'],
+        'a Blob body must be left exactly as the caller built it'
+    );
+
+    const typedArray = new Uint8Array([1, 2, 3]);
+    patches.enforceMaxBitrateBody(typedArray, 9000000, { source: 'test' });
+    assert.deepStrictEqual(Array.from(typedArray), [1, 2, 3], 'a typed array body must be untouched');
+
+    // A plain object still is one.
+    const plain = { MaxStreamingBitrate: 1 };
+    patches.enforceMaxBitrateBody(plain, 9000000, { source: 'test' });
+    assert.strictEqual(plain.MaxStreamingBitrate, 9000000, 'a plain object body is still patched');
+}

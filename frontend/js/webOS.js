@@ -2447,6 +2447,13 @@
             if (attribute.name.toLowerCase() === 'integrity') {
                 continue;
             }
+            // webpack 5 locates an already-pending chunk script by this
+            // attribute. The inline replacement stays in the document for good,
+            // so copying it made a retry after a failed chunk install adopt the
+            // spent copy and wait for a load event that can never fire again.
+            if (attribute.name.toLowerCase() === 'data-webpack') {
+                continue;
+            }
             try {
                 target.setAttribute(attribute.name, attribute.value);
             } catch (error) {
@@ -2797,8 +2804,18 @@
             return;
         }
 
+        // Interception defers the insertion until the inspection fetch finishes,
+        // so the parent has to still be part of the document by then. Appending
+        // to a DocumentFragment or a detached container and attaching that right
+        // away used to lose the script: it was inserted into the now-orphaned
+        // parent, where an inline script never executes, while the synthetic load
+        // event told the caller it had run.
+        function canDeferScriptInsertion(parent) {
+            return !!(parent && parent.isConnected !== false && parent.nodeType !== 11);
+        }
+
         window.Node.prototype.appendChild = function (node) {
-            if (canPatchExternalScript(node)) {
+            if (canDeferScriptInsertion(this) && canPatchExternalScript(node)) {
                 fetchAndInjectPatchedScript(this, node, null, originalInsertBefore);
                 return node;
             }
@@ -2806,7 +2823,7 @@
         };
 
         window.Node.prototype.insertBefore = function (node, referenceNode) {
-            if (canPatchExternalScript(node)) {
+            if (canDeferScriptInsertion(this) && canPatchExternalScript(node)) {
                 fetchAndInjectPatchedScript(this, node, referenceNode || null, originalInsertBefore);
                 return node;
             }
@@ -4845,11 +4862,22 @@
         return !!(patches && patches.isPlaybackInfoUrl && patches.isPlaybackInfoUrl(url));
     }
 
+    // Classify on the path, the way isPlaybackInfoUrl already does. Testing the
+    // raw string meant '/Items/x/PlaybackInfo?next=/sessions' and any hash route
+    // ending in /sessions answered true here -- and the fetch wrapper checks this
+    // first, so such a PlaybackInfo request was parsed as a session list and never
+    // reached bitrate forcing, HDR detection or the burned-in subtitle patch.
+    function getPlaybackUrlPathname(url) {
+        var patches = getPlaybackInfoPatches();
+        return patches && patches.getUrlPathname ? patches.getUrlPathname(url) : '';
+    }
+
     function isPlaybackSessionsUrl(url) {
-        if (!url || typeof url !== 'string') {
-            return false;
+        var pathname = getPlaybackUrlPathname(url).toLowerCase();
+        if (pathname.charAt(pathname.length - 1) === '/') {
+            pathname = pathname.substring(0, pathname.length - 1);
         }
-        return /\/sessions(?:[?#]|$)/i.test(url);
+        return pathname.substring(pathname.length - 9) === '/sessions';
     }
 
     function getPlaybackQueryParameterValue(url, name) {
@@ -5708,10 +5736,7 @@
     }
 
     function isSubtitleDeliveryUrl(url) {
-        if (!url || typeof url !== 'string') {
-            return false;
-        }
-        return url.toLowerCase().indexOf('/subtitles/') !== -1;
+        return getPlaybackUrlPathname(url).toLowerCase().indexOf('/subtitles/') !== -1;
     }
 
     function recordSubtitleFetchDiagnostic(url, status, bytes, body) {

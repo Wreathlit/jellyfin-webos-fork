@@ -119,30 +119,22 @@
         return components.base + '?' + query + components.hash;
     }
 
-    function extractItemIdFromPlaybackInfoUrl(url) {
+    // The path of a URL, with query and fragment removed and any authority
+    // stripped. Shared because webOS.js classifies three more endpoints and was
+    // doing it on the raw string: '/Items/x/PlaybackInfo?next=/sessions' satisfied
+    // its Sessions test, and the fetch wrapper checks Sessions first, so that
+    // PlaybackInfo request was read as a session list and skipped bitrate forcing,
+    // HDR detection and the burned-in subtitle patch entirely.
+    function getUrlPathname(url) {
         if (!url || typeof url !== 'string') {
-            return null;
+            return '';
         }
 
-        url = normalizeUrlInput(url);
-        // Match the endpoint path only. Query values and hash routes may contain
-        // another URL, and treating those as the outer request used to send
-        // unrelated fetch/XHR calls through the PlaybackInfo interceptors.
-        var queryIndex = url.indexOf('?');
-        var hashIndex = url.indexOf('#');
-        var pathEnd = url.length;
-        if (queryIndex !== -1 && queryIndex < pathEnd) {
-            pathEnd = queryIndex;
-        }
-        if (hashIndex !== -1 && hashIndex < pathEnd) {
-            pathEnd = hashIndex;
-        }
-
-        var pathname = url.substring(0, pathEnd);
+        var pathname = splitUrlComponents(url).base;
         // HTTP(S) URL parsing treats a raw backslash as a path separator. Do
         // not classify a different normalized path using the raw string.
         if (pathname.indexOf('\\') !== -1) {
-            return null;
+            return '';
         }
         var hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(pathname);
         var isProtocolRelative = pathname.indexOf('//') === 0;
@@ -150,16 +142,21 @@
         if (hasScheme) {
             authorityMatch = /^[a-z][a-z0-9+.-]*:\/\/([^\/\s]+)(\/.*)?$/i.exec(pathname);
             if (!authorityMatch) {
-                return null;
+                return '';
             }
             pathname = authorityMatch[2] || '/';
         } else if (isProtocolRelative) {
             authorityMatch = /^\/\/([^\/\s]+)(\/.*)?$/.exec(pathname);
             if (!authorityMatch) {
-                return null;
+                return '';
             }
             pathname = authorityMatch[2] || '/';
         }
+        return pathname;
+    }
+
+    function extractItemIdFromPlaybackInfoUrl(url) {
+        var pathname = getUrlPathname(url);
         var match = /(?:^|\/)Items\/([^\/\?#]+)\/PlaybackInfo\/?$/i.exec(pathname);
         if (!match || !match[1]) {
             return null;
@@ -482,6 +479,14 @@
         return changed;
     }
 
+    function isPatchablePlaybackInfoBody(value) {
+        if (!value || typeof value !== 'object') {
+            return false;
+        }
+        var tag = Object.prototype.toString.call(value);
+        return tag === '[object Object]' || tag === '[object Array]';
+    }
+
     function enforceMaxBitrateBody(body, targetBitrate, options) {
         var normalizedTarget = parsePositiveInteger(targetBitrate);
         if (body === null || body === undefined) {
@@ -513,7 +518,13 @@
             }
         }
 
-        if (typeof body === 'object') {
+        // Only a plain object or array is a body this can rewrite in place. A
+        // Blob, FormData, URLSearchParams, ArrayBuffer, typed array or stream is
+        // serialized by the caller, so writing bitrate properties onto it changed
+        // nothing that was sent while reporting success -- and walking a typed
+        // array's enumerable keys is an O(n) loop on the main thread inside
+        // fetch()/send().
+        if (isPatchablePlaybackInfoBody(body)) {
             if (normalizedTarget) {
                 patchPlaybackInfoBitrateObject(body, normalizedTarget, options);
             }
@@ -526,6 +537,7 @@
     Runtime.define('playback.playbackInfoPatches', {
         parsePositiveInteger: parsePositiveInteger,
         isPlaybackInfoUrl: isPlaybackInfoUrl,
+        getUrlPathname: getUrlPathname,
         getQueryParameterValue: getQueryParameterValue,
         getHighestQueryParameterInteger: getHighestQueryParameterInteger,
         setQueryParameterValue: setQueryParameterValue,
