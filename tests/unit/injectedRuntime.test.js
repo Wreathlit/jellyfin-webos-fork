@@ -281,6 +281,45 @@ test('an authoritative SDR corrects an HDR guessed from playback UI text', async
     );
 });
 
+// The escape hatch is one-shot: accepting the authoritative SDR clears the
+// correction window, and the window was the only thing keeping the OSD-text
+// guess accountable. The delayed fallback then re-read the same unchanged title
+// at 3s and re-applied HDR with nothing left to contradict it -- permanently,
+// because a held HDR verdict switches the OSD observer off and Jellyfin Web
+// 10.11 never calls updateMediaSession again for local video playback.
+// Pre-fix this leaves the session dimmed from 3s onward.
+test('a corrected UI-text HDR does not come back with the delayed fallback', async () => {
+    const runtime = loadInjectedRuntime();
+    // The item title, flattened into the same OSD string as the media info.
+    addOsdText(runtime, 'Ultra HDR Showreel');
+    runtime.respondToFetch(() => ({ MediaSources: [PLAIN_MEDIA_SOURCE] }));
+
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+    await runtime.window.fetch(playbackInfoUrl('item-1', 'src-plain'));
+
+    await runtime.settle(600);
+    assert.strictEqual(runtime.isHdrDimmed(), true, 'the OSD text should have driven HDR dimming');
+
+    // The authoritative answer arrives before the fallback, which is the order
+    // a real playback produces.
+    runtime.nativeShell.updateMediaSession({ itemId: 'item-1', VideoRangeType: 'SDR' });
+    await runtime.settle(50);
+    assert.strictEqual(runtime.isHdrDimmed(), false, 'the authoritative SDR must undim');
+
+    // Past the 3s playback-start fallback, which re-reads the same OSD text.
+    await runtime.settle(3000);
+    assert.strictEqual(
+        runtime.isHdrDimmed(),
+        false,
+        'the fallback must not re-apply an OSD-text HDR that was already overruled'
+    );
+
+    // And the scheduled scanner must not bring it back either.
+    await runtime.settle(6000);
+    assert.strictEqual(runtime.isHdrDimmed(), false, 'the overruled UI text must stay overruled');
+});
+
 // The other half of the same mechanism: an HDR established by an authoritative
 // source must still latch, so a contradicting SDR is ignored inside the window.
 test('an authoritative HDR still latches against a later SDR', async () => {

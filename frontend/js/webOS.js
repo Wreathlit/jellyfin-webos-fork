@@ -260,6 +260,12 @@
     // 'playback-start-fallback-playback-ui'), so comparing it to a literal
     // silently missed the very producer the escape hatch exists for.
     var hdrUiInfoCorrectedHdrFromUi = false;
+    // Set once an authoritative source has overruled a UI-text HDR for this
+    // playback. Accepting that SDR clears the correction window, which is the
+    // only thing that had been holding the OSD-text guess accountable, so
+    // without this latch the delayed fallback's re-read of the same unchanged
+    // title re-applied HDR with nothing left to contradict it.
+    var hdrUiInfoTextOverruled = false;
     var hdrUiInfoInitialScanTimer = null;
     var hdrUiInfoObserver = createManagedObserver({
         handler: function () {
@@ -4319,7 +4325,15 @@
                 }
 
                 hdrDetectionItemMetadataLastHint = itemHint;
-                if (itemHint !== 'unknown' && (playbackDynamicRange === 'unknown' || itemHint === 'hdr')) {
+                if (itemHint !== 'unknown') {
+                    // Item metadata is authoritative, so its SDR must reach the
+                    // arbiter too. Dropping it whenever a verdict already
+                    // existed meant a UI-text HDR could never be corrected here
+                    // -- and on Jellyfin Web 10.11 this is the only authoritative
+                    // corrector left, because NativeShell.updateMediaSession is
+                    // never called for local video playback (mediaSessionSubscriber
+                    // returns early for isLocalPlayer && isVideo). The
+                    // media-session path below uses the same unconditional form.
                     setPlaybackDynamicRange(itemHint, reason + '-item-metadata');
                 }
             });
@@ -4356,6 +4370,7 @@
 
     function armHdrUiInfoCorrectionWindow(reason) {
         hdrUiInfoCorrectionUntil = Date.now() + HDR_UI_INFO_CORRECTION_WINDOW_MS;
+        hdrUiInfoTextOverruled = false;
         hdrUiInfoCorrectedHdrUntil = 0;
         hdrUiInfoCorrectedHdrReason = null;
         hdrUiInfoCorrectedHdrFromUi = false;
@@ -6378,6 +6393,13 @@
         }
 
         var authoritativeSdr = nextRange === 'sdr' && !!reason && !fromPlaybackUi;
+        if (nextRange === 'hdr' && fromPlaybackUi && hdrUiInfoTextOverruled) {
+            debugLog('Ignored playback UI HDR (' + reason
+                + '): an authoritative source already overruled the UI text for this playback');
+            hdrUiInfoObserver.setEnabled(shouldUseHdrUiInfoObserver());
+            return;
+        }
+
         if (nextRange === 'sdr'
             && playbackDynamicRange === 'hdr'
             && hdrUiInfoCorrectedHdrUntil
@@ -6386,6 +6408,7 @@
                 debugLog('Accepted authoritative SDR (' + reason + ') after playback UI HDR correction ('
                     + hdrUiInfoCorrectedHdrReason + ')');
                 clearHdrUiInfoCorrectionWindow();
+                hdrUiInfoTextOverruled = true;
             } else {
                 debugLog('Ignored SDR dynamic range during HDR correction window (' + reason + ')');
                 hdrUiInfoObserver.setEnabled(shouldUseHdrUiInfoObserver());

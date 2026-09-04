@@ -583,6 +583,24 @@ Approach:
   overwrote a correctly labelled guess the scheduled scanner had already stored,
   turning a recoverable state into a stuck one. A title containing an HDR token
   on SDR content could therefore dim the whole session;
+- keep the escape hatch from being one-shot. Accepting an authoritative SDR over
+  a UI-text HDR clears the correction window, and that window was the only thing
+  holding the OSD-text guess accountable, so the 3 s fallback re-read the same
+  unchanged title and re-applied HDR with nothing left to contradict it. A held
+  HDR verdict then switches the OSD observer off, so the session stayed dimmed.
+  Once an authoritative source has overruled the UI text, that is latched for the
+  rest of the playback and no UI-text HDR is accepted again;
+- treat item metadata as an authoritative corrector, not a filler. The delayed
+  fallback only applied its `/Items` answer when the current verdict was unknown
+  or the answer was HDR, so an authoritative SDR could never correct a UI-text
+  HDR there. It now goes through `setPlaybackDynamicRange()` unconditionally and
+  lets that function arbitrate, matching the media-session path. This matters
+  more than it looks: on Jellyfin Web 10.11 `NativeShell.updateMediaSession` is
+  never called for local video playback — `mediaSessionSubscriber` returns early
+  for `isLocalPlayer && isVideo`, and it is the only caller in the client — so
+  the `/Items` fetch is the only authoritative corrector left. The state machine
+  still enters and leaves playback through `enableFullscreen`/`disableFullscreen`,
+  and the per-item bitrate re-arm still fires from the PlaybackInfo path;
 - resolve a pending PlaybackInfo hint through the cache key that this playback's
   own response wrote. The cache is keyed `<itemId>|<mediaSourceId>` and outlives
   a playback, so an item with several versions accumulates one entry per source;
