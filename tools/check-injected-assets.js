@@ -58,7 +58,8 @@ function assertScriptBefore(first, second) {
     }
 }
 
-assertScriptBefore('js/injected/core/runtime.js', 'js/injected/core/features.js');
+assertScriptBefore('js/injected/core/runtime.js', 'js/injected/core/urls.js');
+assertScriptBefore('js/injected/core/urls.js', 'js/injected/core/features.js');
 assertScriptBefore('js/injected/core/features.js', 'js/injected/core/mediaStreams.js');
 assertScriptBefore('js/injected/core/mediaStreams.js', 'js/injected/playback/profilePatches.js');
 assertScriptBefore('js/injected/playback/profilePatches.js', 'js/injected/playback/hdrDecisions.js');

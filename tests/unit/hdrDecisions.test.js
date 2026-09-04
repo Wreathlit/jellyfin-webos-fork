@@ -1,32 +1,13 @@
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
+const { loadInjectedModules } = require('../helpers/injectedRuntime');
 
-const root = path.resolve(__dirname, '..', '..');
-const runtimePath = path.join(root, 'frontend', 'js', 'injected', 'core', 'runtime.js');
 // Stream classification lives in core.mediaStreams so the whole bundle agrees
 // on it; these modules delegate, so the dependency has to be loaded here too.
-const mediaStreamsPath = path.join(root, 'frontend', 'js', 'injected', 'core', 'mediaStreams.js');
-const hdrDecisionsPath = path.join(root, 'frontend', 'js', 'injected', 'playback', 'hdrDecisions.js');
 
+// Loaded through the real injection manifest, so a module that gains a
+// dependency cannot silently degrade inside its own test.
 function loadHdrDecisions() {
-    const window = {};
-    const context = {
-        window: window
-    };
-
-    vm.runInNewContext(fs.readFileSync(runtimePath, 'utf8'), context, {
-        filename: runtimePath
-    });
-    vm.runInNewContext(fs.readFileSync(mediaStreamsPath, 'utf8'), context, {
-        filename: mediaStreamsPath
-    });
-    vm.runInNewContext(fs.readFileSync(hdrDecisionsPath, 'utf8'), context, {
-        filename: hdrDecisionsPath
-    });
-
-    return window.__JellyfinWebOSPatchRuntime.get('playback.hdrDecisions');
+    return loadInjectedModules('hdrDecisions.js').get('playback.hdrDecisions');
 }
 
 const hdr = loadHdrDecisions();

@@ -531,7 +531,11 @@ or single-anchor injection strategy can miss the later DOM instance.
 
 Approach:
 
-- keep a conservative always-on observer for settings injection;
+- watch for the settings DOM with a MutationObserver rather than injecting once,
+  and re-check shortly after each navigation so a lazily imported view is still
+  caught. The observer was always-on for a long time; it is gated now (see Status
+  below), because a body-wide childList observer left running costs a subtree
+  query per added node on every page the user visits afterwards;
 - persist settings through the local webOS feature override state;
 - append all local controls to the end of the Playback settings content;
 - never fall back to injecting into `body`; if the Playback settings container
@@ -556,7 +560,17 @@ Injected controls:
 - patch PGS object reuse;
 - playback diagnostics overlay.
 
-Status: active workaround. The observer is intentionally not route-gated.
+Status: active workaround, but no longer always-on. The observer is gated on the
+route (`isLikelyPlaybackSettingsRoute()`, which matches any location containing
+"settings" or "playback") or a *visible* settings anchor, with a 750 ms recheck
+after each navigation for the lazily imported view. In Jellyfin Web 10.11 the
+only page carrying `playbackSettings.template.html` is `#/mypreferencesplayback`,
+so the route test holds; if a future build renames it, the recheck and the DOM
+test are what keep the controls appearing. The visibility part matters: Jellyfin
+Web caches views and hides them with `.hide` instead of unmounting, so testing
+for the anchor alone kept the body-wide observer enabled for every page visited
+after settings.
+
 Playback/settings menus are not active while video is rendering, so the
 practical cost is low.
 

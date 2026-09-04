@@ -2396,6 +2396,18 @@
             debugLog('Patched PGS renderer script:', url || 'inline');
         }
 
+        if (result.pgs && result.pgs.missing && result.pgs.missing.length) {
+            // Not necessarily critical, but always a stale needle: the script
+            // carries the marker and no replacement matched.
+            warnLog('PGS renderer patch did not match ' + (url || 'script') + ':',
+                result.pgs.missing.join(','));
+        }
+
+        if (result.ass && result.ass.mayPatch && !result.ass.patched) {
+            warnLog('ASS renderAhead patch did not match ' + (url || 'script')
+                + ': the option is present but not in a form this patches');
+        }
+
         if (result.pgs && result.pgs.criticalMissing) {
             pgsScriptLastPatchInfo = 'missing critical PGS patch ' + (url || 'script')
                 + ' mode=' + (result.pgs.mode ? '1' : '0')
@@ -3684,7 +3696,13 @@
     }
 
     function hasPlaybackSettingsDom() {
-        return !!getPlaybackSettingsAnchor();
+        // Jellyfin Web caches views rather than unmounting them -- viewManager
+        // adds a 'hide' class to the one being left -- so a settings page
+        // visited once kept this true, and the body-wide injection observer
+        // enabled, for every page visited afterwards. Only a visible anchor
+        // counts.
+        var anchor = getPlaybackSettingsAnchor();
+        return !!anchor && !hasClassInAncestry(anchor, 'hide');
     }
 
     function elementMatchesSelector(element, selector) {

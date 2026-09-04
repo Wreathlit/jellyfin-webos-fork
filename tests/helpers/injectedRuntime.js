@@ -21,6 +21,7 @@ const root = path.resolve(__dirname, '..', '..');
 // tools/check-injected-assets.js enforces that order for the shipping app.
 const BUNDLE_FILES = [
     'frontend/js/injected/core/runtime.js',
+    'frontend/js/injected/core/urls.js',
     'frontend/js/injected/core/features.js',
     'frontend/js/injected/core/mediaStreams.js',
     'frontend/js/injected/playback/profilePatches.js',
@@ -910,8 +911,33 @@ function loadInjectedRuntime(options) {
     };
 }
 
+// Load the injected modules in BUNDLE_FILES order, up to and including the one
+// named, and return the module registry.
+//
+// Each module test used to hand-list its own dependency chain, so a module that
+// gained a dependency had to be threaded into every list by hand -- and when it
+// was not, the module under test silently degraded inside its own test instead
+// of failing. Slicing the real manifest cannot drift from it.
+function loadInjectedModules(moduleFileName) {
+    const index = BUNDLE_FILES.findIndex(function (file) {
+        return file.indexOf('/' + moduleFileName) !== -1 || file === moduleFileName;
+    });
+    if (index === -1) {
+        throw new Error('No injected module matching ' + moduleFileName + ' in BUNDLE_FILES');
+    }
+
+    const window = {};
+    const context = { window: window };
+    for (const relativePath of BUNDLE_FILES.slice(0, index + 1)) {
+        const filePath = path.join(root, relativePath);
+        vm.runInNewContext(fs.readFileSync(filePath, 'utf8'), context, { filename: filePath });
+    }
+    return window.__JellyfinWebOSPatchRuntime;
+}
+
 module.exports = {
     loadInjectedRuntime: loadInjectedRuntime,
+    loadInjectedModules: loadInjectedModules,
     createClock: createClock,
     BUNDLE_FILES: BUNDLE_FILES
 };

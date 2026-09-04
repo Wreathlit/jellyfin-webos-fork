@@ -194,8 +194,13 @@
             mainThread: false,
             objectData: false,
             mode: false,
+            mayPatchTime: false,
+            mayPatchAsync: false,
+            mayPatchRender: false,
+            mayPatchMainThread: false,
             mayPatchMode: false,
             mayPatchObjectData: false,
+            missing: [],
             criticalMissing: false
         };
     }
@@ -203,12 +208,20 @@
     function patchAssRendererScriptText(text) {
         var result = {
             text: text,
-            patched: false
+            patched: false,
+            mayPatch: false
         };
 
         if (!text || typeof text !== 'string' || text.indexOf('renderAhead') === -1) {
             return result;
         }
+
+        // mayPatch says "this script has the option this patch exists for".
+        // Deliberately still anchored on the value upstream ships, so an
+        // unrelated `renderAhead` elsewhere in the bundle is not rewritten --
+        // but a script that has the option and matches neither form is now
+        // reported instead of silently leaving the toggle a no-op.
+        result.mayPatch = true;
 
         var patched = text;
         patched = patched.replace(/renderAhead\s*:\s*(90\.0)\b/g, function (match, originalValue) {
@@ -237,6 +250,10 @@
         var mayPatchObjectData = text.indexOf('getPixelDataFromComposition') !== -1 && text.indexOf('isFirstInSequence') !== -1;
         var mayPatchMode = text.indexOf('createPgsRenderer') !== -1 && text.indexOf('getRendererModeByPlatform') !== -1;
 
+        result.mayPatchTime = mayPatchTime;
+        result.mayPatchAsync = mayPatchAsync;
+        result.mayPatchRender = mayPatchRender;
+        result.mayPatchMainThread = mayPatchMainThread;
         result.mayPatchMode = mayPatchMode;
         result.mayPatchObjectData = mayPatchObjectData;
 
@@ -306,6 +323,27 @@
 
         result.text = patched;
         result.patched = patched !== text;
+
+        // A script that carries a marker but matched no replacement is a needle
+        // that has gone stale -- most likely because the vendor bundle was
+        // re-minified and the identifiers the async/render needles are pinned to
+        // were renamed. That used to be invisible: only mode and objectData were
+        // ever reported, so the render-order guard could disappear with nothing
+        // but a lower count in the diagnostics overlay to show for it.
+        var intended = [
+            ['time', mayPatchTime, result.time],
+            ['async', mayPatchAsync, result.async],
+            ['render', mayPatchRender, result.render],
+            ['mainThread', mayPatchMainThread, result.mainThread],
+            ['objectData', mayPatchObjectData, result.objectData],
+            ['mode', mayPatchMode, result.mode]
+        ];
+        for (var i = 0; i < intended.length; i++) {
+            if (intended[i][1] && !intended[i][2]) {
+                result.missing.push(intended[i][0]);
+            }
+        }
+
         result.criticalMissing = !!((options && options.forceMainThread && mayPatchMode && !result.mode)
             || (options && options.patchObjectReuse && mayPatchObjectData && !result.objectData));
         return result;

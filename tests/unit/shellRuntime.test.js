@@ -775,3 +775,39 @@ function countDeviceInfoInjections(contentDocument) {
         'a different address under a saved Id must render as its own card'
     );
 }
+
+// The default-port strip was two regexes anchored at end of string, so it only
+// fired when nothing followed the port: a server with a path kept its ':80' and
+// compared unequal to the same server saved without one, which renders a second
+// card for it -- the duplicate this helper exists to prevent.
+{
+    const shell = loadShell();
+    const compare = shell.context.normalizeServerAddressForCompare;
+    assert.strictEqual(typeof compare, 'function', 'the compare helper must be reachable');
+
+    const samePairs = [
+        ['http://nas.local/jellyfin', 'http://nas.local:80/jellyfin'],
+        ['http://nas.local', 'http://nas.local:80'],
+        ['https://nas.local/jf', 'https://nas.local:443/jf'],
+        ['https://nas.local/', 'https://nas.local:443']
+    ];
+    for (const [a, b] of samePairs) {
+        assert.strictEqual(
+            compare(a),
+            compare(b),
+            a + ' and ' + b + ' are the same server'
+        );
+    }
+
+    // A non-default port is part of the identity and must survive.
+    assert.notStrictEqual(
+        compare('http://nas.local:8096/jellyfin'),
+        compare('http://nas.local/jellyfin'),
+        'an explicit non-default port distinguishes two servers'
+    );
+    assert.strictEqual(
+        compare('http://nas.local:8096'),
+        'http://nas.local:8096',
+        'a non-default port is kept verbatim'
+    );
+}

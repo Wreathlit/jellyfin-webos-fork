@@ -2,6 +2,17 @@
 (function (window) {
     var Runtime = window.__JellyfinWebOSPatchRuntime = window.__JellyfinWebOSPatchRuntime || {};
 
+    // URL reading lives in core.urls so every module answers the same way about
+    // the same URL; see that module for what the copies used to disagree on.
+    function getUrlHelpers() {
+        return Runtime.get('core.urls');
+    }
+
+    function getQueryParameterValue(url, name) {
+        var helpers = getUrlHelpers();
+        return helpers ? helpers.getQueryParameterValue(url, name) : null;
+    }
+
     function parsePositiveInteger(value) {
         var parsed = parseInt(value, 10);
         if (isNaN(parsed) || parsed <= 0) {
@@ -688,35 +699,6 @@
             || normalizedValue === 'true'
             || normalizedValue === 'yes'
             || normalizedValue === 'on';
-    }
-
-    function escapeRegExp(value) {
-        return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    }
-
-    function getQueryParameterValue(url, name) {
-        if (!url || typeof url !== 'string' || !name) {
-            return null;
-        }
-
-        // Case-insensitive on purpose. Query parameters bind without regard to
-        // case on the server, so the same parameter is spelled differently
-        // depending on who wrote the URL: StreamInfo.ToUrl() emits
-        // `&VideoBitrate=` while the controller argument is `videoBitRate`.
-        // A case-sensitive match meant one wrong guess silently disabled a
-        // stream-copy blocker instead of failing anywhere visible, which is how
-        // the bitrate blocker stopped running against real server URLs.
-        var pattern = new RegExp('[?&]' + escapeRegExp(name) + '=([^&#]*)', 'i');
-        var match = pattern.exec(url);
-        if (!match || match.length < 2) {
-            return null;
-        }
-
-        try {
-            return decodeURIComponent(match[1].replace(/\+/g, '%20'));
-        } catch (error) {
-            return match[1];
-        }
     }
 
     function getPlaybackVideoDeliveryFromTranscodingUrl(url) {

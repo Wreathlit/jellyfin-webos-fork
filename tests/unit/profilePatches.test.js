@@ -1,26 +1,11 @@
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
+const { loadInjectedModules } = require('../helpers/injectedRuntime');
 
-const root = path.resolve(__dirname, '..', '..');
-const runtimePath = path.join(root, 'frontend', 'js', 'injected', 'core', 'runtime.js');
-const profilePatchesPath = path.join(root, 'frontend', 'js', 'injected', 'playback', 'profilePatches.js');
 
+// Loaded through the real injection manifest, so a module that gains a
+// dependency cannot silently degrade inside its own test.
 function loadProfilePatches() {
-    const window = {};
-    const context = {
-        window: window
-    };
-
-    vm.runInNewContext(fs.readFileSync(runtimePath, 'utf8'), context, {
-        filename: runtimePath
-    });
-    vm.runInNewContext(fs.readFileSync(profilePatchesPath, 'utf8'), context, {
-        filename: profilePatchesPath
-    });
-
-    return window.__JellyfinWebOSPatchRuntime.get('playback.profilePatches');
+    return loadInjectedModules('profilePatches.js').get('playback.profilePatches');
 }
 
 function clone(value) {

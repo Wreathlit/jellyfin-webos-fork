@@ -761,6 +761,7 @@ var handoffMessageTokenSequence = 0;
 var HANDOFF_INJECTION_TIMEOUT_MS = 45000;
 var injectedScriptUrls = [
     'js/injected/core/runtime.js',
+    'js/injected/core/urls.js',
     'js/injected/core/features.js',
     'js/injected/core/mediaStreams.js',
     'js/injected/playback/profilePatches.js',
@@ -1361,13 +1362,41 @@ function isSameServerAddress(a, b) {
     return normalizeServerAddressForCompare(a) === normalizeServerAddressForCompare(b);
 }
 
+// Strip the port when it is the scheme default, so ":80"/":443" and the bare
+// host compare equal. This used to be two anchored regexes that only matched at
+// end of string, so a server with a path kept its port:
+// 'http://nas.local/jellyfin' and 'http://nas.local:80/jellyfin' compared
+// unequal and the discovered server got a card of its own -- the duplicate card
+// this helper exists to prevent. getHandoffUrlOrigin() answers the same way for
+// the origin it compares.
+function stripDefaultPort(normalized) {
+    var schemes = [['http://', ':80'], ['https://', ':443']];
+    for (var i = 0; i < schemes.length; i++) {
+        var scheme = schemes[i][0];
+        var port = schemes[i][1];
+        if (normalized.indexOf(scheme) !== 0) {
+            continue;
+        }
+
+        var rest = normalized.substring(scheme.length);
+        var pathIndex = rest.indexOf('/');
+        var authority = pathIndex === -1 ? rest : rest.substring(0, pathIndex);
+        var tail = pathIndex === -1 ? '' : rest.substring(pathIndex);
+        if (authority.length > port.length
+            && authority.substring(authority.length - port.length) === port) {
+            authority = authority.substring(0, authority.length - port.length);
+        }
+        return scheme + authority + tail;
+    }
+    return normalized;
+}
+
 function normalizeServerAddressForCompare(address) {
-    var normalized = normalizeUrl(address).toLowerCase().replace(/\/+$/, '');
-    // Strip the port when it is the scheme default so ":80"/":443" and the
-    // bare host compare equal.
-    return normalized
-        .replace(/^http:\/\/([^/]*):80$/, 'http://$1')
-        .replace(/^https:\/\/([^/]*):443$/, 'https://$1');
+    var normalized = normalizeUrl(address).toLowerCase();
+    while (normalized.charAt(normalized.length - 1) === '/') {
+        normalized = normalized.substring(0, normalized.length - 1);
+    }
+    return stripDefaultPort(normalized);
 }
 
 // A discovered server shares the saved server's card only when it points at the

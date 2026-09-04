@@ -1,20 +1,11 @@
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
+const { loadInjectedModules } = require('../helpers/injectedRuntime');
 
-const root = path.resolve(__dirname, '..', '..');
-const runtimePath = path.join(root, 'frontend', 'js', 'injected', 'core', 'runtime.js');
-const mediaStreamsPath = path.join(root, 'frontend', 'js', 'injected', 'core', 'mediaStreams.js');
 
+// Loaded through the real injection manifest, so a module that gains a
+// dependency cannot silently degrade inside its own test.
 function loadMediaStreams() {
-    const window = {};
-    const context = { window: window };
-
-    vm.runInNewContext(fs.readFileSync(runtimePath, 'utf8'), context, { filename: runtimePath });
-    vm.runInNewContext(fs.readFileSync(mediaStreamsPath, 'utf8'), context, { filename: mediaStreamsPath });
-
-    return window.__JellyfinWebOSPatchRuntime.get('core.mediaStreams');
+    return loadInjectedModules('mediaStreams.js').get('core.mediaStreams');
 }
 
 const streams = loadMediaStreams();
@@ -83,16 +74,8 @@ assert(streams, 'core.mediaStreams should register');
 // The bundle must not carry two answers to this question again: assert the
 // modules that used to own a copy now agree with the shared one.
 {
-    const hdrDecisionsPath = path.join(root, 'frontend', 'js', 'injected', 'playback', 'hdrDecisions.js');
-    const playbackInfoPatchesPath = path.join(root, 'frontend', 'js', 'injected', 'playback', 'playbackInfoPatches.js');
 
-    const window = {};
-    const context = { window: window };
-    for (const modulePath of [runtimePath, mediaStreamsPath, hdrDecisionsPath, playbackInfoPatchesPath]) {
-        vm.runInNewContext(fs.readFileSync(modulePath, 'utf8'), context, { filename: modulePath });
-    }
-
-    const hdr = window.__JellyfinWebOSPatchRuntime.get('playback.hdrDecisions');
+    const hdr = loadInjectedModules('playbackInfoPatches.js').get('playback.hdrDecisions');
 
     // Drive it through the public API rather than an internal predicate: a
     // typeless stream carrying HDR-looking text must no longer be picked as
