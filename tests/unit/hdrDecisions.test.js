@@ -415,3 +415,47 @@ assert.strictEqual(hdr.isPlaybackVideoCopiedOrDirect('unknown'), false);
     // Ordinary text still reports SDR when the OSD says so.
     assert.strictEqual(hdr.isSdrDynamicRangeText('Ludovico Einaudi - SDR'), true);
 }
+
+// --- one answer per question ------------------------------------------------
+//
+// The Dolby Vision profile/level fields used to be checked twice: once by the
+// shared field scanner and once by a hand-written tail block after it. Two of
+// those blocks were unreachable -- every key they tested was already in the
+// scanner's list, which returns first -- and the third tested four keys the
+// scanner's list was missing, with a different predicate. Verified by
+// neutralising the blocks: all eight keys still resolved to 'hdr'.
+{
+    const doviKeys = [
+        'VideoDoViProfile', 'videoDoViProfile', 'DvProfile', 'dvProfile',
+        'VideoDoViLevel', 'videoDoViLevel', 'DvLevel', 'dvLevel'
+    ];
+
+    for (const key of doviKeys) {
+        const videoStream = { Type: 'Video', Codec: 'hevc' };
+        videoStream[key] = '5';
+        assert.strictEqual(
+            hdr.getDynamicRangeHintFromVideoStream(videoStream),
+            'hdr',
+            key + ' on a video stream must resolve to HDR'
+        );
+
+        const item = {};
+        item[key] = '5';
+        assert.strictEqual(
+            hdr.getDynamicRangeHintFromItem(item),
+            'hdr',
+            key + ' on an item must resolve to HDR'
+        );
+
+        const mediaInfo = {};
+        mediaInfo[key] = 5;
+        assert.strictEqual(
+            hdr.getDynamicRangeHintFromMediaInfo(mediaInfo),
+            'hdr',
+            key + ' as a media-session numeric field must resolve to HDR'
+        );
+    }
+
+    // A zero profile is not a Dolby Vision signal.
+    assert.strictEqual(hdr.getDynamicRangeHintFromMediaInfo({ videoDoViProfile: 0 }), 'unknown');
+}

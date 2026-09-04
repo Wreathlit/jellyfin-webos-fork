@@ -493,10 +493,10 @@
                     active = targets.length > 0;
                 }
                 if (config.onEnabled) config.onEnabled();
-            },
-            create: function () { ensureCreated(); },
-            getObserver: function () { return observer; },
-            isActive: function () { return active; }
+            }
+            // create/getObserver/isActive used to be here and had no live
+            // caller: setEnabled(true) creates the observer lazily, and the two
+            // init steps that pre-allocated one changed nothing observable.
         };
     }
 
@@ -690,10 +690,6 @@
             }
         }
     });
-
-    function initHeaderPinObserver() {
-        headerPinObserver.create();
-    }
 
     function setHeaderPinObserverEnabled(enabled) {
         headerPinObserver.setEnabled(enabled);
@@ -4336,10 +4332,6 @@
         }
     });
 
-    function initQualityMenuPatching() {
-        qualityMenuObserver.create();
-    }
-
     function setQualityMenuObserverEnabled(enabled) {
         qualityMenuObserver.setEnabled(enabled);
     }
@@ -6672,18 +6664,15 @@
         });
     }
 
+    // The raw setting, not a pre-filtered one. playback.profilePatches owns the
+    // burn-in vocabulary and normalises it in normalizeOptions anyway; this used
+    // to collapse anything it did not recognise to '' first, so a new Jellyfin
+    // Web mode added to that module alone would pass every module test and stay
+    // a no-op on the TV.
     function getNativeSubtitleBurnInMode() {
         try {
             var storage = window.localStorage;
-            if (!storage) {
-                return '';
-            }
-
-            var value = storage.getItem('subtitleburnin');
-            value = value ? value.toString().toLowerCase().replace(/[\s_-]+/g, '') : '';
-            return value === 'all' || value === 'allcomplexformats' || value === 'onlyimageformats'
-                ? value
-                : '';
+            return storage ? storage.getItem('subtitleburnin') : '';
         } catch (error) {
             debugLog('Failed to read Jellyfin subtitle burn-in setting:', error && error.message ? error.message : error);
             return '';
@@ -6920,7 +6909,6 @@
         ['hdr-ui-dim-settings', applyHdrUiDimSettings],
         ['feature-overrides', emitFeatureOverridesChanged],
         ['settings-injection', initWebOSSettingsInjection],
-        ['quality-menu-patching', initQualityMenuPatching],
         ['quality-menu-observer', function () {
             // Startup is never mid-playback, so leave it off; setPlaybackState
             // switches it on when playback actually begins.

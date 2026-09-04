@@ -106,10 +106,6 @@
         return false;
     }
 
-    function isHdrDoviProfileOrLevel(value) {
-        return isHdrDynamicRangeText(value) || isPositiveNumberValue(value);
-    }
-
     function isSdrDynamicRangeText(value) {
         var normalized = normalizeDynamicRangeText(value);
         if (!normalized) {
@@ -303,17 +299,6 @@
         var fieldHint = getDynamicRangeHintFromObjectFields(videoStream, fieldKeys);
         if (fieldHint !== 'unknown') {
             return fieldHint;
-        }
-
-        if (isHdrDynamicRangeText(videoStream.VideoDoViProfile)
-            || isHdrDynamicRangeText(videoStream.videoDoViProfile)
-            || isHdrDynamicRangeText(videoStream.DvProfile)
-            || isHdrDynamicRangeText(videoStream.dvProfile)
-            || isHdrDynamicRangeText(videoStream.VideoDoViLevel)
-            || isHdrDynamicRangeText(videoStream.videoDoViLevel)
-            || isHdrDynamicRangeText(videoStream.DvLevel)
-            || isHdrDynamicRangeText(videoStream.dvLevel)) {
-            return 'hdr';
         }
 
         return 'unknown';
@@ -516,17 +501,6 @@
             sawSdr = true;
         }
 
-        if (isHdrDynamicRangeText(item.VideoDoViProfile)
-            || isHdrDynamicRangeText(item.videoDoViProfile)
-            || isHdrDynamicRangeText(item.DvProfile)
-            || isHdrDynamicRangeText(item.dvProfile)
-            || isHdrDynamicRangeText(item.VideoDoViLevel)
-            || isHdrDynamicRangeText(item.videoDoViLevel)
-            || isHdrDynamicRangeText(item.DvLevel)
-            || isHdrDynamicRangeText(item.dvLevel)) {
-            return 'hdr';
-        }
-
         var mediaStreams = toArray(item.MediaStreams || item.mediaStreams);
         for (var j = 0; j < mediaStreams.length; j++) {
             var stream = mediaStreams[j];
@@ -586,6 +560,14 @@
             'DvProfile',
             'dvLevel',
             'DvLevel',
+            // The scanner already treats these as structured Dolby Vision
+            // fields (isDolbyVisionNumericMetadataField); they were simply
+            // missing from this list, which is why a hand-written check below
+            // was still needed for them.
+            'videoDoViProfile',
+            'VideoDoViProfile',
+            'videoDoViLevel',
+            'VideoDoViLevel',
             'rpuPresentFlag',
             'RpuPresentFlag',
             'hdr10PlusPresentFlag',
@@ -598,16 +580,7 @@
         // Share the scanner rather than repeating the loop: this copy had no
         // weak-text handling, so a track titled "HDR removed" still outranked a
         // VideoRangeType that said SDR here.
-        var fieldHint = getDynamicRangeHintFromObjectFields(mediaInfo, keysToInspect);
-
-        if (isHdrDoviProfileOrLevel(mediaInfo.videoDoViProfile)
-            || isHdrDoviProfileOrLevel(mediaInfo.VideoDoViProfile)
-            || isHdrDoviProfileOrLevel(mediaInfo.videoDoViLevel)
-            || isHdrDoviProfileOrLevel(mediaInfo.VideoDoViLevel)) {
-            return 'hdr';
-        }
-
-        return fieldHint;
+        return getDynamicRangeHintFromObjectFields(mediaInfo, keysToInspect);
     }
 
     function normalizePlaybackVideoDelivery(value) {
