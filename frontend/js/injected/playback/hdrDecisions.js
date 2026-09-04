@@ -660,7 +660,14 @@
             return null;
         }
 
-        var pattern = new RegExp('[?&]' + escapeRegExp(name) + '=([^&#]*)');
+        // Case-insensitive on purpose. Query parameters bind without regard to
+        // case on the server, so the same parameter is spelled differently
+        // depending on who wrote the URL: StreamInfo.ToUrl() emits
+        // `&VideoBitrate=` while the controller argument is `videoBitRate`.
+        // A case-sensitive match meant one wrong guess silently disabled a
+        // stream-copy blocker instead of failing anywhere visible, which is how
+        // the bitrate blocker stopped running against real server URLs.
+        var pattern = new RegExp('[?&]' + escapeRegExp(name) + '=([^&#]*)', 'i');
         var match = pattern.exec(url);
         if (!match || match.length < 2) {
             return null;
@@ -678,14 +685,11 @@
             return 'unknown';
         }
 
-        if (isTruthyPlaybackQueryValue(getQueryParameterValue(url, 'Static'))
-            || isTruthyPlaybackQueryValue(getQueryParameterValue(url, 'static'))) {
+        if (isTruthyPlaybackQueryValue(getQueryParameterValue(url, 'Static'))) {
             return 'directstream';
         }
 
-        var videoCodec = getQueryParameterValue(url, 'VideoCodec')
-            || getQueryParameterValue(url, 'videoCodec')
-            || getQueryParameterValue(url, 'videocodec');
+        var videoCodec = getQueryParameterValue(url, 'VideoCodec');
         if (!videoCodec) {
             return 'unknown';
         }
@@ -875,6 +879,9 @@
         return true;
     }
 
+    // streamFields are JSON property names and stay case-sensitive; requestFields
+    // are query parameter names, which getQueryParameterValue matches without
+    // regard to case, so they only need one entry per distinct name.
     function isVideoNumberAboveRequest(videoStream, streamFields, url, requestFields, rejectMissing, tolerance) {
         var requestValue = parseFinitePlaybackNumber(getFirstQueryParameterValue(url, requestFields));
         if (requestValue === null) {
@@ -887,7 +894,7 @@
 
     function hasStreamCopyBlockingRequest(mediaSource, videoStream, sourceVideoCodec, url) {
         var isInterlaced = getFirstObjectField(videoStream, ['IsInterlaced', 'isInterlaced']);
-        var deInterlace = getFirstQueryParameterValue(url, ['DeInterlace', 'deInterlace', 'deinterlace']);
+        var deInterlace = getQueryParameterValue(url, 'deInterlace');
         if (isTruthyPlaybackQueryValue(isInterlaced)
             && (isTruthyPlaybackQueryValue(deInterlace)
                 || isTruthyPlaybackQueryValue(getCodecOptionQueryValue(url, sourceVideoCodec, 'deinterlace')))) {
@@ -895,33 +902,21 @@
         }
 
         var isAnamorphic = getFirstObjectField(videoStream, ['IsAnamorphic', 'isAnamorphic']);
-        var requireNonAnamorphic = getFirstQueryParameterValue(url, [
-            'RequireNonAnamorphic',
-            'requireNonAnamorphic',
-            'requirenonanamorphic'
-        ]);
+        var requireNonAnamorphic = getQueryParameterValue(url, 'RequireNonAnamorphic');
         if (isTruthyPlaybackQueryValue(isAnamorphic)
             && isTruthyPlaybackQueryValue(requireNonAnamorphic)) {
             return true;
         }
 
-        var subtitleStreamIndex = parseStrictInteger(getFirstQueryParameterValue(url, [
-            'SubtitleStreamIndex',
-            'subtitleStreamIndex',
-            'subtitlestreamindex'
-        ]));
-        var subtitleMethod = getFirstQueryParameterValue(url, [
-            'SubtitleMethod',
-            'subtitleMethod',
-            'subtitlemethod'
-        ]);
+        var subtitleStreamIndex = parseStrictInteger(getQueryParameterValue(url, 'SubtitleStreamIndex'));
+        var subtitleMethod = getQueryParameterValue(url, 'SubtitleMethod');
         if (!isNaN(subtitleStreamIndex) && subtitleStreamIndex >= 0
             && subtitleMethod && subtitleMethod.toString().toLowerCase() === 'encode') {
             return true;
         }
 
         var isAvc = getFirstObjectField(videoStream, ['IsAVC', 'isAVC', 'IsAvc', 'isAvc']);
-        var requireAvc = getFirstQueryParameterValue(url, ['RequireAvc', 'requireAvc', 'requireavc']);
+        var requireAvc = getQueryParameterValue(url, 'RequireAvc');
         if (sourceVideoCodec === 'h264'
             && isExplicitFalsePlaybackQueryValue(isAvc)
             && isTruthyPlaybackQueryValue(requireAvc)) {
@@ -937,30 +932,28 @@
             videoStream,
             ['Width', 'width'],
             url,
-            ['MaxWidth', 'maxWidth', 'maxwidth'],
+            ['MaxWidth'],
             true
         ) || isVideoNumberAboveRequest(
             videoStream,
             ['Height', 'height'],
             url,
-            ['MaxHeight', 'maxHeight', 'maxheight'],
+            ['MaxHeight'],
             true
         ) || isVideoNumberAboveRequest(
             videoStream,
             ['ReferenceFrameRate', 'referenceFrameRate', 'RealFrameRate', 'realFrameRate'],
             url,
-            ['MaxFramerate', 'maxFramerate', 'maxframerate', 'Framerate', 'framerate'],
+            ['MaxFramerate', 'Framerate'],
             true,
             0.05
         )) {
             return true;
         }
 
-        var requestedVideoBitrate = parseFinitePlaybackNumber(getFirstQueryParameterValue(url, [
-            'VideoBitRate',
-            'videoBitRate',
-            'videobitrate'
-        ]));
+        // StreamInfo.ToUrl() spells this `VideoBitrate`; the controller argument
+        // is `videoBitRate`. The lookup is case-insensitive, so either matches.
+        var requestedVideoBitrate = parseFinitePlaybackNumber(getQueryParameterValue(url, 'VideoBitrate'));
         if (requestedVideoBitrate !== null) {
             var sourceVideoBitrate = parseFinitePlaybackNumber(getFirstObjectField(videoStream, [
                 'BitRate',
@@ -968,7 +961,7 @@
                 'Bitrate',
                 'bitrate'
             ]));
-            var liveStreamId = getFirstQueryParameterValue(url, ['LiveStreamId', 'liveStreamId', 'livestreamid']);
+            var liveStreamId = getQueryParameterValue(url, 'LiveStreamId');
             if ((sourceVideoBitrate === null && !liveStreamId)
                 || (sourceVideoBitrate !== null && sourceVideoBitrate > requestedVideoBitrate)) {
                 return true;
@@ -977,7 +970,7 @@
 
         var requestedBitDepth = parseFinitePlaybackNumber(
             getCodecOptionQueryValue(url, sourceVideoCodec, 'videobitdepth')
-                || getFirstQueryParameterValue(url, ['MaxVideoBitDepth', 'maxVideoBitDepth', 'maxvideobitdepth'])
+                || getQueryParameterValue(url, 'MaxVideoBitDepth')
         );
         var sourceBitDepth = parseFinitePlaybackNumber(getFirstObjectField(videoStream, ['BitDepth', 'bitDepth']));
         if (requestedBitDepth !== null && sourceBitDepth !== null && sourceBitDepth > requestedBitDepth) {
@@ -986,7 +979,7 @@
 
         var requestedRefFrames = parseFinitePlaybackNumber(
             getCodecOptionQueryValue(url, sourceVideoCodec, 'maxrefframes')
-                || getFirstQueryParameterValue(url, ['MaxRefFrames', 'maxRefFrames', 'maxrefframes'])
+                || getQueryParameterValue(url, 'MaxRefFrames')
         );
         var sourceRefFrames = parseFinitePlaybackNumber(getFirstObjectField(videoStream, ['RefFrames', 'refFrames']));
         if (requestedRefFrames !== null && sourceRefFrames !== null && sourceRefFrames > requestedRefFrames) {
@@ -1016,11 +1009,7 @@
         // those URL constraints and can replace the video codec with `copy`.
         // TranscodeReasons describe why raw direct play failed; TryStreamCopy
         // does not read them, so they must not be used as a video-encode gate.
-        var allowVideoStreamCopy = getFirstQueryParameterValue(url, [
-            'AllowVideoStreamCopy',
-            'allowVideoStreamCopy',
-            'allowvideostreamcopy'
-        ]);
+        var allowVideoStreamCopy = getQueryParameterValue(url, 'allowVideoStreamCopy');
         if (isExplicitFalsePlaybackQueryValue(allowVideoStreamCopy)) {
             return false;
         }
@@ -1032,11 +1021,7 @@
             return false;
         }
 
-        var targetVideoCodecs = parseNormalizedCommaSeparatedList(getFirstQueryParameterValue(url, [
-            'VideoCodec',
-            'videoCodec',
-            'videocodec'
-        ]));
+        var targetVideoCodecs = parseNormalizedCommaSeparatedList(getQueryParameterValue(url, 'VideoCodec'));
         for (var i = 0; i < targetVideoCodecs.length; i++) {
             if (targetVideoCodecs[i] === sourceVideoCodec) {
                 return true;

@@ -194,7 +194,7 @@ assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
 }), 'copy', 'audio-only transcode should identify the server\'s implicit video stream copy');
 assert.strictEqual(hdr.getPlaybackVideoDeliveryFromMediaSource({
     PlayMethod: 'Transcode',
-    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc,h264&AudioCodec=aac&VideoBitRate=120000000&MaxFramerate=60&MaxWidth=3840&MaxHeight=2160&hevc-level=153&hevc-videobitdepth=10&hevc-profile=main,main10&hevc-rangetype=HDR10&TranscodeReasons=DirectPlayError',
+    TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=hevc,h264&AudioCodec=aac&VideoBitrate=120000000&MaxFramerate=60&MaxWidth=3840&MaxHeight=2160&hevc-level=153&hevc-videobitdepth=10&hevc-profile=main,main10&hevc-rangetype=HDR10&TranscodeReasons=DirectPlayError',
     MediaStreams: [{
         Type: 'Video',
         Codec: 'hevc',
@@ -323,3 +323,61 @@ assert.strictEqual(hdr.isPlaybackVideoCopiedOrDirect('directstream'), true);
 assert.strictEqual(hdr.isPlaybackVideoCopiedOrDirect('copy'), true);
 assert.strictEqual(hdr.isPlaybackVideoCopiedOrDirect('transcode'), false);
 assert.strictEqual(hdr.isPlaybackVideoCopiedOrDirect('unknown'), false);
+
+// --- query parameter casing -------------------------------------------------
+//
+// Server and client spell the same parameter differently, and the server binds
+// them without regard to case. StreamInfo.ToUrl() writes `&VideoBitrate=`
+// (MediaBrowser.Model/Dlna/StreamInfo.cs), while the controller argument is
+// `videoBitRate` and Jellyfin Web sends `VideoBitrate` in its own URLs. The
+// lookup used to be case-sensitive and only tried the fork's guesses, so the
+// bitrate blocker below never ran against a real server URL: the predictor
+// answered "copy", the burned-in subtitle patch was skipped, and the client
+// rendered a second copy of a subtitle the server had already burned in.
+{
+    // Only the bitrate cap can block the copy here: same codec, no subtitle
+    // burn-in, no resolution/frame-rate constraint.
+    const cappedBelowSource = function (bitrateSpelling) {
+        return {
+            PlayMethod: 'Transcode',
+            TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=h264&AudioCodec=aac&'
+                + bitrateSpelling + '=3000000',
+            MediaStreams: [{ Type: 'Video', Codec: 'h264', BitRate: 18000000 }]
+        };
+    };
+
+    for (const spelling of ['VideoBitrate', 'VideoBitRate', 'videoBitRate', 'videobitrate']) {
+        assert.strictEqual(
+            hdr.getPlaybackVideoDeliveryFromMediaSource(cappedBelowSource(spelling), true),
+            'transcode',
+            'a bitrate cap below the source must block the copy however the parameter is spelled ('
+                + spelling + ')'
+        );
+    }
+
+    assert.strictEqual(
+        hdr.getPlaybackVideoDeliveryFromMediaSource({
+            PlayMethod: 'Transcode',
+            TranscodingUrl: '/videos/1/master.m3u8?VideoCodec=h264&AudioCodec=aac',
+            MediaStreams: [{ Type: 'Video', Codec: 'h264', BitRate: 18000000 }]
+        }, true),
+        'copy',
+        'without a bitrate cap the same source is still predicted as a stream copy'
+    );
+
+    // Every other constraint reads from the URL the same way.
+    assert.strictEqual(
+        hdr.getPlaybackVideoDeliveryFromMediaSource({
+            PlayMethod: 'Transcode',
+            TranscodingUrl: '/videos/1/master.m3u8?videocodec=h264&maxwidth=1280',
+            MediaStreams: [{ Type: 'Video', Codec: 'h264', Width: 1920 }]
+        }, true),
+        'transcode',
+        'a lower-cased MaxWidth must still block the copy'
+    );
+    assert.strictEqual(
+        hdr.getPlaybackVideoDeliveryFromTranscodingUrl('/videos/1/master.m3u8?static=true'),
+        'directstream',
+        'a lower-cased Static must still be read'
+    );
+}

@@ -127,7 +127,7 @@ test('a running HDR audio-only transcode resolves to directstream and applies th
         MediaSources: [{
             Id: 'src-hdr-audio-transcode',
             PlayMethod: 'Transcode',
-            TranscodingUrl: '/videos/item-hdr-audio-transcode/master.m3u8?VideoCodec=hevc,h264&AudioCodec=aac&VideoBitRate=120000000&MaxFramerate=60&MaxWidth=3840&MaxHeight=2160&hevc-level=153&hevc-videobitdepth=10&hevc-profile=main,main10&hevc-rangetype=HDR10&TranscodeReasons=DirectPlayError',
+            TranscodingUrl: '/videos/item-hdr-audio-transcode/master.m3u8?VideoCodec=hevc,h264&AudioCodec=aac&VideoBitrate=120000000&MaxFramerate=60&MaxWidth=3840&MaxHeight=2160&hevc-level=153&hevc-videobitdepth=10&hevc-profile=main,main10&hevc-rangetype=HDR10&TranscodeReasons=DirectPlayError',
             VideoRangeType: 'HDR10',
             MediaStreams: [{
                 Type: 'Video',
@@ -188,7 +188,7 @@ test('a same-codec HDR candidate resolves to transcode when IsVideoDirect is fal
             PlayMethod: 'Transcode',
             // This is deliberately indistinguishable from a potential copy in
             // PlaybackInfo: source and target codec both say HEVC.
-            TranscodingUrl: '/videos/item-hdr-real-transcode/master.m3u8?VideoCodec=hevc,h264&AudioCodec=aac&VideoBitRate=120000000&MaxWidth=3840&MaxHeight=2160',
+            TranscodingUrl: '/videos/item-hdr-real-transcode/master.m3u8?VideoCodec=hevc,h264&AudioCodec=aac&VideoBitrate=120000000&MaxWidth=3840&MaxHeight=2160',
             VideoRangeType: 'HDR10',
             MediaStreams: [{
                 Type: 'Video',

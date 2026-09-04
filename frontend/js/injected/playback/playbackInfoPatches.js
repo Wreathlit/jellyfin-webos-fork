@@ -58,7 +58,10 @@
         }
 
         var query = splitUrlComponents(url).query;
-        var pattern = new RegExp('(?:^|&)' + escapeRegExp(name) + '=([^&]*)');
+        // Case-insensitive for the same reason as playback.hdrDecisions: the
+        // server binds query parameters without regard to case, so the spelling
+        // in the URL depends on who built it.
+        var pattern = new RegExp('(?:^|&)' + escapeRegExp(name) + '=([^&]*)', 'i');
         var match = pattern.exec(query);
         if (!match || match.length < 2) {
             return null;

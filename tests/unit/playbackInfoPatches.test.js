@@ -515,7 +515,7 @@ function videoTranscodeSource(subtitleStreams) {
     const payload = burnInPayload({
         Id: 'source-1',
         PlayMethod: 'Transcode',
-        TranscodingUrl: '/videos/abc/master.m3u8?VideoCodec=hevc,h264&AudioCodec=aac&VideoBitRate=120000000&MaxFramerate=60&MaxWidth=3840&MaxHeight=2160&hevc-level=153&hevc-videobitdepth=10&hevc-profile=main,main10&hevc-rangetype=HDR10&SubtitleStreamIndex=3&TranscodeReasons=DirectPlayError&alwaysBurnInSubtitleWhenTranscoding=true',
+        TranscodingUrl: '/videos/abc/master.m3u8?VideoCodec=hevc,h264&AudioCodec=aac&VideoBitrate=120000000&MaxFramerate=60&MaxWidth=3840&MaxHeight=2160&hevc-level=153&hevc-videobitdepth=10&hevc-profile=main,main10&hevc-rangetype=HDR10&SubtitleStreamIndex=3&TranscodeReasons=DirectPlayError&alwaysBurnInSubtitleWhenTranscoding=true',
         MediaStreams: [
             {
                 Index: 0,
@@ -590,3 +590,44 @@ function videoTranscodeSource(subtitleStreams) {
 
 assert.strictEqual(patches.patchBurnedInSubtitleDelivery(null, {}), false);
 assert.strictEqual(patches.patchBurnedInSubtitleDelivery({}, null), false);
+
+// --- the exact shape a 10.11 server sends for a burned-in subtitle ----------
+//
+// StreamInfo.ToUrl() appends SubtitleStreamIndex because the always-burn flag
+// is set (StreamInfo.cs, "AlwaysBurnInSubtitleWhenTranscoding || ..."), but it
+// appends SubtitleMethod only when the delivery method is NOT External. So for
+// the one case this patch exists for -- an External subtitle the server will
+// burn in anyway -- the subtitle stream-copy blocker in hdrDecisions cannot
+// fire, and the bitrate cap is the only thing left that says "this is a real
+// encode". Reading that cap is what decides whether the subtitle gets
+// corrected to Encode or is rendered twice on the TV.
+{
+    const burnedInSource = function () {
+        return {
+            Id: 'source-1',
+            PlayMethod: 'Transcode',
+            TranscodingUrl: '/videos/abc/master.m3u8?DeviceId=d&MediaSourceId=source-1'
+                + '&VideoCodec=h264&AudioCodec=aac&SubtitleStreamIndex=2'
+                + '&VideoBitrate=3000000&AudioBitrate=192000&PlaySessionId=p&ApiKey=k'
+                + '&TranscodeReasons=VideoBitrateNotSupported'
+                + '&alwaysBurnInSubtitleWhenTranscoding=true',
+            MediaStreams: [
+                { Index: 1, Type: 'Video', Codec: 'h264', BitRate: 18000000, Width: 1920, Height: 1080 },
+                { Index: 2, Type: 'Subtitle', Codec: 'ass', DeliveryMethod: 'External', IsTextSubtitleStream: true }
+            ]
+        };
+    };
+
+    const source = burnedInSource();
+    const payload = { MediaSources: [source] };
+    assert.strictEqual(
+        patches.patchBurnedInSubtitleDelivery(payload, { source: 'fetch' }),
+        true,
+        'a bitrate-capped encode with an always-burn-in subtitle must be corrected'
+    );
+    assert.strictEqual(
+        source.MediaStreams[1].DeliveryMethod,
+        'Encode',
+        'leaving this External is what renders the subtitle twice'
+    );
+}
