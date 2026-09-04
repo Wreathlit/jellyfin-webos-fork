@@ -34,7 +34,7 @@ This fork targets **webOS 5.0 and later**, which means:
 
 | Surface | Baseline |
 | --- | --- |
-| Browser engine | **Chromium 68** — ES2018 |
+| Browser engine | **Chromium 68** — ES2018 builtins, ES2019 grammar |
 | Service runtime | webOS 5.0's Node.js — `const`/`let` and `Buffer.from` are in use |
 | Transpiling | **none** — `ares-package --no-minify` ships exactly what is authored |
 
@@ -682,7 +682,8 @@ Approach:
   more than it looks: on Jellyfin Web 10.11 `NativeShell.updateMediaSession` is
   never called for local video playback — `mediaSessionSubscriber` returns early
   for `isLocalPlayer && isVideo`, and it is the only caller in the client — so
-  the `/Items` fetch is the only authoritative corrector left. The state machine
+  of the sources that can arrive *after* a UI-text guess has been applied, the
+  `/Items` fetch is the only one left. The state machine
   still enters and leaves playback through `enableFullscreen`/`disableFullscreen`,
   and the per-item bitrate re-arm still fires from the PlaybackInfo path;
 - resolve a pending PlaybackInfo hint through the cache key that this playback's

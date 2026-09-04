@@ -2631,10 +2631,18 @@
         }
 
         task.finished = true;
+        releaseExternalScriptPatchSlot();
+        processExternalScriptPatchQueue();
+    }
+
+    // Exactly one release per slot taken. This used to be a boolean, where a
+    // second "release" was idempotent; with a counter it would hand out a slot
+    // that is still in use, so every caller has to know whether the task it
+    // holds has already been released.
+    function releaseExternalScriptPatchSlot() {
         if (externalScriptPatchActiveCount > 0) {
             externalScriptPatchActiveCount--;
         }
-        processExternalScriptPatchQueue();
     }
 
     function insertScriptNode(task, node) {
@@ -2673,10 +2681,19 @@
     function recoverExternalScriptPatchTask(task, error) {
         warnLog('Recovering from intercepted script patch failure:', error);
 
-        if (!task || task.finished) {
-            if (externalScriptPatchActiveCount > 0) {
-                externalScriptPatchActiveCount--;
-            }
+        if (!task) {
+            // No task to finish, but the slot this call occupies was taken
+            // before the failure, so give it back.
+            releaseExternalScriptPatchSlot();
+            processExternalScriptPatchQueue();
+            return;
+        }
+
+        if (task.finished) {
+            // finishExternalScriptPatchTask already released this task's slot.
+            // Releasing again would let a fourth inspection start while three
+            // are still running, and enough of them would strand the counter at
+            // zero with work still in flight.
             processExternalScriptPatchQueue();
             return;
         }

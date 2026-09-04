@@ -801,7 +801,7 @@ function getTextToInject(success, failure) {
     // Ordering is a concatenation requirement, not a fetch requirement. Every
     // request goes out at once and the parts are assembled in injectedScriptUrls
     // order once the last one lands; the loader used to issue each request from
-    // the previous one's callback, putting nine local round trips -- 275 KB of
+    // the previous one's callback, putting nine local round trips -- 280 KB of
     // webOS.js among them -- on the launch path in series before the frame could
     // start navigating.
     var parts = new Array(urls.length);
