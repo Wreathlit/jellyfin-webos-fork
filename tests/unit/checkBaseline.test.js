@@ -329,3 +329,62 @@ assertClean('var index = list.findIndex(fn);');
         'optional catch binding is a parse error on Node 8'
     );
 }
+
+// --- services/ is held to Node 8, which is not ES2018 -------------------------
+//
+// This is the hole the parse gate opened when it first landed: it parsed
+// services/ at ES2018 and skipped every syntax rule for a file that parsed, so
+// `for await` -- ES2018 grammar, Node 10 runtime -- went from reported to
+// reported by nothing. A service that throws at load looks like discovery
+// quietly not working, with no white screen to notice it by.
+{
+    const { findParseViolation, findViolations, BANNED_NODE, PARSE_ECMA_VERSION } =
+        require('../../tools/check-baseline');
+
+    assert.strictEqual(
+        PARSE_ECMA_VERSION.node,
+        2017,
+        'Node 8 has ES2017 plus object rest/spread, not ES2018'
+    );
+
+    const nodeHazards = [
+        ['async function f(y) { for await (const x of y) {} }', 'async iteration'],
+        ['async function* g() { yield 1; }', 'async generators'],
+        ['var r = /(?<=a)b/;', 'regex lookbehind'],
+        ['var r = /(?<n>a)/;', 'regex named capture groups'],
+        ['var r = /a/s;', 'the regex s flag'],
+        ['try { x(); } catch { y(); }', 'optional catch binding']
+    ];
+    for (const [source, what] of nodeHazards) {
+        assert.ok(
+            findParseViolation(source, 'node'),
+            what + ' must be reported for services/: ' + source
+        );
+    }
+
+    // And the rules that describe grammar a parse gate may accept keep running
+    // even when the file parses, so raising PARSE_ECMA_VERSION.node cannot
+    // silently drop them again.
+    const survivors = BANNED_NODE.filter(function (rule) {
+        return !rule.syntax || rule.survivesParse;
+    });
+    assert.deepStrictEqual(
+        findViolations('async function f(y) { for await (const x of y) {} }', survivors)
+            .map(function (violation) { return violation.label; }),
+        ['async iteration `for await`'],
+        'for await must still be caught by the table, not only by the parser'
+    );
+    assert.deepStrictEqual(
+        findViolations('async function* g() { yield 1; }', survivors)
+            .map(function (violation) { return violation.label; }),
+        ['async generator `async function*`'],
+        'async generators must still be caught by the table'
+    );
+
+    // The browser tree really is ES2019, so nothing here should leak into it.
+    assert.strictEqual(
+        findParseViolation('try { x(); } catch { y(); }', 'browser'),
+        null,
+        'optional catch binding is fine on Chromium 68'
+    );
+}

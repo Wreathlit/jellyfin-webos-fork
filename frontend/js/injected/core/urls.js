@@ -75,7 +75,8 @@
     }
 
     // The path of a URL, with query and fragment removed and any authority
-    // stripped. Shared because webOS.js classifies three more endpoints and was
+    // stripped. Shared because two more classifiers in webOS.js (the /Sessions
+    // and /Subtitles/ tests; isPlaybackInfoUrl already read the path) were
     // doing it on the raw string: '/Items/x/PlaybackInfo?next=/sessions' satisfied
     // its Sessions test, and the fetch wrapper checks Sessions first, so that
     // PlaybackInfo request was read as a session list and skipped bitrate forcing,

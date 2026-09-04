@@ -395,6 +395,11 @@ assert.strictEqual(hdr.isPlaybackVideoCopiedOrDirect('unknown'), false);
         'DOVIWithHDR10',
         'DOVIWithHLG',
         'Dolby Vision',
+        // Without the trailing PQ, so the separated-form regex is what has to
+        // match: with 'PQ' present the token loop answers first and the regex
+        // could lose its escapes unnoticed, which is exactly what happened once.
+        'SMPTE ST 2084',
+        'SMPTE 2084',
         'SMPTE ST 2084 PQ',
         '1080p HEVC HDR10 · EAC3',
         'S02E04 - Endgame - HDR - 1:23:45'

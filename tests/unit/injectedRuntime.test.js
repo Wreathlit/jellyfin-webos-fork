@@ -626,7 +626,7 @@ test('leaving playback removes the HDR dim', async () => {
 
     runtime.nativeShell.disableFullscreen();
     // EXITING settles to IDLE on its own after the exit timeout.
-    await runtime.settle(TIMINGS.PLAYBACK_START_FALLBACK);
+    await runtime.settle(TIMINGS.EXIT_TO_IDLE + 500);
 
     assert.strictEqual(runtime.isHdrDimmed(), false, 'the dim must be removed when playback ends');
 });
@@ -1072,6 +1072,67 @@ test('script inspections do not queue behind one another', async () => {
         'all three inspections must be in flight, got ' + inspections.length
     );
 });
+
+// The ranking would be a one-way door without this: once the running session
+// has answered, a prediction can no longer move the verdict, so a stream that
+// genuinely changed has to be re-read. A prediction that CONTRADICTS the
+// observation arms a new probe. Without that clause the first two -- transcode
+// or unknown -- do not fire for a direct-play prediction and the stale verdict
+// sticks for the rest of playback.
+test('a prediction that contradicts the session verdict arms a new probe', async () => {
+    const runtime = loadInjectedRuntime();
+    const transcodeSource = {
+        Id: 'src-hdr',
+        PlayMethod: 'Transcode',
+        TranscodingUrl: '/videos/item-1/master.m3u8?VideoCodec=h264&AudioCodec=aac&VideoBitrate=3000000',
+        VideoRangeType: 'HDR10',
+        MediaStreams: [{ Type: 'Video', Codec: 'hevc', BitRate: 24000000, VideoRangeType: 'HDR10' }]
+    };
+    // Same item and source, now offered as direct play: prediction 'directplay',
+    // which is neither 'transcode' nor 'unknown'.
+    const directSource = {
+        Id: 'src-hdr',
+        SupportsDirectPlay: true,
+        VideoRangeType: 'HDR10',
+        MediaStreams: [{ Type: 'Video', Codec: 'hevc', VideoRangeType: 'HDR10' }]
+    };
+
+    let videoDirect = false;
+    let source = transcodeSource;
+    runtime.respondToFetch((request) => request.url.indexOf('/Sessions') !== -1 ? [{
+        DeviceId: 'test-device',
+        NowPlayingItem: { Id: 'item-1' },
+        PlayState: { MediaSourceId: 'src-hdr', PlayMethod: 'Transcode' },
+        TranscodingInfo: { IsVideoDirect: videoDirect }
+    }] : ({ MediaSourceId: 'src-hdr', MediaSources: [source] }));
+
+    await runtime.window.fetch(playbackInfoUrl('item-1', 'src-hdr'));
+    await runtime.settle(10);
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(1200);
+
+    assert.strictEqual(runtime.isHdrDimmed(), false, 'a real video encode must not dim');
+
+    // The stream changes under us: the server now offers direct play and the
+    // session agrees.
+    source = directSource;
+    videoDirect = true;
+    await runtime.window.fetch(playbackInfoUrl('item-1', 'src-hdr'));
+    await runtime.settle(10);
+    assert.strictEqual(
+        runtime.isHdrDimmed(),
+        false,
+        'the prediction alone must not move an observed verdict'
+    );
+
+    await runtime.settle(1200);
+    assert.strictEqual(
+        runtime.isHdrDimmed(),
+        true,
+        'the contradicting prediction must have armed a probe that re-read the session'
+    );
+});
+
 
 module.exports = async function runInjectedRuntimeTests() {
     for (const testCase of cases) {

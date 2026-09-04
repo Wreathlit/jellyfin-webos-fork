@@ -516,10 +516,10 @@
     var pgsTimeSampleRateTracker = createRateTracker();
     var assWorkerVideoMessageRateTracker = createRateTracker();
 
-    // Only four bridge messages have a handler in the shell: AppHost.exit,
-    // openUrl, downloadFile and selectServer, plus the two the shell listens for
-    // by name (WebOS.featureOverrides, updateMediaSession). Everything else
-    // lands in its `default:` branch, which is a debugLog and nothing more.
+    // Five bridge messages have a handler in the shell: AppHost.exit, openUrl,
+    // downloadFile, selectServer and WebOS.featureOverrides. Everything else --
+    // updateMediaSession included -- lands in its `default:` branch, which is a
+    // debugLog and nothing more.
     //
     // That was not free. appHost.supports() is called from many Jellyfin Web
     // render paths -- header and drawer refresh, item detail, context menus,
@@ -2443,7 +2443,11 @@
         }
 
         if (result.ass && result.ass.mayPatch && !result.ass.patched) {
-            warnLog('ASS renderAhead patch did not match ' + (url || 'script')
+            // Only a diagnostic: mayPatch means the script mentions renderAhead,
+            // which any chunk carrying the option does, not that this one was
+            // supposed to match. Warning unconditionally turned every such chunk
+            // into a permanent scary line in the console.
+            debugLog('ASS renderAhead patch did not match ' + (url || 'script')
                 + ': the option is present but not in a form this patches');
         }
 

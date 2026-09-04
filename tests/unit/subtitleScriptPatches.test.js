@@ -287,3 +287,59 @@ assert(patches, 'subtitles.scriptPatches should register');
     );
     assertCompiles(optioned.text, 'PGS renderer with all options');
 }
+
+// --- a needle that has gone stale must say so -------------------------------
+//
+// Two of the PGS needles are pinned to the minifier's own identifiers, so any
+// re-minification of the vendor bundle stops them matching. Only mode and
+// objectData were ever reported, so the render-order guard could disappear with
+// nothing but a lower count in the diagnostics overlay to show for it.
+{
+    // Carries the markers the may-patch tests look for, in a shape none of the
+    // replacements match -- which is what a renamed identifier looks like.
+    const renamed = 'x.prototype.render=function(q){var z=this,w=this.pgs.getSubtitleAtIndex(q);'
+        + 'requestAnimationFrame(function(){z.renderer.draw(w)}),this.pgs.cacheSubtitleAtIndex(q+2)};'
+        + 'getPixelDataFromComposition=function(a,b,c){var d=a.isFirstInSequence;};'
+        + 'createPgsRenderer=function(o){o.mode;getRendererModeByPlatform()};'
+        + 'y.prototype.render=function(k){this.worker.postMessage({op:"render",index:k})};'
+        + 'canvas.transferControlToOffscreen();'
+        + 'z.prototype.load=function(){this.worker.postMessage({op:"requestSubtitleData"});var s=e.data.subtitleData;};'
+        + 'renderAtVideoTimestamp=function(){var t=this.video.currentTime;};';
+
+    const result = patches.patchPgsRendererScriptText(renamed, {});
+    assert.ok(Array.isArray(result.missing), 'the result must report what it could not match');
+    for (const name of ['time', 'render', 'mainThread', 'objectData', 'mode']) {
+        assert.ok(
+            result.missing.indexOf(name) !== -1,
+            name + ' was recognised as present and did not match, so it must be reported: '
+                + JSON.stringify(result.missing)
+        );
+    }
+
+    // A script with none of the markers is not a miss, it is simply not a PGS
+    // renderer.
+    // Length, not deepStrictEqual: the array comes from the module's vm realm,
+    // so its prototype is not this realm's Array.prototype.
+    assert.strictEqual(
+        patches.patchPgsRendererScriptText('var unrelated = 1;', {}).missing.length,
+        0,
+        'a script that carries no marker must not be reported as a stale needle'
+    );
+
+    // And the ASS side reports the same way.
+    assert.strictEqual(
+        patches.patchAssRendererScriptText('var opts = { renderAhead: 42 };').mayPatch,
+        true,
+        'a script carrying the option is a candidate'
+    );
+    assert.strictEqual(
+        patches.patchAssRendererScriptText('var opts = { renderAhead: 42 };').patched,
+        false,
+        'and it did not match, which is what the caller warns about'
+    );
+    assert.strictEqual(
+        patches.patchAssRendererScriptText('var unrelated = 1;').mayPatch,
+        false,
+        'a script without the option is not a candidate'
+    );
+}

@@ -69,29 +69,37 @@ that step shells out to `node --check`, and Node accepts `?.` happily, so a
 violation would pass CI green and then white-screen the TV with a parse error at
 load.
 
-It works in two passes. First it parses every file with acorn at the baseline
-grammar — ES2019 for `frontend/`, ES2018 for `services/` — and anything the
-parser rejects is reported with its own line and column. That is the definitive
-test for a *syntax* hazard, because "does this parse on the target engine" is
-exactly the question. It replaced a lexical scan that could not decide `/`
-between regex and division and could not see class-body grammar, so it missed
-`class A { count; }`, `class A { [k] = 1; }`, `/a/d` and a `??` that followed a
-division, while reporting a multi-line default parameter and `if (ok)
-/#tag/.test(s)` as class fields.
+It works in two passes. First it parses every file with acorn at the grammar the
+target engine actually has — ES2019 for `frontend/`, ES2017 for `services/` —
+and anything the parser rejects is reported with its own line and column. It
+replaced a lexical scan that could not decide `/` between regex and division and
+could not see class-body grammar, so it missed `class A { count; }`,
+`class A { [k] = 1; }`, `/a/d` and a `??` that followed a division, while
+reporting a multi-line default parameter and `if (ok) /#tag/.test(s)` as class
+fields.
+
+The versions are the engine's grammar, not the newest spec it mostly implements.
+Chromium 68 has all of ES2019 syntax, so 2019 is exact. Node 8 is **not** ES2018:
+object rest/spread arrived in 8.3, but async iteration, async generators and the
+ES2018 regex features (lookbehind, named capture groups, the `s` flag) are all
+Node 10. Parsing `services/` at 2018 accepted every one of them.
 
 Second, the table above is scanned lexically for *builtins*. A missing method is
 a `TypeError` at the call site rather than a parse error, so no parser can judge
-it. The syntax half of that table is kept for documentation and for the tests
-that check this section and the tool agree; it is not consulted for a file that
-parses, since by definition none of it can be true of one.
+it. The syntax half of that table is otherwise skipped for a file that parses —
+that is what removes the false positives — except for rules marked
+`survivesParse`, which describe grammar the parse version accepts while the
+engine does not. Raising `PARSE_ECMA_VERSION.node` must not silently drop those
+again: `for await` did exactly that once.
 
 To raise the baseline, change the table in `tools/check-baseline.js` and this
 section together, and be explicit about which model years are being dropped.
 
 `services/` ships untranspiled too, to the TV's Node service runtime (roughly
 Node 8), and `check:baseline` scans it against its own table. The two trees have
-nearly the same syntax ceiling, but a few things differ — optional catch binding
-(`catch {`) and `for await` parse on Chromium 68 and not on Node 8. A service
+nearly the same syntax ceiling, but several things differ — optional catch
+binding (`catch {`), `for await`, async generators and the ES2018 regex features
+all parse on Chromium 68 and not on Node 8. A service
 that throws at load does not look like a crash; it looks like server discovery
 quietly not working, which is why it is checked rather than left to discipline.
 

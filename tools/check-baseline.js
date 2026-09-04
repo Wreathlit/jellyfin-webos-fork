@@ -56,7 +56,11 @@ const RULES = [
     { syntax: true, pattern: /\bstatic\s*\{/g, label: 'class static initialization block', browser: 'Chromium 94', node: 'Node 16.11' },
     // Optional catch binding parses on Chromium 68 but not on Node 8.
     { syntax: true, pattern: /\bcatch\s*\{/g, label: 'optional catch binding `catch {`', browser: null, node: 'Node 10' },
-    { syntax: true, pattern: /\bfor\s+await\b/g, label: 'async iteration `for await`', browser: null, node: 'Node 10' },
+    // survivesParse: grammar the parse gate's ecmaVersion may accept while the
+    // engine does not, so these keep running even for a file that parses.
+    // Raising PARSE_ECMA_VERSION.node must not silently drop them again.
+    { syntax: true, survivesParse: true, pattern: /\bfor\s+await\b/g, label: 'async iteration `for await`', browser: null, node: 'Node 10' },
+    { syntax: true, survivesParse: true, pattern: /\basync\s+function\s*\*/g, label: 'async generator `async function*`', browser: null, node: 'Node 10' },
     // A digit run containing an underscore. Strings and comments are already
     // blanked out by this point, so a false positive would need a bare numeric
     // literal spelled with separators -- which is the thing being banned.
@@ -91,6 +95,7 @@ function rulesFor(engine) {
             pattern: rule.pattern,
             syntax: rule.syntax,
             classField: rule.classField,
+            survivesParse: rule.survivesParse,
             label: rule.label,
             since: rule[engine]
         }));
@@ -443,9 +448,23 @@ function collectJavaScriptFiles(directory, files) {
 // the parser's own message and position is the report. The tables below stay:
 // they name builtins, which no parser can judge, and they still describe a
 // hazard more precisely than "Unexpected token" when they do fire.
+// The grammar each engine actually has, which is not the newest spec it mostly
+// implements.
+//
+// Chromium 68 has all of ES2019 syntax -- optional catch binding shipped in 66
+// and the JSON superset in 66 -- so 2019 is exact there.
+//
+// Node 8 is NOT ES2018. Object rest/spread arrived in 8.3, but async iteration
+// (`for await`), async generators and the ES2018 regex features -- lookbehind,
+// named capture groups, the `s` flag -- are all Node 10. Parsing services/ at
+// 2018 accepted every one of them, and since a file that parses skips the
+// syntax rules, `for await` went from reported to reported by nothing. 2017 is
+// the honest floor and services/service.js parses cleanly at it. If a services/
+// file ever needs object rest/spread, raise this to 2018; the survivesParse
+// rules keep covering the rest.
 const PARSE_ECMA_VERSION = {
     browser: 2019,
-    node: 2018
+    node: 2017
 };
 
 function findParseViolation(source, banned) {
@@ -494,17 +513,22 @@ function main() {
                 continue;
             }
 
-            // The file parses at the baseline, so no syntax rule can be true of
-            // it -- and running them anyway is where the false positives were:
-            // `if (ok) /#tag/.test(s)` was read as a private class field and a
-            // multi-line default parameter as a public one, because the scan
-            // cannot tell a regex from a division. The builtins table still
-            // runs: a missing method is a TypeError at the call site, not a
-            // parse error, so no parser can judge it.
-            const builtins = banned.filter(function (rule) {
-                return !rule.syntax;
+            // The file parses at the baseline, so almost no syntax rule can be
+            // true of it -- and running them anyway is where the false positives
+            // were: `if (ok) /#tag/.test(s)` was read as a private class field
+            // and a multi-line default parameter as a public one, because the
+            // scan cannot tell a regex from a division.
+            //
+            // "Almost", because the parse gate can only reject what its
+            // ecmaVersion rejects, and a rule marked survivesParse describes
+            // grammar the version accepts while the engine does not. The
+            // builtins run for a different reason: a missing method is a
+            // TypeError at the call site, not a parse error, so no parser can
+            // judge it.
+            const stillApplicable = banned.filter(function (rule) {
+                return !rule.syntax || rule.survivesParse;
             });
-            for (const violation of findViolations(source, builtins)) {
+            for (const violation of findViolations(source, stillApplicable)) {
                 failures++;
                 console.error(
                     relativePath + ':' + violation.line + '  ' + violation.label

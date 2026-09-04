@@ -168,9 +168,20 @@ const root = path.resolve(__dirname, '..', '..');
         assert.ok(checkboxClass, definition.key + ' must carry a checkboxClass');
         assert.ok(applyName, definition.key + ' must carry an apply');
 
+        // Not just "appears in the file" -- the entry it was read from would
+        // satisfy that on its own. The class has to be used somewhere else too:
+        // the container lookup and the control builder both name it, so a
+        // mistyped checkboxClass (a dead checkbox and an endless settings-ensure
+        // retry) leaves it appearing exactly once.
+        const quoted = String.fromCharCode(39) + checkboxClass + String.fromCharCode(39);
+        const dotted = String.fromCharCode(39) + '.' + checkboxClass + String.fromCharCode(39);
         assert.ok(
-            source.indexOf(String.fromCharCode(39) + checkboxClass + String.fromCharCode(39)) !== -1,
-            checkboxClass + ' must be the class the control builder uses'
+            source.split(quoted).length - 1 >= 2,
+            checkboxClass + ' must be used by the control builder, not only declared in the table'
+        );
+        assert.ok(
+            source.indexOf(dotted) !== -1,
+            checkboxClass + ' must be the selector the container lookup uses'
         );
         assert.ok(
             source.indexOf('function ' + applyName + '(') !== -1,

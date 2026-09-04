@@ -73,7 +73,7 @@
         if (normalized.indexOf('dolby vision') !== -1
             || normalized.indexOf('dolbyvision') !== -1
             || normalized.indexOf('arib-std-b67') !== -1
-            || /smptes*(?:sts*)?2084/.test(normalized)) {
+            || /smpte\s*(?:st\s*)?2084/i.test(normalized)) {
             return true;
         }
 
