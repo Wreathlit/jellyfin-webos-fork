@@ -243,6 +243,10 @@
     var playbackDynamicRangeReason = null;
     var playbackVideoDelivery = 'unknown';
     var playbackVideoDeliveryReason = null;
+    // Whether the current verdict was observed on the running session rather
+    // than predicted from a PlaybackInfo response. Without the distinction, the
+    // last writer won and a prediction could overwrite an observation.
+    var playbackVideoDeliveryAuthoritative = false;
     var hdrDetectionMediaSessionLastHint = 'unknown';
     var hdrDetectionPlaybackInfoLastHint = 'unknown';
     var hdrDetectionItemMetadataLastHint = 'unknown';
@@ -761,7 +765,7 @@
 
         if (nextState === PlaybackState.IDLE) {
             setCurrentPlaybackItemId(null, null);
-            setPlaybackVideoDelivery('unknown', 'playback-idle');
+            resetPlaybackVideoDelivery('playback-idle');
             setPlaybackDynamicRange('unknown', 'playback-idle');
         } else {
             refreshHdrUiDimming('playback-state');
@@ -4794,7 +4798,7 @@
             // range at 'unknown', and re-arming the window would also reset
             // hdrUiInfoCorrectedHdrUntil and let later SDR overwrite HDR.
             setPlaybackDynamicRange('unknown', reason || 'item-changed');
-            setPlaybackVideoDelivery('unknown', reason || 'item-changed');
+            resetPlaybackVideoDelivery(reason || 'item-changed');
             armHdrUiInfoCorrectionWindow(reason || 'item-changed');
         }
     }
@@ -5005,8 +5009,11 @@
         var hasVideoDirect = !!(transcodingInfo
             && (Object.prototype.hasOwnProperty.call(transcodingInfo, 'IsVideoDirect')
                 || Object.prototype.hasOwnProperty.call(transcodingInfo, 'isVideoDirect')));
-        setPlaybackVideoDelivery(delivery, (reason || 'sessions') + (hasVideoDirect ? '-is-video-direct' : '-play-method'));
-        if (hasVideoDirect || delivery === 'directplay' || delivery === 'directstream') {
+        // Authoritative exactly when the probe is done: the running session has
+        // answered the question the probe was asking.
+        var settled = hasVideoDirect || delivery === 'directplay' || delivery === 'directstream';
+        setPlaybackVideoDelivery(delivery, (reason || 'sessions') + (hasVideoDirect ? '-is-video-direct' : '-play-method'), settled);
+        if (settled) {
             clearPlaybackSessionProbeTimers(false);
         }
         return true;
@@ -5121,7 +5128,12 @@
             deviceId: deviceId,
             url: buildPlaybackSessionsUrl(context.url, deviceId),
             fetchInit: context.sessionFetchInit || { method: 'GET' },
-            requiresRuntimeVerdict: videoDelivery === 'transcode' || videoDelivery === 'unknown'
+            // Also re-probe when the new prediction contradicts what the
+            // running session last reported: the prediction no longer wins, so
+            // the session has to be re-read for the verdict to move at all.
+            requiresRuntimeVerdict: videoDelivery === 'transcode'
+                || videoDelivery === 'unknown'
+                || (playbackVideoDeliveryAuthoritative && playbackVideoDelivery !== videoDelivery)
         };
 
         if (playbackState === PlaybackState.PLAYING) {
@@ -6351,9 +6363,11 @@
             && isPlaybackVideoCopiedOrDirect(playbackVideoDelivery);
     }
 
-    function setPlaybackVideoDelivery(nextDelivery, reason) {
-        nextDelivery = normalizePlaybackVideoDelivery(nextDelivery);
+    function applyPlaybackVideoDelivery(nextDelivery, reason, authoritative) {
         if (playbackVideoDelivery === nextDelivery) {
+            if (authoritative) {
+                playbackVideoDeliveryAuthoritative = true;
+            }
             if (reason) {
                 playbackVideoDeliveryReason = reason;
             }
@@ -6362,9 +6376,39 @@
 
         var previousDelivery = playbackVideoDelivery;
         playbackVideoDelivery = nextDelivery;
+        playbackVideoDeliveryAuthoritative = authoritative;
         playbackVideoDeliveryReason = reason || null;
         debugLog('Playback video delivery: ' + previousDelivery + ' -> ' + nextDelivery + ' (' + reason + ')');
         refreshHdrUiDimming('video-delivery');
+    }
+
+    // Playback boundaries clear the verdict outright. Every other caller is
+    // either a prediction or an observation and goes through the ranking below.
+    function resetPlaybackVideoDelivery(reason) {
+        applyPlaybackVideoDelivery('unknown', reason, false);
+    }
+
+    function setPlaybackVideoDelivery(nextDelivery, reason, authoritative) {
+        nextDelivery = normalizePlaybackVideoDelivery(nextDelivery);
+        authoritative = !!authoritative;
+
+        // A PlaybackInfo response predicts what the server was asked for; a
+        // running /Sessions entry reports what it is actually doing. Applying
+        // the prediction unconditionally meant every changeStream request -- a
+        // seek on a transcoded stream, an audio or subtitle track pick, all of
+        // which re-issue PlaybackInfo -- replaced an observed verdict with a
+        // guess and flickered the HDR dimming until the next probe answered,
+        // and a payload whose selected source could not be resolved reset a
+        // known verdict to 'unknown' outright.
+        if (!authoritative && playbackVideoDelivery !== 'unknown'
+            && (nextDelivery === 'unknown' || playbackVideoDeliveryAuthoritative)) {
+            debugLog('Kept ' + (playbackVideoDeliveryAuthoritative ? 'observed' : 'known')
+                + ' video delivery ' + playbackVideoDelivery + ' over ' + nextDelivery
+                + ' (' + reason + ')');
+            return;
+        }
+
+        applyPlaybackVideoDelivery(nextDelivery, reason, authoritative);
     }
 
     function refreshHdrUiDimming(reason) {

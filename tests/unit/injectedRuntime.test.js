@@ -171,6 +171,61 @@ test('a running HDR audio-only transcode resolves to directstream and applies th
     );
 });
 
+// Jellyfin Web re-issues PlaybackInfo for every changeStream -- a seek on a
+// transcoded stream, an audio or subtitle track pick. The response is still a
+// request-time prediction, and it used to be applied unconditionally, so it
+// overwrote the verdict the running session had already reported and the HDR
+// dimming dropped until the next probe answered.
+test('a later PlaybackInfo prediction does not overwrite the running session verdict', async () => {
+    const runtime = loadInjectedRuntime();
+    const mediaSource = {
+        Id: 'src-hdr-audio-transcode',
+        PlayMethod: 'Transcode',
+        TranscodingUrl: '/videos/item-hdr-audio-transcode/master.m3u8?VideoCodec=hevc,h264&AudioCodec=aac&VideoBitrate=120000000&MaxFramerate=60&MaxWidth=3840&MaxHeight=2160&hevc-level=153&hevc-videobitdepth=10&hevc-profile=main,main10&hevc-rangetype=HDR10&TranscodeReasons=DirectPlayError',
+        VideoRangeType: 'HDR10',
+        MediaStreams: [{
+            Type: 'Video',
+            Codec: 'hevc',
+            Profile: 'Main 10',
+            Level: 153,
+            BitDepth: 10,
+            BitRate: 24000000,
+            Width: 3840,
+            Height: 2160,
+            ReferenceFrameRate: 23.976,
+            VideoRangeType: 'HDR10'
+        }]
+    };
+    runtime.respondToFetch((request) => request.url.indexOf('/Sessions') !== -1 ? [{
+        DeviceId: 'test-device',
+        NowPlayingItem: { Id: 'item-hdr-audio-transcode' },
+        PlayState: { MediaSourceId: 'src-hdr-audio-transcode', PlayMethod: 'Transcode' },
+        TranscodingInfo: { IsVideoDirect: true }
+    }] : ({
+        MediaSourceId: 'src-hdr-audio-transcode',
+        MediaSources: [mediaSource]
+    }));
+
+    await runtime.window.fetch(playbackInfoUrl('item-hdr-audio-transcode', 'src-hdr-audio-transcode'));
+    await runtime.settle(10);
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(1200);
+    assert.strictEqual(runtime.isHdrDimmed(), true, 'the session verdict must enable dimming');
+
+    // The seek: same item, same media source, one more PlaybackInfo.
+    await runtime.window.fetch(playbackInfoUrl('item-hdr-audio-transcode', 'src-hdr-audio-transcode'));
+    await runtime.settle(10);
+    assert.strictEqual(
+        runtime.isHdrDimmed(),
+        true,
+        'a request-time prediction must not undo what the running session reported'
+    );
+
+    // And it must not come back only after the next probe round either.
+    await runtime.settle(300);
+    assert.strictEqual(runtime.isHdrDimmed(), true, 'the verdict must never have flickered');
+});
+
 test('a same-codec HDR candidate resolves to transcode when IsVideoDirect is false', async () => {
     const runtime = loadInjectedRuntime();
     runtime.respondToFetch((request) => request.url.indexOf('/Sessions') !== -1 ? [{

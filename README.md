@@ -595,6 +595,18 @@ Approach:
   `false` remains `transcode`. Existing player-stats session requests are also
   observed, and item/media-source/device matching prevents stale sessions from
   changing the current playback;
+- rank the two sources rather than letting the last writer win. A PlaybackInfo
+  response predicts what the server was asked for; a running `/Sessions` entry
+  reports what it is doing. The prediction used to be applied unconditionally,
+  so every `changeStream` request — a seek on a transcoded stream, an audio or
+  subtitle track pick, all of which re-issue PlaybackInfo — replaced the
+  observed verdict with a guess and dropped the dimming until the next probe
+  answered, and a payload whose selected source could not be resolved reset a
+  known verdict to `unknown` outright. A prediction now cannot overwrite an
+  observation or erase a known verdict; when it *contradicts* the observation,
+  that arms a new probe instead, so a stream that really did change is still
+  re-read. Playback boundaries clear the verdict outright, which is what
+  `resetPlaybackVideoDelivery()` is for;
 - track how the HDR holding the correction window was derived as a flag passed
   to `setPlaybackDynamicRange()`, not by comparing its `reason` string to
   `'playback-ui'`. `reason` is descriptive text that callers prefix, so the
