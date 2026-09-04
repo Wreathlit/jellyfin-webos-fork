@@ -506,6 +506,24 @@
     var pgsTimeSampleRateTracker = createRateTracker();
     var assWorkerVideoMessageRateTracker = createRateTracker();
 
+    // Only four bridge messages have a handler in the shell: AppHost.exit,
+    // openUrl, downloadFile and selectServer, plus the two the shell listens for
+    // by name (WebOS.featureOverrides, updateMediaSession). Everything else
+    // lands in its `default:` branch, which is a debugLog and nothing more.
+    //
+    // That was not free. appHost.supports() is called from many Jellyfin Web
+    // render paths -- header and drawer refresh, item detail, context menus,
+    // playback setup -- and each call scheduled a structured clone into the
+    // shell realm, a task dispatch and a '#contentFrame' lookup, on the same TV
+    // main thread that was laying the page out. The pure getters post only when
+    // the log they feed is actually on.
+    function postDiagnosticMessage(type, data) {
+        if (!DEBUG_LOG) {
+            return;
+        }
+        postMessage(type, data);
+    }
+
     function postMessage(type, data) {
         window.top.postMessage({
             type: type,
@@ -5095,6 +5113,15 @@
             return fetchResult;
         }
 
+        // applyPlaybackSessionsPayload discards everything outside playback, and
+        // Jellyfin Web's dashboard and remote-control views poll /Sessions every
+        // few seconds with a payload that carries every session's NowPlayingItem
+        // and MediaStreams. Cloning and parsing that a second time only to throw
+        // it away is the most expensive no-op in the wrapper.
+        if (playbackState !== PlaybackState.PLAYING) {
+            return fetchResult;
+        }
+
         return fetchResult.then(function (response) {
             try {
                 if (response && typeof response.clone === 'function' && isSuccessfulResponseStatus(response)) {
@@ -6417,14 +6444,16 @@
 
                     this.__webOsPlaybackInfoUrl = requestUrl;
                     this.__webOsPlaybackSessionsUrl = isPlaybackSessionsUrl(requestUrl) ? requestUrl : null;
+                    // Classified once here rather than re-derived from the URL
+                    // in setRequestHeader (called per header) and send().
+                    this.__webOsIsPlaybackInfo = isPlaybackInfoUrl(requestUrl);
                     this.__webOsSubtitleUrl = isSubtitleDeliveryUrl(requestUrl) ? requestUrl : null;
                     return originalXhrOpen.apply(this, openArgs);
                 };
 
                 if (originalXhrSetRequestHeader) {
                     xhrProto.setRequestHeader = function (name, value) {
-                        if (isPlaybackInfoUrl(this.__webOsPlaybackInfoUrl)
-                            && this.__webOsPlaybackInfoHeaders) {
+                        if (this.__webOsIsPlaybackInfo && this.__webOsPlaybackInfoHeaders) {
                             var normalizedName = name ? name.toString() : '';
                             if (normalizedName) {
                                 this.__webOsPlaybackInfoHeaders[normalizedName] = value;
@@ -6436,7 +6465,7 @@
 
                 xhrProto.send = function () {
                     var sendArgs = arguments;
-                    if (isPlaybackInfoUrl(this.__webOsPlaybackInfoUrl) && arguments.length) {
+                    if (this.__webOsIsPlaybackInfo && arguments.length) {
                         var sendArgsCopy = [];
                         for (var i = 0; i < arguments.length; i++) {
                             sendArgsCopy[i] = arguments[i];
@@ -6687,22 +6716,22 @@
             },
 
             appName: function () {
-                postMessage('AppHost.appName', AppInfo.appName);
+                postDiagnosticMessage('AppHost.appName', AppInfo.appName);
                 return AppInfo.appName;
             },
 
             appVersion: function () {
-                postMessage('AppHost.appVersion', AppInfo.appVersion);
+                postDiagnosticMessage('AppHost.appVersion', AppInfo.appVersion);
                 return AppInfo.appVersion;
             },
 
             deviceId: function () {
-                postMessage('AppHost.deviceId', AppInfo.deviceId);
+                postDiagnosticMessage('AppHost.deviceId', AppInfo.deviceId);
                 return AppInfo.deviceId;
             },
 
             deviceName: function () {
-                postMessage('AppHost.deviceName', AppInfo.deviceName);
+                postDiagnosticMessage('AppHost.deviceName', AppInfo.deviceName);
                 return AppInfo.deviceName;
             },
 
@@ -6711,12 +6740,12 @@
             },
 
             getDefaultLayout: function () {
-                postMessage('AppHost.getDefaultLayout', 'tv');
+                postDiagnosticMessage('AppHost.getDefaultLayout', 'tv');
                 return 'tv';
             },
 
             getDeviceProfile: function (profileBuilder) {
-                postMessage('AppHost.getDeviceProfile');
+                postDiagnosticMessage('AppHost.getDeviceProfile');
                 var info = getLiveDeviceInfo();
                 var profile = profileBuilder({
                     enableMkvProgressive: false,
@@ -6731,7 +6760,7 @@
             },
 
             getSyncProfile: function (profileBuilder) {
-                postMessage('AppHost.getSyncProfile');
+                postDiagnosticMessage('AppHost.getSyncProfile');
                 return profileBuilder({ enableMkvProgressive: false });
             },
 
@@ -6739,7 +6768,7 @@
                 var normalizedCommand = command && command.toLowerCase();
                 var isSupported = normalizedCommand && SupportedFeatures.indexOf(normalizedCommand) != -1;
 
-                postMessage('AppHost.supports', {
+                postDiagnosticMessage('AppHost.supports', {
                     command: command,
                     isSupported: isSupported
                 });

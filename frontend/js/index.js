@@ -798,23 +798,59 @@ function getTextToInject(success, failure) {
         });
     }
 
-    // Sequential loader. Assets must be concatenated in injectedScriptUrls
-    // order, so this walks them one at a time rather than racing them; it is
-    // not a promise workaround.
-    var looper = function (idx) {
-        if (idx >= urls.length) {
-            injectBundleCache = bundle;
-            success(bundle);
-        } else {
-            var asset = urls[idx];
-            loadUrl(asset.url, function (data) {
-                var separator = asset.type === 'js' ? '\n;\n' : '\n';
-                bundle[asset.type] = (bundle[asset.type] || '') + data + separator;
-                looper(idx + 1);
-            }, failure);
+    // Ordering is a concatenation requirement, not a fetch requirement. Every
+    // request goes out at once and the parts are assembled in injectedScriptUrls
+    // order once the last one lands; the loader used to issue each request from
+    // the previous one's callback, putting nine local round trips -- 275 KB of
+    // webOS.js among them -- on the launch path in series before the frame could
+    // start navigating.
+    var parts = new Array(urls.length);
+    var remaining = urls.length;
+    var failed = false;
+
+    var finish = function () {
+        for (var partIndex = 0; partIndex < urls.length; partIndex++) {
+            var part = urls[partIndex];
+            var separator = part.type === 'js' ? '\n;\n' : '\n';
+            bundle[part.type] = (bundle[part.type] || '') + parts[partIndex] + separator;
+        }
+        injectBundleCache = bundle;
+        success(bundle);
+    };
+
+    if (!remaining) {
+        finish();
+        return;
+    }
+
+    var onPartFailed = function (error) {
+        if (failed) {
+            return;
+        }
+        // One failure fails the bundle; the rest are in flight and their
+        // callbacks are ignored from here.
+        failed = true;
+        failure(error);
+    };
+
+    var onPartLoaded = function (index, data) {
+        if (failed) {
+            return;
+        }
+        parts[index] = data;
+        remaining--;
+        if (remaining === 0) {
+            finish();
         }
     };
-    looper(0);
+
+    for (var loadIndex = 0; loadIndex < urls.length; loadIndex++) {
+        (function (index) {
+            loadUrl(urls[index].url, function (data) {
+                onPartLoaded(index, data);
+            }, onPartFailed);
+        })(loadIndex);
+    }
 }
 
 function injectScriptText(document, text) {

@@ -811,3 +811,46 @@ function countDeviceInfoInjections(contentDocument) {
         'a non-default port is kept verbatim'
     );
 }
+
+// The injected assets used to be fetched one at a time, each from the previous
+// one's callback, on the launch path. Ordering is a concatenation requirement,
+// not a fetch one: all nine requests go out at once and are assembled in
+// injectedScriptUrls order.
+{
+    const shell = loadShell();
+    const bundles = [];
+    shell.context.getTextToInject(function (bundle) {
+        bundles.push(bundle);
+    }, function (error) {
+        assert.fail('the bundle must load: ' + error);
+    });
+
+    const assetRequests = shell.xhrRequests.filter(function (request) {
+        return String(request.url).indexOf('js/injected/') !== -1
+            || String(request.url).indexOf('js/webOS.js') !== -1
+            || String(request.url).indexOf('css/webOS.css') !== -1;
+    });
+    assert.ok(
+        assetRequests.length > 1,
+        'every injected asset must be requested before any of them has answered, got '
+            + assetRequests.length
+    );
+    assert.strictEqual(bundles.length, 0, 'the bundle cannot be ready before the parts answer');
+
+    // Answer out of order; the concatenation must still follow the manifest.
+    for (let i = assetRequests.length - 1; i >= 0; i--) {
+        assetRequests[i].status = 200;
+        assetRequests[i].responseText = '/*' + assetRequests[i].url + '*/';
+        assetRequests[i].onload();
+    }
+
+    assert.strictEqual(bundles.length, 1, 'the bundle is delivered once the last part lands');
+    const js = bundles[0].js || '';
+    let previous = -1;
+    for (const url of shell.context.injectedScriptUrls) {
+        const at = js.indexOf('/*' + url + '*/');
+        assert.ok(at !== -1, url + ' must be in the bundle');
+        assert.ok(at > previous, url + ' must appear in manifest order');
+        previous = at;
+    }
+}
