@@ -210,10 +210,20 @@ function loadShell() {
     FakeXMLHttpRequest.prototype.send = function () {
         this.sent = true;
     };
+    // Mirror the browser, and ajaxRequest.test.js's fake: abort() moves
+    // readyState to DONE with status 0 and dispatches readystatechange *before*
+    // the abort event. This one used to set a flag and call onabort, so the
+    // shell's own XHR paths were exercised against ordering ajax.js exists to
+    // survive -- a fidelity fix landing in one fake would not reach the other.
     FakeXMLHttpRequest.prototype.abort = function () {
         this.aborted = true;
+        this.readyState = FakeXMLHttpRequest.DONE;
+        this.status = 0;
+        if (this.onreadystatechange) {
+            this.onreadystatechange();
+        }
         if (this.onabort) {
-            this.onabort();
+            this.onabort({ target: this });
         }
     };
     const context = {

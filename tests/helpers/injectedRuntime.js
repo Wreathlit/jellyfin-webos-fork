@@ -935,8 +935,32 @@ function loadInjectedModules(moduleFileName) {
     return window.__JellyfinWebOSPatchRuntime;
 }
 
+// The value of a `var NAME = <number>;` constant in webOS.js.
+//
+// The bundle is an IIFE that exports nothing, so a test that has to cross one
+// of its timing windows had no way to name it and used a bare literal instead.
+// That reads as a magic number and, worse, goes quietly wrong: raise
+// PLAYBACK_START_FALLBACK_DELAY_MS and a settle(3000) no longer crosses the
+// window it was written for, while the assertion still passes for an unrelated
+// reason. Reading the constant makes the drift fail instead.
+function bundleConstant(name) {
+    const source = fs.readFileSync(path.join(root, 'frontend', 'js', 'webOS.js'), 'utf8');
+    const marker = 'var ' + name + ' = ';
+    const at = source.indexOf(marker);
+    if (at === -1) {
+        throw new Error('No constant named ' + name + ' in frontend/js/webOS.js');
+    }
+
+    const value = parseFloat(source.slice(at + marker.length));
+    if (!isFinite(value)) {
+        throw new Error(name + ' in frontend/js/webOS.js is not a plain numeric constant');
+    }
+    return value;
+}
+
 module.exports = {
     loadInjectedRuntime: loadInjectedRuntime,
+    bundleConstant: bundleConstant,
     loadInjectedModules: loadInjectedModules,
     createClock: createClock,
     BUNDLE_FILES: BUNDLE_FILES

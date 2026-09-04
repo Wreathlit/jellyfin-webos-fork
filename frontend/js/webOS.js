@@ -1785,7 +1785,10 @@
         document.documentElement.style.setProperty('--webos-hdr-subtitle-opacity', formatHdrSubtitleOpacity(getHdrSubtitleOpacity()));
     }
 
-    function loadPersistedHdrUiDimBrightness() {
+    // Both numeric HDR settings, not just the brightness. These were named for
+    // one of them while handling both, so an edit aimed at brightness
+    // persistence silently changed opacity persistence too.
+    function loadPersistedHdrSettings() {
         try {
             if (!window.localStorage) {
                 hdrUiDimBrightness = clampHdrUiDimBrightness(hdrUiDimBrightness);
@@ -1809,11 +1812,11 @@
         } catch (error) {
             hdrUiDimBrightness = clampHdrUiDimBrightness(hdrUiDimBrightness);
             hdrSubtitleOpacity = clampHdrSubtitleOpacity(hdrSubtitleOpacity);
-            warnLog('Failed to load persisted HDR UI dim brightness:', error);
+            warnLog('Failed to load persisted HDR settings:', error);
         }
     }
 
-    function savePersistedHdrUiDimBrightness() {
+    function savePersistedHdrSettings() {
         try {
             if (!window.localStorage) {
                 return;
@@ -1831,7 +1834,7 @@
                 formatHdrSubtitleOpacity(hdrSubtitleOpacity)
             );
         } catch (error) {
-            warnLog('Failed to save persisted HDR UI dim brightness:', error);
+            warnLog('Failed to save persisted HDR settings:', error);
         }
     }
 
@@ -1842,7 +1845,7 @@
 
         hdrSettingsPersistTimer = setTimeout(function () {
             hdrSettingsPersistTimer = null;
-            savePersistedHdrUiDimBrightness();
+            savePersistedHdrSettings();
         }, HDR_SETTINGS_PERSIST_DELAY);
     }
 
@@ -1851,7 +1854,7 @@
             clearTimeout(hdrSettingsPersistTimer);
             hdrSettingsPersistTimer = null;
         }
-        savePersistedHdrUiDimBrightness();
+        savePersistedHdrSettings();
     }
 
     function setHdrUiDimBrightness(value, reason, persist) {
@@ -6896,7 +6899,7 @@
     var initSteps = [
         ['header-pinning', initHeaderPinning],
         ['playback-diagnostics-settings', loadPersistedPlaybackDiagnosticsSettings],
-        ['hdr-ui-dim-brightness', loadPersistedHdrUiDimBrightness],
+        ['hdr-settings', loadPersistedHdrSettings],
         ['ass-renderer-options', syncAssRendererOptions],
         ['monotonic-media-time', syncMonotonicMediaTimeHelper],
         ['pgs-async-stats', syncPgsAsyncStatsHelper],

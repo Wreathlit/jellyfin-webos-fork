@@ -1,5 +1,16 @@
 const assert = require('assert');
-const { loadInjectedRuntime } = require('../helpers/injectedRuntime');
+const { loadInjectedRuntime, bundleConstant } = require('../helpers/injectedRuntime');
+
+// Waits that cross a window in the bundle are named after the constant that
+// defines it, read from webOS.js. Written as bare literals, they went quietly
+// wrong when a window moved: settle(3000) stopped crossing a fallback raised to
+// 4000 while the assertion still passed for an unrelated reason.
+const TIMINGS = {
+    PLAYBACK_START_FALLBACK: bundleConstant('PLAYBACK_START_FALLBACK_DELAY_MS'),
+    EXIT_TO_IDLE: bundleConstant('EXIT_TO_IDLE_TIMEOUT'),
+    SCRIPT_PATCH_FETCH_TIMEOUT: bundleConstant('SCRIPT_PATCH_FETCH_TIMEOUT_MS'),
+    HDR_UI_INFO_CORRECTION_WINDOW: bundleConstant('HDR_UI_INFO_CORRECTION_WINDOW_MS')
+};
 
 // End-to-end tests for frontend/js/webOS.js. The bundle exports nothing but
 // window.NativeShell, so every case here drives it the way Jellyfin Web does —
@@ -293,7 +304,7 @@ test('an explicit direct-play response does not start Sessions polling', async (
     await runtime.window.fetch(playbackInfoUrl('item-hdr-direct', 'src-hdr'));
     await runtime.settle(10);
     runtime.nativeShell.enableFullscreen();
-    await runtime.settle(7000);
+    await runtime.settle(TIMINGS.PLAYBACK_START_FALLBACK + 4000);
 
     assert.strictEqual(runtime.isHdrDimmed(), true, 'explicit HDR direct play must still dim immediately');
     assert.strictEqual(
@@ -341,7 +352,7 @@ test('an authoritative SDR corrects an HDR guessed from playback UI text', async
     assert.strictEqual(runtime.isHdrDimmed(), true, 'the OSD text should have driven HDR dimming');
 
     // Past the 3s playback-start fallback, which re-reads the same OSD text.
-    await runtime.settle(3000);
+    await runtime.settle(TIMINGS.PLAYBACK_START_FALLBACK);
     assert.strictEqual(runtime.isHdrDimmed(), true, 'the fallback should keep the UI-derived verdict');
 
     runtime.nativeShell.updateMediaSession({ itemId: 'item-1', VideoRangeType: 'SDR' });
@@ -381,7 +392,7 @@ test('a corrected UI-text HDR does not come back with the delayed fallback', asy
     assert.strictEqual(runtime.isHdrDimmed(), false, 'the authoritative SDR must undim');
 
     // Past the 3s playback-start fallback, which re-reads the same OSD text.
-    await runtime.settle(3000);
+    await runtime.settle(TIMINGS.PLAYBACK_START_FALLBACK);
     assert.strictEqual(
         runtime.isHdrDimmed(),
         false,
@@ -389,7 +400,7 @@ test('a corrected UI-text HDR does not come back with the delayed fallback', asy
     );
 
     // And the scheduled scanner must not bring it back either.
-    await runtime.settle(6000);
+    await runtime.settle(TIMINGS.HDR_UI_INFO_CORRECTION_WINDOW);
     assert.strictEqual(runtime.isHdrDimmed(), false, 'the overruled UI text must stay overruled');
 });
 
@@ -519,7 +530,7 @@ test('a timed-out script inspection fetch is aborted before the original loads',
     assert.strictEqual(inspection.url, 'https://server.example/web/libpgs.js');
     assert.strictEqual(inspection.aborted, false, 'the inspection is still in flight before the timeout');
 
-    runtime.clock.tick(9000);
+    runtime.clock.tick(TIMINGS.SCRIPT_PATCH_FETCH_TIMEOUT + 1000);
 
     assert.strictEqual(inspection.aborted, true, 'the timed-out inspection must be aborted, not left running');
     assert.strictEqual(
@@ -615,7 +626,7 @@ test('leaving playback removes the HDR dim', async () => {
 
     runtime.nativeShell.disableFullscreen();
     // EXITING settles to IDLE on its own after the exit timeout.
-    await runtime.settle(3000);
+    await runtime.settle(TIMINGS.PLAYBACK_START_FALLBACK);
 
     assert.strictEqual(runtime.isHdrDimmed(), false, 'the dim must be removed when playback ends');
 });
@@ -653,7 +664,7 @@ test('a session probe answering after playback ended does not re-dim', async () 
 
     // A late HDR verdict for the finished item must be ignored.
     runtime.respondToFetch(() => ({ MediaSources: [HDR_MEDIA_SOURCE] }));
-    await runtime.settle(5000);
+    await runtime.settle(TIMINGS.EXIT_TO_IDLE + 3000);
 
     assert.strictEqual(
         runtime.isHdrDimmed(),
@@ -750,7 +761,7 @@ test('a startup script keeps the full inspection budget after a quality pick', a
         'a startup script must keep the full budget after the bitrate force ends'
     );
 
-    runtime.clock.tick(8000);
+    runtime.clock.tick(TIMINGS.SCRIPT_PATCH_FETCH_TIMEOUT);
     assert.strictEqual(inspection.aborted, true, 'the full budget still expires');
 });
 
