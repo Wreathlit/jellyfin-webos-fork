@@ -745,6 +745,9 @@ function loadInjectedRuntime(options) {
         XMLHttpRequest: FakeXMLHttpRequest,
         Worker: FakeWorker,
         Node: dom.Node,
+        // Chromium 68 has the URL constructor, and fetch() accepts one as its
+        // input, so the bundle has to keep recognising that shape.
+        URL: URL,
         addEventListener(type, listener) {
             windowListeners[type] = windowListeners[type] || [];
             windowListeners[type].push(listener);
@@ -807,6 +810,7 @@ function loadInjectedRuntime(options) {
         XMLHttpRequest: FakeXMLHttpRequest,
         Worker: FakeWorker,
         Node: dom.Node,
+        URL: URL,
         setTimeout: clock.setTimeout,
         clearTimeout: clock.clearTimeout,
         setInterval: clock.setInterval,

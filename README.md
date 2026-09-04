@@ -332,6 +332,20 @@ The playback compatibility patches intentionally keep four decisions separate:
   or transcode-with-video-copy (`VideoCodec=copy`). `Static=true` is classified
   as DirectStream. If video delivery is unknown or is a video transcode, the UI
   dim class is not enabled.
+- the two transports must decide the same things. `fetch` and `XMLHttpRequest`
+  each own an interception path, and they had drifted: XHR gated every
+  inspection on a 2xx status and wrapped it in `try`/`catch`, while `fetch` did
+  neither. An error body parses as JSON perfectly well — `ProblemDetails` does —
+  so a 500 was read as the playback description, and an exception anywhere in
+  the fork's own bookkeeping rejected the promise Jellyfin Web was awaiting,
+  turning a correct server response into a playback error. The outer `try` only
+  ever covered the synchronous `clone()`. Both now share one status gate and
+  contain their own failures.
+- `fetch()` accepts a string, a `Request` (which carries `.url`) or a `URL`
+  (which carries `.href` and has no `.url`). Only the first two were recognised,
+  so `fetch(new URL(…))` resolved to an empty URL and bypassed bitrate forcing,
+  the burned-in subtitle patch, HDR detection and the `/Sessions` probe.
+  `XMLHttpRequest.open()` has always stringified its argument.
 
 #### H264 High 10 (Hi10P) always transcodes — do not try to force it
 

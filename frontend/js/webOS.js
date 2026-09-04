@@ -5026,9 +5026,13 @@
 
         return fetchResult.then(function (response) {
             try {
-                if (response && typeof response.clone === 'function') {
+                if (response && typeof response.clone === 'function' && isSuccessfulResponseStatus(response)) {
                     response.clone().json().then(function (payload) {
-                        applyPlaybackSessionsPayload(payload, probe, reason || 'sessions-fetch');
+                        try {
+                            applyPlaybackSessionsPayload(payload, probe, reason || 'sessions-fetch');
+                        } catch (error) {
+                            debugLog('Failed to apply Sessions payload:', error);
+                        }
                     }, function () {
                         // Ignore payload parse errors.
                     });
@@ -5840,28 +5844,55 @@
         }
     }
 
+    // Same gate the XHR path has always applied. A status of 0 means "no status
+    // to judge" (an opaque or not-yet-populated response) and is let through
+    // there too.
+    function isSuccessfulResponseStatus(response) {
+        var status = response && typeof response.status === 'number' ? response.status : 0;
+        return !status || (status >= 200 && status < 300);
+    }
+
     function inspectPlaybackInfoFetchResult(fetchResult, url, context) {
         if (!isPlaybackInfoUrl(url) || !fetchResult || typeof fetchResult.then !== 'function') {
             return fetchResult;
         }
 
         return fetchResult.then(function (response) {
-            try {
-                if (response && typeof response.clone === 'function') {
-                    return response.clone().json().then(function (payload) {
-                        applyDynamicRangeFromPlaybackInfo(payload, url, 'playbackinfo-fetch', context);
-                        return patchBurnedInSubtitleDelivery(payload, 'fetch')
-                            ? rebuildPlaybackInfoResponse(response, payload)
-                            : response;
-                    }, function () {
-                        // Ignore payload parse errors.
-                        return response;
-                    });
-                }
-            } catch (error) {
-                debugLog('Failed to inspect fetch PlaybackInfo response:', error);
+            // An error body still parses as JSON -- ProblemDetails does -- and
+            // used to be fed to the state machine as if it described the
+            // playback: a 500 could set the current item, record an unknown
+            // delivery and arm a Sessions probe. The XHR twin stops here.
+            if (!response || typeof response.clone !== 'function' || !isSuccessfulResponseStatus(response)) {
+                return response;
             }
-            return response;
+
+            var clone;
+            try {
+                clone = response.clone();
+            } catch (error) {
+                debugLog('Failed to clone PlaybackInfo response:', error);
+                return response;
+            }
+
+            return clone.json().then(function (payload) {
+                // Everything here is the fork's own bookkeeping and must never
+                // reject the promise Jellyfin Web is awaiting for this request.
+                // The outer try only ever covered the synchronous clone(), so a
+                // throw in the inspection turned a correct server response into
+                // a playback error. The XHR twin wraps the identical calls.
+                try {
+                    applyDynamicRangeFromPlaybackInfo(payload, url, 'playbackinfo-fetch', context);
+                    return patchBurnedInSubtitleDelivery(payload, 'fetch')
+                        ? rebuildPlaybackInfoResponse(response, payload)
+                        : response;
+                } catch (error) {
+                    debugLog('Failed to inspect fetch PlaybackInfo response:', error);
+                    return response;
+                }
+            }, function () {
+                // Ignore payload parse errors.
+                return response;
+            });
         });
     }
 
@@ -6121,6 +6152,28 @@
             playbackSessionProbeFetch = function (url, init) {
                 return originalFetch.call(window, url, init);
             };
+            // fetch() accepts a string, a Request (which carries .url) or a URL
+            // (which carries .href and has no .url). Only the first two were
+            // recognised, so fetch(new URL(...)) resolved to '' and bypassed
+            // bitrate forcing, the burned-in subtitle patch, HDR detection and
+            // the Sessions probe. XMLHttpRequest.open() has always stringified
+            // its argument, so the two transports disagreed.
+            function getFetchRequestUrl(input) {
+                if (typeof input === 'string') {
+                    return input;
+                }
+                if (!input) {
+                    return '';
+                }
+                if (typeof input.url === 'string') {
+                    return input.url;
+                }
+                if (typeof input.href === 'string') {
+                    return input.href;
+                }
+                return '';
+            }
+
             window.fetch = function () {
                 var fetchThis = this;
                 var input = arguments.length ? arguments[0] : null;
@@ -6128,7 +6181,7 @@
                 var hasInitArgument = arguments.length > 1;
                 var url = '';
                 try {
-                    url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+                    url = getFetchRequestUrl(input);
                 } catch (error) {
                     url = '';
                 }

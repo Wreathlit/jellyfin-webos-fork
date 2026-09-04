@@ -875,6 +875,53 @@ test('a non-2xx PlaybackInfo response is left alone', async () => {
     assert.strictEqual(response.ok, false, 'the error status must survive the interception');
 });
 
+// "Left alone" has to mean the state machine, not just the Response object. An
+// error body parses as JSON perfectly well, and the fetch path used to hand it
+// to applyDynamicRangeFromPlaybackInfo as if it described the playback. The XHR
+// twin has always stopped at the status.
+test('a failed PlaybackInfo request does not drive HDR detection', async () => {
+    const runtime = loadInjectedRuntime();
+
+    runtime.respondToFetch(() => ({
+        status: 500,
+        body: { MediaSources: [HDR_MEDIA_SOURCE] }
+    }));
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+
+    const response = await runtime.window.fetch(playbackInfoUrl('item-1', 'src-hdr'));
+    await runtime.settle(50);
+
+    assert.strictEqual(response.status, 500);
+    assert.strictEqual(
+        runtime.isHdrDimmed(),
+        false,
+        'a 5xx body must not be read as the playback description'
+    );
+});
+
+// The XHR wrapper stringifies whatever open() is given; the fetch wrapper only
+// recognised a string or a Request. A URL object is a valid fetch input and
+// carries .href, not .url, so it resolved to '' and slipped past every
+// interceptor -- no bitrate forcing, no burned-in subtitle patch, no HDR
+// detection.
+test('a URL object reaches the PlaybackInfo interceptors', async () => {
+    const runtime = loadInjectedRuntime();
+    runtime.respondToFetch(() => ({ MediaSources: [HDR_MEDIA_SOURCE] }));
+
+    runtime.nativeShell.enableFullscreen();
+    await runtime.settle(0);
+
+    await runtime.window.fetch(new runtime.window.URL(playbackInfoUrl('item-1', 'src-hdr')));
+    await runtime.settle(50);
+
+    assert.strictEqual(
+        runtime.isHdrDimmed(),
+        true,
+        'the response to a URL-object request must still drive HDR detection'
+    );
+});
+
 module.exports = async function runInjectedRuntimeTests() {
     for (const testCase of cases) {
         try {
