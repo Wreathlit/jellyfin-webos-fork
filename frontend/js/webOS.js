@@ -1905,32 +1905,44 @@
         playbackDiagnosticsEnabled: {
             storageKey: PLAYBACK_DIAGNOSTICS_KEY,
             get: function () { return playbackDiagnosticsEnabled; },
-            set: function (value) { playbackDiagnosticsEnabled = value; }
+            set: function (value) { playbackDiagnosticsEnabled = value; },
+            checkboxClass: 'chkWebOSPlaybackDiagnostics',
+            apply: setPlaybackDiagnosticsEnabled
         },
         disableAssRenderAhead: {
             storageKey: DISABLE_ASS_RENDER_AHEAD_KEY,
             get: function () { return disableAssRenderAhead; },
-            set: function (value) { disableAssRenderAhead = value; }
+            set: function (value) { disableAssRenderAhead = value; },
+            checkboxClass: 'chkWebOSDisableAssRenderAhead',
+            apply: setDisableAssRenderAhead
         },
         assTimeSyncFixEnabled: {
             storageKey: ASS_TIME_SYNC_FIX_KEY,
             get: function () { return assTimeSyncFixEnabled; },
-            set: function (value) { assTimeSyncFixEnabled = value; }
+            set: function (value) { assTimeSyncFixEnabled = value; },
+            checkboxClass: 'chkWebOSAssTimeSyncFix',
+            apply: setAssTimeSyncFixEnabled
         },
         pgsForceMainThread: {
             storageKey: PGS_FORCE_MAIN_THREAD_KEY,
             get: function () { return pgsForceMainThread; },
-            set: function (value) { pgsForceMainThread = value; }
+            set: function (value) { pgsForceMainThread = value; },
+            checkboxClass: 'chkWebOSPgsForceMainThread',
+            apply: setPgsForceMainThread
         },
         pgsPatchObjectReuse: {
             storageKey: PGS_PATCH_OBJECT_REUSE_KEY,
             get: function () { return pgsPatchObjectReuse; },
-            set: function (value) { pgsPatchObjectReuse = value; }
+            set: function (value) { pgsPatchObjectReuse = value; },
+            checkboxClass: 'chkWebOSPgsPatchObjectReuse',
+            apply: setPgsPatchObjectReuse
         },
         lpcmAudioCopyEnabled: {
             storageKey: LPCM_AUDIO_COPY_KEY,
             get: function () { return lpcmAudioCopyEnabled; },
-            set: function (value) { lpcmAudioCopyEnabled = value; }
+            set: function (value) { lpcmAudioCopyEnabled = value; },
+            checkboxClass: 'chkWebOSLpcmAudioCopy',
+            apply: setLpcmAudioCopyEnabled
         }
     };
 
@@ -3571,72 +3583,31 @@
         }
         appendControlToGroup(diagnosticsGroup, diagnosticsContainer);
 
-        var lpcmAudioCopyCheckbox = document.querySelector('.chkWebOSLpcmAudioCopy');
-        var assTimeSyncCheckbox = document.querySelector('.chkWebOSAssTimeSyncFix');
-        var assRenderAheadCheckbox = document.querySelector('.chkWebOSDisableAssRenderAhead');
-        var diagnosticsCheckbox = document.querySelector('.chkWebOSPlaybackDiagnostics');
-        var pgsForceMainThreadCheckbox = document.querySelector('.chkWebOSPgsForceMainThread');
-        var pgsPatchObjectReuseCheckbox = document.querySelector('.chkWebOSPgsPatchObjectReuse');
-
-        if (lpcmAudioCopyCheckbox) {
-            lpcmAudioCopyCheckbox.checked = !!lpcmAudioCopyEnabled;
-            if (lpcmAudioCopyCheckbox.getAttribute('data-webos-init') !== 'true') {
-                lpcmAudioCopyCheckbox.addEventListener('change', function () {
-                    setLpcmAudioCopyEnabled(lpcmAudioCopyCheckbox.checked, 'settings-page');
-                });
-                lpcmAudioCopyCheckbox.setAttribute('data-webos-init', 'true');
+        // Wired from the accessor table rather than six hand-written blocks.
+        // The blocks were identical apart from the class and the setter, and
+        // forgetting one was silent: the checkbox rendered and toggled on
+        // screen while nothing ever reached setFeatureFlag, so the setting
+        // neither persisted nor broadcast.
+        forEachBooleanFeature(function (definition, accessor) {
+            if (!accessor.checkboxClass || !accessor.apply) {
+                return;
             }
-        }
 
-        if (assTimeSyncCheckbox) {
-            assTimeSyncCheckbox.checked = !!assTimeSyncFixEnabled;
-            if (assTimeSyncCheckbox.getAttribute('data-webos-init') !== 'true') {
-                assTimeSyncCheckbox.addEventListener('change', function () {
-                    setAssTimeSyncFixEnabled(assTimeSyncCheckbox.checked, 'settings-page');
-                });
-                assTimeSyncCheckbox.setAttribute('data-webos-init', 'true');
+            var checkbox = document.querySelector('.' + accessor.checkboxClass);
+            if (!checkbox) {
+                return;
             }
-        }
 
-        if (assRenderAheadCheckbox) {
-            assRenderAheadCheckbox.checked = !!disableAssRenderAhead;
-            if (assRenderAheadCheckbox.getAttribute('data-webos-init') !== 'true') {
-                assRenderAheadCheckbox.addEventListener('change', function () {
-                    setDisableAssRenderAhead(assRenderAheadCheckbox.checked, 'settings-page');
-                });
-                assRenderAheadCheckbox.setAttribute('data-webos-init', 'true');
+            checkbox.checked = !!accessor.get();
+            if (checkbox.getAttribute('data-webos-init') === 'true') {
+                return;
             }
-        }
 
-        if (diagnosticsCheckbox) {
-            diagnosticsCheckbox.checked = !!playbackDiagnosticsEnabled;
-            if (diagnosticsCheckbox.getAttribute('data-webos-init') !== 'true') {
-                diagnosticsCheckbox.addEventListener('change', function () {
-                    setPlaybackDiagnosticsEnabled(diagnosticsCheckbox.checked, 'settings-page');
-                });
-                diagnosticsCheckbox.setAttribute('data-webos-init', 'true');
-            }
-        }
-
-        if (pgsForceMainThreadCheckbox) {
-            pgsForceMainThreadCheckbox.checked = !!pgsForceMainThread;
-            if (pgsForceMainThreadCheckbox.getAttribute('data-webos-init') !== 'true') {
-                pgsForceMainThreadCheckbox.addEventListener('change', function () {
-                    setPgsForceMainThread(pgsForceMainThreadCheckbox.checked, 'settings-page');
-                });
-                pgsForceMainThreadCheckbox.setAttribute('data-webos-init', 'true');
-            }
-        }
-
-        if (pgsPatchObjectReuseCheckbox) {
-            pgsPatchObjectReuseCheckbox.checked = !!pgsPatchObjectReuse;
-            if (pgsPatchObjectReuseCheckbox.getAttribute('data-webos-init') !== 'true') {
-                pgsPatchObjectReuseCheckbox.addEventListener('change', function () {
-                    setPgsPatchObjectReuse(pgsPatchObjectReuseCheckbox.checked, 'settings-page');
-                });
-                pgsPatchObjectReuseCheckbox.setAttribute('data-webos-init', 'true');
-            }
-        }
+            checkbox.addEventListener('change', function () {
+                accessor.apply(checkbox.checked, 'settings-page');
+            });
+            checkbox.setAttribute('data-webos-init', 'true');
+        });
 
         initializeHdrUiDimControl(hdrDimContainer);
         initializeHdrSubtitleOpacityControl(hdrSubtitleOpacityContainer);
@@ -3649,16 +3620,26 @@
         settingsEnsureLastRunTs = Date.now();
         var hasPlaybackSettingsAnchor = ensureWebOSSettingsControls();
 
-        var legacyPgsControlsReady = !shouldShowLegacyPgsFeatures()
-            || (document.querySelector('.chkWebOSPgsForceMainThread')
-                && document.querySelector('.chkWebOSPgsPatchObjectReuse'));
-        if (document.querySelector('.webosHdrUiDimSlider')
-            && document.querySelector('.webosHdrSubtitleOpacitySlider')
-            && document.querySelector('.chkWebOSLpcmAudioCopy')
-            && document.querySelector('.chkWebOSAssTimeSyncFix')
-            && document.querySelector('.chkWebOSDisableAssRenderAhead')
-            && document.querySelector('.chkWebOSPlaybackDiagnostics')
-            && legacyPgsControlsReady) {
+        // Readiness comes from the same table: a control the registry knows
+        // about but the retry loop does not would make runScheduledSettingsEnsure
+        // retry its full budget on every visit to the settings page.
+        var legacyPgsVisible = shouldShowLegacyPgsFeatures();
+        var checkboxesReady = true;
+        forEachBooleanFeature(function (definition, accessor) {
+            if (!accessor.checkboxClass) {
+                return;
+            }
+            if (!legacyPgsVisible && definition.group === 'pgs') {
+                return;
+            }
+            if (!document.querySelector('.' + accessor.checkboxClass)) {
+                checkboxesReady = false;
+            }
+        });
+
+        if (checkboxesReady
+            && document.querySelector('.webosHdrUiDimSlider')
+            && document.querySelector('.webosHdrSubtitleOpacitySlider')) {
             settingsEnsureAttemptsLeft = 0;
             return;
         }

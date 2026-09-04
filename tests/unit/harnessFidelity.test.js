@@ -131,3 +131,57 @@ const root = path.resolve(__dirname, '..', '..');
         'every registered feature must have an accessor in webOS.js'
     );
 }
+
+// Every registered boolean feature must have a checkbox class and a setter in
+// the accessor table, and the settings UI must be driven from that table rather
+// than six hand-written blocks. Forgetting a block was silent: the checkbox
+// rendered and toggled on screen while nothing reached setFeatureFlag, so the
+// setting neither persisted nor broadcast.
+{
+    const runtime = loadInjectedRuntime();
+    const registry = runtime.window.__JellyfinWebOSPatchRuntime.get('core.features');
+    const definitions = registry.getBooleanDefinitions();
+    // The working tree may hold either line ending; normalise before searching.
+    const source = fs.readFileSync(path.join(root, 'frontend', 'js', 'webOS.js'), 'utf8')
+        .split(String.fromCharCode(13)).join('');
+    const NEWLINE = String.fromCharCode(10);
+
+    function readMember(entry, marker, terminator) {
+        const at = entry.indexOf(marker);
+        if (at === -1) {
+            return null;
+        }
+        const from = at + marker.length;
+        const to = entry.indexOf(terminator, from);
+        return to === -1 ? null : entry.slice(from, to).trim();
+    }
+
+    for (const definition of definitions) {
+        const start = source.indexOf(definition.key + ': {');
+        assert.ok(start !== -1, definition.key + ' must have an entry in BOOLEAN_FEATURE_ACCESSORS');
+        const entryEnd = source.indexOf(NEWLINE + '        },', start);
+        // Include the terminating newline so the last member has one too.
+        const entry = source.slice(start, entryEnd === -1 ? source.length : entryEnd + 1);
+
+        const checkboxClass = readMember(entry, 'checkboxClass: ' + String.fromCharCode(39), String.fromCharCode(39));
+        const applyName = readMember(entry, 'apply: ', NEWLINE);
+        assert.ok(checkboxClass, definition.key + ' must carry a checkboxClass');
+        assert.ok(applyName, definition.key + ' must carry an apply');
+
+        assert.ok(
+            source.indexOf(String.fromCharCode(39) + checkboxClass + String.fromCharCode(39)) !== -1,
+            checkboxClass + ' must be the class the control builder uses'
+        );
+        assert.ok(
+            source.indexOf('function ' + applyName + '(') !== -1,
+            applyName + ' must be a real setter'
+        );
+    }
+
+    // One loop, not six near-identical blocks.
+    assert.strictEqual(
+        source.split('checkbox.getAttribute(' + String.fromCharCode(39) + 'data-webos-init').length - 1,
+        1,
+        'checkbox wiring must happen in exactly one place (the sliders keep their own)'
+    );
+}
